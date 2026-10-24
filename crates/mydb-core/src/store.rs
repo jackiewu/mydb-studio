@@ -153,6 +153,9 @@ impl Store {
     fn init(db: Connection) -> Result<Self> {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
+        // Overwrite deleted content, so a replaced profile (or anything
+        // else removed) doesn't linger in free pages.
+        db.pragma_update(None, "secure_delete", "ON")?;
         let mut store = Self { db, secrets: None };
         store.migrate()?;
         Ok(store)
@@ -167,11 +170,31 @@ impl Store {
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
+        let mut moved = false;
         for json in saved {
             let profile: ConnectionProfile = serde_json::from_str(&json)?;
             if !secrets::strip(&profile).1.is_empty() {
                 self.save_connection(&profile)?;
+                moved = true;
             }
+        }
+        // Rewrite the file once so passwords saved before the vault are
+        // gone from free pages and the WAL too.
+        let scrubbed: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'vault_scrubbed'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if moved || scrubbed.is_none() {
+            self.db.execute_batch(
+                "VACUUM;
+                 PRAGMA wal_checkpoint(TRUNCATE);
+                 INSERT INTO settings (key, value) VALUES ('vault_scrubbed', '1')
+                   ON CONFLICT(key) DO NOTHING;",
+            )?;
         }
         Ok(())
     }
@@ -965,6 +988,36 @@ mod tests {
         store.delete_connection(&p.id).unwrap();
         store.delete_connection("copy").unwrap();
         assert_eq!(vault.0.lock().unwrap().as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn moved_passwords_leave_no_trace_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("mydb-vault-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.db");
+        let mut p = ConnectionProfile::new("prod", "db", "app");
+        p.password = Some("Zq7-unique-secret".into());
+        Store::open(&path).unwrap().save_connection(&p).unwrap();
+
+        let mut store = Store::open(&path).unwrap();
+        store
+            .use_vault(Box::new(crate::secrets::MemoryVault::default()))
+            .unwrap();
+        // A later password change must not linger either.
+        p.password = Some("Zq7-second-secret".into());
+        store.save_connection(&p).unwrap();
+        // Read the files while the app still has them open (WAL included).
+
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("Zq7-"),
+                "password left in the database files"
+            );
+        }
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
