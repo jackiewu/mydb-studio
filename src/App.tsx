@@ -340,9 +340,6 @@ export default function App() {
             >
               {running ? "執行中…" : `▶ ${runLabel.text}`}
             </button>
-            <button onClick={disconnect} title="中斷連線">
-              ✕
-            </button>
           </header>
         )}
 
