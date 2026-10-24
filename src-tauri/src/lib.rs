@@ -19,8 +19,22 @@ pub fn run() {
             app.manage(AppState {
                 store: Mutex::new(store),
                 sessions: tokio::sync::RwLock::new(HashMap::new()),
+                print_html: Mutex::new(String::new()),
             });
             Ok(())
+        })
+        .register_uri_scheme_protocol(commands::PRINT_PROTOCOL, |ctx, _request| {
+            let html = ctx
+                .app_handle()
+                .state::<AppState>()
+                .print_html
+                .lock()
+                .unwrap()
+                .clone();
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .body(html.into_bytes())
+                .unwrap()
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
@@ -39,6 +53,7 @@ pub fn run() {
             commands::delete_records,
             commands::generate_report,
             commands::save_text_file,
+            commands::print_report,
             commands::use_database,
             commands::list_all_tables,
             commands::list_columns,

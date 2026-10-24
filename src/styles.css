@@ -457,3 +457,13 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .schema-filter { padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .schema-filter input { padding: 4px 8px; font-size: 12px; }
 .tree mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 2px; }
+
+/* Click-to-copy SQL in the records page. */
+.copyable { cursor: copy; }
+.copyable:hover { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.row-actions { display: flex; gap: 8px; }
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
+  padding: 6px 14px; border-radius: 6px; font-size: 13px;
+  background: var(--text); color: var(--bg); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}

@@ -3,20 +3,23 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use mydb_core::report::{self, ReportOptions};
+use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
     AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
     ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext, RecordFilter, Result, Session,
     SessionInfo, Snippet, Store, TableInfo,
 };
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::RwLock;
 
 pub struct AppState {
     pub store: Mutex<Store>,
     /// Open sessions by session id. One connection profile can have several.
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
+    /// The report shown in the print window, served by the `mydbreport:`
+    /// protocol.
+    pub print_html: Mutex<String>,
 }
 
 impl AppState {
@@ -207,13 +210,69 @@ pub fn generate_report(
     ids: Vec<i64>,
     options: ReportOptions,
 ) -> Result<String> {
-    let records = state.store.lock().unwrap().get_records(&ids)?;
+    let store = state.store.lock().unwrap();
+    let mut records = store.get_records(&ids)?;
+    if options.hide_connection {
+        let known: Vec<ConnectionSecrets> = store
+            .list_connections()?
+            .into_iter()
+            .map(|p| {
+                let mut hosts = vec![p.host];
+                let mut users = vec![p.user];
+                if let Some(ssh) = p.ssh {
+                    hosts.push(ssh.host);
+                    users.push(ssh.user);
+                }
+                ConnectionSecrets {
+                    id: p.id,
+                    name: p.name,
+                    hosts,
+                    users,
+                }
+            })
+            .collect();
+        report::redact(&mut records, &known);
+    }
     Ok(report::render(
         &records,
         &options,
         &chrono::Utc::now().to_rfc3339(),
     ))
 }
+
+/// Opens an HTML report in its own window and starts printing it, which on
+/// every platform offers saving as PDF.
+#[tauri::command]
+pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) -> Result<()> {
+    *state.print_html.lock().unwrap() = html;
+    let failed = |e: tauri::Error| CoreError::Config {
+        message: format!("無法開啟列印視窗：{e}"),
+    };
+    if let Some(window) = app.get_webview_window(PRINT_WINDOW) {
+        window.eval("location.reload()").map_err(failed)?;
+        window.set_focus().map_err(failed)?;
+        return Ok(());
+    }
+    let url = PRINT_URL.parse().expect("valid print URL");
+    WebviewWindowBuilder::new(&app, PRINT_WINDOW, WebviewUrl::CustomProtocol(url))
+        .title("報表（列印／存成 PDF）")
+        .inner_size(900.0, 1000.0)
+        .on_page_load(|window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = window.print();
+            }
+        })
+        .build()
+        .map_err(failed)?;
+    Ok(())
+}
+
+pub const PRINT_WINDOW: &str = "report-print";
+pub const PRINT_PROTOCOL: &str = "mydbreport";
+#[cfg(any(windows, target_os = "android"))]
+const PRINT_URL: &str = "http://mydbreport.localhost/";
+#[cfg(not(any(windows, target_os = "android")))]
+const PRINT_URL: &str = "mydbreport://localhost/";
 
 /// Writes a generated report to the path the user picked in the save dialog.
 #[tauri::command]

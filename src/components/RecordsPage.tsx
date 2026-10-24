@@ -7,7 +7,9 @@ import {
   type ExecutionRecord,
   type RecordFilter,
   type ReportFormat,
+  type ReportOptions,
 } from "../api";
+import { copyText } from "../copy";
 
 interface Props {
   connections: ConnectionProfile[];
@@ -47,9 +49,13 @@ function firstLine(sql: string) {
   return line.length > 90 ? line.slice(0, 90) + "…" : line;
 }
 
-const FORMATS: { value: ReportFormat; label: string }[] = [
+/** PDF is the HTML report, printed. */
+type ExportFormat = ReportFormat | "pdf";
+
+const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "markdown", label: "Markdown (.md)" },
   { value: "html", label: "HTML (.html)" },
+  { value: "pdf", label: "PDF（列印／存成 PDF）" },
   { value: "csv", label: "CSV (.csv)" },
 ];
 
@@ -65,6 +71,18 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const [note, setNote] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const copySql = async (sql: string, what = "SQL") => {
+    await copyText(sql);
+    setToast(`已複製 ${what}`);
+  };
 
   const filter: RecordFilter = {
     connection_id: connectionId || null,
@@ -209,7 +227,11 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                       {r.connection_name}
                       {r.database ? ` / ${r.database}` : ""}
                     </td>
-                    <td className="sql-cell" title={r.sql}>
+                    <td
+                      className="sql-cell copyable"
+                      title={`${r.sql}\n\n（點一下複製 SQL）`}
+                      onClick={() => copySql(r.sql)}
+                    >
                       {firstLine(r.sql)}
                       {r.statement_count > 1 && <span className="muted"> （{r.statement_count} 句）</span>}
                       {r.note && <div className="note-line">📝 {r.note}</div>}
@@ -245,8 +267,13 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
               <span>影響 {detail.affected_rows} 筆</span>
               <span>回傳 {detail.returned_rows} 筆</span>
             </div>
-            <pre className="sql-block">{detail.sql}</pre>
-            <button onClick={() => onOpenInEditor(detail)}>在編輯器中開啟</button>
+            <pre className="sql-block copyable" title="點一下複製 SQL" onClick={() => copySql(detail.sql)}>
+              {detail.sql}
+            </pre>
+            <div className="row-actions">
+              <button onClick={() => copySql(detail.sql)}>複製 SQL</button>
+              <button onClick={() => onOpenInEditor(detail)}>在編輯器中開啟</button>
+            </div>
 
             {detail.error_message && (
               <div className="error-box">
@@ -254,7 +281,15 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                   {detail.error_code ? `錯誤 ${detail.error_code}：` : ""}
                   {detail.error_message}
                 </strong>
-                {detail.failed_statement && <pre>{detail.failed_statement}</pre>}
+                {detail.failed_statement && (
+                  <pre
+                    className="copyable"
+                    title="點一下複製這一句"
+                    onClick={() => copySql(detail.failed_statement!, "出錯的陳述式")}
+                  >
+                    {detail.failed_statement}
+                  </pre>
+                )}
               </div>
             )}
 
@@ -273,7 +308,11 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                 {detail.statements.map((s, i) => (
                   <tr key={i}>
                     <td className="rownum">{i + 1}</td>
-                    <td className="sql-cell" title={s.sql}>
+                    <td
+                      className="sql-cell copyable"
+                      title={`${s.sql}\n\n（點一下複製這一句）`}
+                      onClick={() => copySql(s.sql, `第 ${i + 1} 句`)}
+                    >
                       {firstLine(s.sql)}
                     </td>
                     <td className="num">{ms(s.duration_ms)}</td>
@@ -295,6 +334,8 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
         )}
       </div>
 
+      {toast && <div className="toast">{toast}</div>}
+
       {reportOpen && (
         <ReportDialog
           ids={[...selected]}
@@ -303,6 +344,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
             setReportOpen(false);
             setMessage({ ok: true, text: `報表已儲存到 ${path}` });
           }}
+          onCopied={() => setToast("已複製報表內容")}
         />
       )}
     </div>
@@ -313,18 +355,27 @@ function ReportDialog({
   ids,
   onClose,
   onSaved,
+  onCopied,
 }: {
   ids: number[];
   onClose: () => void;
   onSaved: (path: string) => void;
+  onCopied: () => void;
 }) {
-  const [format, setFormat] = useState<ReportFormat>("markdown");
+  const [format, setFormat] = useState<ExportFormat>("markdown");
+  const [hideConnection, setHideConnection] = useState(true);
   const [title, setTitle] = useState("SQL 執行報表");
   const [includeResults, setIncludeResults] = useState(true);
   const [preview, setPreview] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const options = { format, title, include_results: includeResults, max_result_rows: 20 };
+  const options: ReportOptions = {
+    format: format === "pdf" ? "html" : format,
+    title,
+    include_results: includeResults,
+    max_result_rows: 20,
+    hide_connection: hideConnection,
+  };
 
   useEffect(() => {
     api
@@ -332,9 +383,17 @@ function ReportDialog({
       .then(setPreview)
       .catch((e) => setError(describeError(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, title, includeResults]);
+  }, [format, title, includeResults, hideConnection]);
 
   const saveAs = async () => {
+    if (format === "pdf") {
+      try {
+        await api.printReport(preview);
+      } catch (e) {
+        setError(describeError(e));
+      }
+      return;
+    }
     const day = new Date().toISOString().slice(0, 10);
     const path = await save({
       defaultPath: `sql-report-${day}.${format === "markdown" ? "md" : format}`,
@@ -361,7 +420,7 @@ function ReportDialog({
             </label>
             <label>
               格式
-              <select value={format} onChange={(e) => setFormat(e.target.value as ReportFormat)}>
+              <select value={format} onChange={(e) => setFormat(e.target.value as ExportFormat)}>
                 {FORMATS.map((f) => (
                   <option key={f.value} value={f.value}>
                     {f.label}
@@ -380,9 +439,13 @@ function ReportDialog({
               包含查詢結果（每個結果最多 20 筆）
             </label>
           )}
+          <label className="check">
+            <input type="checkbox" checked={hideConnection} onChange={(e) => setHideConnection(e.target.checked)} />
+            隱藏連線資訊（主機、帳號、IP 改成 ***，連線只顯示名稱）
+          </label>
         </div>
         <div className="report-preview">
-          {format === "html" ? (
+          {format === "html" || format === "pdf" ? (
             <iframe title="預覽" sandbox="" srcDoc={preview} />
           ) : (
             <pre>{preview}</pre>
@@ -390,11 +453,18 @@ function ReportDialog({
         </div>
         {error && <div className="status bad">{error}</div>}
         <div className="actions">
-          <button onClick={() => navigator.clipboard.writeText(preview)}>複製內容</button>
+          <button
+            onClick={async () => {
+              await copyText(preview);
+              onCopied();
+            }}
+          >
+            複製內容
+          </button>
           <span className="spacer" />
           <button onClick={onClose}>取消</button>
           <button className="primary" onClick={saveAs}>
-            另存新檔…
+            {format === "pdf" ? "列印／存成 PDF…" : "另存新檔…"}
           </button>
         </div>
       </div>

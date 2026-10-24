@@ -140,6 +140,8 @@ export interface ReportOptions {
   title?: string | null;
   include_results: boolean;
   max_result_rows: number;
+  /** Leave out hosts, accounts and IP addresses. */
+  hide_connection: boolean;
 }
 
 export interface DatabaseInfo {
@@ -258,6 +260,8 @@ export const api = {
   deleteRecords: (ids: number[]) => invoke<void>("delete_records", { ids }),
   generateReport: (ids: number[], options: ReportOptions) =>
     invoke<string>("generate_report", { ids, options }),
+  /** Opens an HTML report in a print window, where it can be saved as PDF. */
+  printReport: (html: string) => invoke<void>("print_report", { html }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   useDatabase: (sessionId: string, database: string) =>
     invoke<void>("use_database", { sessionId, database }),
