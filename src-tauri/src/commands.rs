@@ -257,6 +257,10 @@ pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) ->
     WebviewWindowBuilder::new(&app, PRINT_WINDOW, WebviewUrl::CustomProtocol(url))
         .title("報表（列印／存成 PDF）")
         .inner_size(900.0, 1000.0)
+        // No webview menu (and its Inspect Element) on the report.
+        .initialization_script(
+            "document.addEventListener('contextmenu', (e) => e.preventDefault());",
+        )
         .on_page_load(|window, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let _ = window.print();

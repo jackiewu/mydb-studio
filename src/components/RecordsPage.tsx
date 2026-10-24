@@ -9,6 +9,7 @@ import {
   type ReportFormat,
   type ReportOptions,
 } from "../api";
+import { openMenu } from "../contextMenu";
 import { copyText } from "../copy";
 
 interface Props {
@@ -217,6 +218,31 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                     key={r.id}
                     className={detail?.id === r.id ? "current" : ""}
                     onClick={() => openDetail(r.id)}
+                    onContextMenu={(e) =>
+                      openMenu(e, [
+                        { label: "複製 SQL", onClick: () => copySql(r.sql) },
+                        {
+                          label: "在編輯器中開啟",
+                          onClick: async () => {
+                            const rec = await api.getRecord(r.id);
+                            if (rec) onOpenInEditor(rec);
+                          },
+                        },
+                        { label: "查看詳細內容", onClick: () => openDetail(r.id) },
+                        "sep",
+                        { label: selected.has(r.id) ? "取消選取" : "選取", onClick: () => toggle(r.id) },
+                        {
+                          label: "用這筆產生報表…",
+                          onClick: () => {
+                            setSelected(new Set([r.id]));
+                            setReportOpen(true);
+                          },
+                        },
+                        ...(r.error_message
+                          ? [{ label: "複製錯誤訊息", onClick: () => copySql(r.error_message ?? "", "錯誤訊息") }]
+                          : []),
+                      ])
+                    }
                   >
                     <td onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
@@ -431,11 +457,7 @@ function ReportDialog({
           </div>
           {format !== "csv" && (
             <label className="check">
-              <input
-                type="checkbox"
-                checked={includeResults}
-                onChange={(e) => setIncludeResults(e.target.checked)}
-              />
+              <input type="checkbox" checked={includeResults} onChange={(e) => setIncludeResults(e.target.checked)} />
               包含查詢結果（每個結果最多 20 筆）
             </label>
           )}

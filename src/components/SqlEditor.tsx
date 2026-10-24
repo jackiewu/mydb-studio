@@ -4,11 +4,15 @@ import { keymap } from "@codemirror/view";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { completeFromList, snippet, snippetCompletion } from "@codemirror/autocomplete";
 import { sql, MySQL, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
+import { selectAll, toggleComment } from "@codemirror/commands";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Snippet } from "../api";
 import { columnSource, type SchemaMap } from "../editor/columns";
 import { statementAt } from "../editor/statements";
 import { allStatements, runTarget, statementMarks, type RunTarget } from "../editor/statementMarks";
 import type { EditorTheme } from "../editor/themes";
+import { openMenu } from "../contextMenu";
+import { copyText } from "../copy";
 
 /** Lets the app insert text into the editor. */
 export interface EditorHandle {
@@ -92,10 +96,7 @@ function snippetSource(snippets: Snippet[]) {
 }
 
 function look(theme: EditorTheme, fontSize: number) {
-  return [
-    theme.extension,
-    EditorView.theme({ "&": { fontSize: `${fontSize}px` } }, { dark: theme.dark }),
-  ];
+  return [theme.extension, EditorView.theme({ "&": { fontSize: `${fontSize}px` } }, { dark: theme.dark })];
 }
 
 export function SqlEditor(props: Props) {
@@ -129,6 +130,59 @@ export function SqlEditor(props: Props) {
       handlers.current.onExplain?.(selectionOr(v));
       return true;
     };
+    const contextMenu = (e: MouseEvent, v: EditorView) => {
+      // Right-clicking outside the selection moves the cursor there first.
+      const at = v.posAtCoords({ x: e.clientX, y: e.clientY });
+      const sel = v.state.selection.main;
+      if (at != null && (at < sel.from || at > sel.to)) v.dispatch({ selection: { anchor: at } });
+      v.focus();
+      const target = runTarget(v.state);
+      const { from, to } = v.state.selection.main;
+      const selected = v.state.sliceDoc(from, to);
+      const runLabel =
+        target.kind === "all"
+          ? `執行全部（${target.count} 句）`
+          : target.count > 1
+            ? `執行多行（${target.count} 句）`
+            : "執行單行";
+      openMenu(e, [
+        { label: `▶ ${runLabel}`, hint: "⌘↵", disabled: target.count === 0, onClick: () => run(v) },
+        ...(target.total > 1 && target.kind !== "all"
+          ? [{ label: `執行全部（${target.total} 句）`, hint: "⌘⇧↵", onClick: () => runAll(v) }]
+          : []),
+        { label: "Explain", hint: "⌘E", disabled: target.count === 0, onClick: () => explain(v) },
+        "sep",
+        {
+          label: "剪下",
+          hint: "⌘X",
+          disabled: !selected,
+          onClick: async () => {
+            await copyText(selected);
+            v.dispatch(v.state.replaceSelection(""));
+            v.focus();
+          },
+        },
+        { label: "複製", hint: "⌘C", disabled: !selected, onClick: () => copyText(selected) },
+        {
+          label: "貼上",
+          hint: "⌘V",
+          onClick: async () => {
+            const text = await readText().catch(() => "");
+            if (text) v.dispatch(v.state.replaceSelection(text), { scrollIntoView: true });
+            v.focus();
+          },
+        },
+        { label: "全選", hint: "⌘A", onClick: () => (selectAll(v), v.focus()) },
+        "sep",
+        { label: "註解／取消註解", hint: "⌘/", onClick: () => (toggleComment(v), v.focus()) },
+        {
+          label: "複製這一句",
+          disabled: target.count === 0,
+          onClick: () => copyText(target.text.trim()),
+        },
+      ]);
+      return true;
+    };
     const report = (state: EditorState, force = false) => {
       if (handlers.current.active === false) return;
       const t = runTarget(state);
@@ -148,6 +202,7 @@ export function SqlEditor(props: Props) {
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
         statementMarks(),
+        EditorView.domEventHandlers({ contextmenu: contextMenu }),
         Prec.highest(
           keymap.of([
             { key: "Mod-Enter", run },

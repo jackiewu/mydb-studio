@@ -11,6 +11,8 @@ import {
   quoteIdent,
   type Snippet,
 } from "./api";
+import { openMenu } from "./contextMenu";
+import { copyText } from "./copy";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
 import { RecordsPage } from "./components/RecordsPage";
@@ -178,7 +180,10 @@ export default function App() {
   const explain = (text: string) => {
     const first = statementRanges(text)[0];
     if (!first) return;
-    const stmt = text.slice(first.from, first.to).trim().replace(/^(explain|analyze)\s+/i, "");
+    const stmt = text
+      .slice(first.from, first.to)
+      .trim()
+      .replace(/^(explain|analyze)\s+/i, "");
     run(`EXPLAIN ${stmt}`, false);
   };
 
@@ -190,6 +195,14 @@ export default function App() {
     } catch (e) {
       setNotice({ text: describeError(e), kind: "error" });
     }
+  };
+
+  const deleteConnection = async (c: ConnectionProfile) => {
+    if (!confirm(`刪除連線「${c.name}」？`)) return;
+    await api.deleteConnection(c.id);
+    if (session?.connection_id === c.id) await disconnect();
+    setEditing(null);
+    await reload();
   };
 
   const openTable = (db: string, table: string) =>
@@ -348,9 +361,32 @@ export default function App() {
                     key={t.key}
                     role="tab"
                     aria-selected={t.key === tab?.key}
-                    className={["tab", t.key === tab?.key ? "active" : "", t.pinnedId != null ? "pinned" : ""].join(" ")}
+                    className={["tab", t.key === tab?.key ? "active" : "", t.pinnedId != null ? "pinned" : ""].join(
+                      " ",
+                    )}
                     onClick={() => tabs.setActive(t.key)}
                     onAuxClick={(e) => e.button === 1 && tabs.close(t.key)}
+                    onContextMenu={(e) =>
+                      openMenu(e, [
+                        {
+                          label: t.pinnedId != null ? "取消釘選" : "釘選（下次打開這個連線時還原）",
+                          onClick: () => tabs.togglePin(t.key),
+                        },
+                        {
+                          label: t.recording ? "停止記錄這個分頁" : "記錄這個分頁的執行",
+                          onClick: () => tabs.update(t.key, { recording: !t.recording }),
+                        },
+                        { label: "複製分頁內的 SQL", disabled: !t.sql.trim(), onClick: () => copyText(t.sql) },
+                        "sep",
+                        { label: "新分頁", hint: "⌘T", onClick: () => tabs.add() },
+                        { label: "關閉", onClick: () => tabs.close(t.key) },
+                        {
+                          label: "關閉其他未釘選的分頁",
+                          disabled: !tabs.tabs.some((o) => o.key !== t.key && o.pinnedId == null),
+                          onClick: () => tabs.closeOthers(t.key),
+                        },
+                      ])
+                    }
                     title={t.sql.slice(0, 300)}
                   >
                     <button
@@ -364,7 +400,11 @@ export default function App() {
                       📌
                     </button>
                     <span className="tab-title">{tabTitle(t.sql, `查詢 ${i + 1}`)}</span>
-                    {t.recording && <span className="tab-rec" title="這個分頁會記錄執行">●</span>}
+                    {t.recording && (
+                      <span className="tab-rec" title="這個分頁會記錄執行">
+                        ●
+                      </span>
+                    )}
                     <button
                       className="close"
                       title={t.pinnedId != null ? "關閉並取消保留" : "關閉"}
@@ -411,6 +451,10 @@ export default function App() {
             onEdit={setEditing}
             onNew={() => setEditing(newProfile())}
             onToggleFavorite={toggleFavorite}
+            onDuplicate={(c) =>
+              setEditing({ ...c, id: "", name: `${c.name} 的副本`, favorite: false, last_used_at: null })
+            }
+            onDelete={deleteConnection}
             onOpenRecords={() => setView("records")}
             onOpenSettings={() => setDialog("settings")}
           />
@@ -427,17 +471,7 @@ export default function App() {
               setEditing(null);
               await reload();
             }}
-            onDelete={
-              editing.id
-                ? async () => {
-                    if (!confirm(`刪除連線「${editing.name}」？`)) return;
-                    await api.deleteConnection(editing.id);
-                    if (session?.connection_id === editing.id) await disconnect();
-                    setEditing(null);
-                    await reload();
-                  }
-                : undefined
-            }
+            onDelete={editing.id ? () => deleteConnection(editing) : undefined}
           />
         </div>
       )}

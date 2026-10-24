@@ -1,3 +1,4 @@
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Cell, ColumnInfo } from "./api";
 
 export type CopyFormat = "tsv" | "csv" | "json" | "insert" | "insert_batch" | "markdown";
@@ -104,7 +105,7 @@ export function fileExtension(format: CopyFormat) {
 
 export async function copyText(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeText(text);
   } catch {
     // Older webviews: fall back to a temporary textarea.
     const ta = document.createElement("textarea");

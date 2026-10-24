@@ -467,3 +467,10 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
   padding: 6px 14px; border-radius: 6px; font-size: 13px;
   background: var(--text); color: var(--bg); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
 }
+.context-menu button { display: flex; gap: 16px; align-items: center; color: var(--text); }
+.context-menu button:hover { background: var(--accent); color: var(--accent-text); }
+.context-menu button .hint { margin-left: auto; color: var(--muted); font-size: 11px; }
+.context-menu button:hover .hint { color: inherit; }
+.context-menu button:disabled { opacity: 0.45; background: none; color: var(--text); cursor: default; }
+.context-menu button.danger-item { color: var(--bad); }
+.context-menu button.danger-item:hover { background: var(--bad); color: #fff; }

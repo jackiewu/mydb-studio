@@ -1,4 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { quoteIdent } from "../api";
+import { openMenu } from "../contextMenu";
+import { copyText } from "../copy";
 import { SYSTEM_DBS, type Schema } from "../schema";
 
 interface Props {
@@ -85,7 +88,8 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
     <div className="schema">
       <div className="sidebar-head">
         <span>
-          資料庫 {dbs && <small className="muted">({filter ? `${visible.length}/${shown.length}` : shown.length})</small>}
+          資料庫{" "}
+          {dbs && <small className="muted">({filter ? `${visible.length}/${shown.length}` : shown.length})</small>}
         </span>
         <button className="small ghost" title="重新整理" onClick={reload}>
           ⟳
@@ -101,7 +105,9 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
           onKeyDown={(e) => e.key === "Escape" && setFilterText("")}
         />
       </div>
-      {filter && dbs && visible.length === 0 && <div className="hint pad">沒有符合「{filterText.trim()}」的資料庫或資料表</div>}
+      {filter && dbs && visible.length === 0 && (
+        <div className="hint pad">沒有符合「{filterText.trim()}」的資料庫或資料表</div>
+      )}
       {error && <div className="schema-error">{error}</div>}
       {!dbs && !error && <div className="hint pad">載入中…</div>}
       <ul className="tree">
@@ -109,9 +115,7 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
           const onlyTables = forcedOpen.includes(d.name);
           const loaded = tables[d.name];
           const list =
-            onlyTables && Array.isArray(loaded)
-              ? loaded.filter((t) => t.name.toLowerCase().includes(filter))
-              : loaded;
+            onlyTables && Array.isArray(loaded) ? loaded.filter((t) => t.name.toLowerCase().includes(filter)) : loaded;
           const isOpen = open.has(d.name) || onlyTables;
           const isCurrent = d.name === currentDb;
           return (
@@ -127,6 +131,23 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                   expand(d.name, true);
                   onUseDatabase(d.name);
                 }}
+                onContextMenu={(e) =>
+                  openMenu(e, [
+                    {
+                      label: "使用這個資料庫（USE）",
+                      disabled: isCurrent,
+                      onClick: () => {
+                        expand(d.name, true);
+                        onUseDatabase(d.name);
+                      },
+                    },
+                    { label: isOpen ? "收合" : "展開", disabled: onlyTables, onClick: () => expand(d.name, !isOpen) },
+                    "sep",
+                    { label: "複製名稱", onClick: () => copyText(d.name) },
+                    "sep",
+                    { label: "重新整理清單", onClick: reload },
+                  ])
+                }
               >
                 <span className="caret">{isOpen ? "▾" : "▸"}</span>
                 <span className="tree-name">{highlight(d.name, filter)}</span>
@@ -152,6 +173,19 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                             .filter(Boolean)
                             .join(" · ")}
                           onClick={() => onOpenTable(d.name, t.name)}
+                          onContextMenu={(e) => {
+                            const full = `${quoteIdent(d.name)}.${quoteIdent(t.name)}`;
+                            openMenu(e, [
+                              { label: "查詢前 100 筆", onClick: () => onOpenTable(d.name, t.name) },
+                              "sep",
+                              { label: "複製名稱", onClick: () => copyText(t.name) },
+                              { label: `複製完整名稱（${d.name}.${t.name}）`, onClick: () => copyText(full) },
+                              {
+                                label: "複製 SELECT 語句",
+                                onClick: () => copyText(`SELECT * FROM ${full} LIMIT 100;`),
+                              },
+                            ]);
+                          }}
                         >
                           <span className="icon">{t.kind.includes("VIEW") ? "◇" : "▤"}</span>
                           <span className="tree-name">{highlight(t.name, filter)}</span>

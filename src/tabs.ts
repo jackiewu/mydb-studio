@@ -191,6 +191,12 @@ export function useTabs(connectionId: string | null, recordByDefault: boolean) {
     [connectionId, update],
   );
 
+  /** Closes every unpinned tab except `key`. */
+  const closeOthers = useCallback((key: string) => {
+    setTabs((list) => list.filter((t) => t.key === key || t.pinnedId != null));
+    setActiveKey(key);
+  }, []);
+
   /** Puts `sql` in a tab's editor, replacing what was there. */
   const replaceSql = useCallback(
     (key: string, sql: string) => {
@@ -201,5 +207,5 @@ export function useTabs(connectionId: string | null, recordByDefault: boolean) {
   );
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
-  return { tabs, active, setActive: setActiveKey, add, close, togglePin, setSql, replaceSql, update, flush };
+  return { tabs, active, setActive: setActiveKey, add, close, closeOthers, togglePin, setSql, replaceSql, update, flush };
 }

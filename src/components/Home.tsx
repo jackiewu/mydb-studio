@@ -1,4 +1,6 @@
 import type { ConnectionProfile } from "../api";
+import { openMenu } from "../contextMenu";
+import { copyText } from "../copy";
 
 interface Props {
   connections: ConnectionProfile[];
@@ -7,6 +9,9 @@ interface Props {
   onEdit: (c: ConnectionProfile) => void;
   onNew: () => void;
   onToggleFavorite: (c: ConnectionProfile) => void;
+  /** Opens the form with a copy of `c`, saved as a new connection. */
+  onDuplicate: (c: ConnectionProfile) => void;
+  onDelete: (c: ConnectionProfile) => void;
   onOpenRecords: () => void;
   onOpenSettings: () => void;
 }
@@ -21,9 +26,38 @@ function lastUsed(iso?: string | null) {
   return `${Math.round(hours / 24)} 天前使用`;
 }
 
-function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Pick<Props, "connecting" | "onConnect" | "onEdit" | "onToggleFavorite"> & { c: ConnectionProfile }) {
+type CardProps = Pick<Props, "connecting" | "onConnect" | "onEdit" | "onToggleFavorite" | "onDuplicate" | "onDelete">;
+
+function Card({
+  c,
+  connecting,
+  onConnect,
+  onEdit,
+  onToggleFavorite,
+  onDuplicate,
+  onDelete,
+}: CardProps & { c: ConnectionProfile }) {
+  const address = `${c.user}@${c.host}:${c.port}`;
   return (
-    <div className="card" onClick={() => onConnect(c)} role="button" tabIndex={0}>
+    <div
+      className="card"
+      onClick={() => onConnect(c)}
+      role="button"
+      tabIndex={0}
+      onContextMenu={(e) =>
+        openMenu(e, [
+          { label: "連線", onClick: () => onConnect(c) },
+          { label: "編輯…", onClick: () => onEdit(c) },
+          { label: "複製一份連線…", onClick: () => onDuplicate(c) },
+          { label: c.favorite ? "取消最愛" : "加入最愛", onClick: () => onToggleFavorite(c) },
+          "sep",
+          { label: `複製位址（${address}）`, onClick: () => copyText(address) },
+          { label: "複製名稱", onClick: () => copyText(c.name) },
+          "sep",
+          { label: "刪除…", danger: true, onClick: () => onDelete(c) },
+        ])
+      }
+    >
       <div className="card-head">
         <strong>{c.name}</strong>
         <button
@@ -38,7 +72,7 @@ function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Pick<Props
         </button>
       </div>
       <div className="card-addr">
-        {c.user}@{c.host}:{c.port}
+        {address}
         {c.database ? ` / ${c.database}` : ""}
       </div>
       <div className="card-foot">
@@ -49,16 +83,28 @@ function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Pick<Props
         {connecting === c.id ? (
           <span className="spinner" />
         ) : (
-          <button
-            className="small ghost"
-            title="編輯"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(c);
-            }}
-          >
-            ✎
-          </button>
+          <>
+            <button
+              className="small ghost"
+              title="複製一份連線"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicate(c);
+              }}
+            >
+              ⧉
+            </button>
+            <button
+              className="small ghost"
+              title="編輯"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(c);
+              }}
+            >
+              ✎
+            </button>
+          </>
         )}
       </div>
     </div>
