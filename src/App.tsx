@@ -6,8 +6,11 @@ import {
   type ConnectionProfile,
   type ExecutionOutcome,
   type OpenedSession,
+  quoteIdent,
 } from "./api";
 import { ConnectionForm } from "./components/ConnectionForm";
+import { Home } from "./components/Home";
+import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SqlEditor } from "./components/SqlEditor";
 import "./styles.css";
@@ -17,7 +20,7 @@ export default function App() {
   const [editing, setEditing] = useState<ConnectionProfile | null>(null);
   const [session, setSession] = useState<OpenedSession | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
   const [sql, setSql] = useState("SELECT VERSION();");
   const [running, setRunning] = useState(false);
   const [outcome, setOutcome] = useState<ExecutionOutcome | null>(null);
@@ -27,7 +30,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    reload().catch((e) => setNotice(describeError(e)));
+    reload().catch((e) => setNotice({ text: describeError(e), kind: "error" }));
   }, [reload]);
 
   const connect = async (c: ConnectionProfile) => {
@@ -37,11 +40,11 @@ export default function App() {
       if (session) await api.closeSession(session.session_id);
       setSession(await api.openSession(c.id));
       setOutcome(null);
-      // A first SSH connect stores the host fingerprint in the profile.
-      if (c.ssh && !c.ssh.known_host_fingerprint) await reload();
+      // Refresh last-used ordering (and a first-time SSH host fingerprint).
+      await reload();
     } catch (e) {
       setSession(null);
-      setNotice(describeError(e));
+      setNotice({ text: describeError(e), kind: "error" });
     } finally {
       setConnecting(null);
     }
@@ -58,69 +61,65 @@ export default function App() {
     if (!session || running || !text.trim()) return;
     setRunning(true);
     try {
-      setOutcome(await api.execute(session.session_id, text));
+      const result = await api.execute(session.session_id, text);
+      setOutcome(result);
+      setNotice(
+        result.reconnected
+          ? {
+              text: "連線曾中斷，已自動重新連線。session 變數、暫存表和未提交的交易都已重設。",
+              kind: "info",
+            }
+          : null,
+      );
     } catch (e) {
-      setNotice(describeError(e));
+      setNotice({ text: describeError(e), kind: "error" });
     } finally {
       setRunning(false);
     }
   };
+
+  const toggleFavorite = async (c: ConnectionProfile) => {
+    await api.setFavorite(c.id, !c.favorite);
+    await reload();
+  };
+
+  const openTable = (db: string, table: string) =>
+    run(`SELECT * FROM ${quoteIdent(db)}.${quoteIdent(table)} LIMIT 100;`);
 
   const active = connections.find((c) => c.id === session?.connection_id);
   const isMaria = !!session?.info.server_version.toLowerCase().includes("mariadb");
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="sidebar-head">
-          <span>連線</span>
-          <button className="small" onClick={() => setEditing(newProfile())}>
-            ＋ 新增
-          </button>
-        </div>
-        <ul className="conn-list">
-          {connections.map((c) => (
-            <li key={c.id} className={c.id === session?.connection_id ? "active" : ""}>
-              <button className="conn-name" onClick={() => connect(c)}>
-                <span>{c.name}</span>
-                <small>
-                  {c.user}@{c.host}:{c.port}
-                  {c.ssl.mode !== "disabled" && " · TLS"}
-                  {c.ssh && " · SSH"}
-                </small>
-              </button>
-              <button className="small ghost" title="編輯" onClick={() => setEditing(c)}>
-                ✎
-              </button>
-              {connecting === c.id && <span className="spinner" />}
-            </li>
-          ))}
-          {connections.length === 0 && <li className="hint">還沒有連線，按「＋ 新增」建立一個。</li>}
-        </ul>
-      </aside>
+      {session && active && (
+        <aside className="sidebar">
+          <div className="sidebar-head">
+            <button className="small ghost" onClick={disconnect} title="中斷連線並回到首頁">
+              ← 所有連線
+            </button>
+          </div>
+          <SchemaTree key={session.session_id} sessionId={session.session_id} onOpenTable={openTable} />
+        </aside>
+      )}
 
       <main className="workspace">
-        <header className="topbar">
-          {session && active ? (
-            <>
-              <strong>{active.name}</strong>
-              <span className="badge">{session.info.server_version}</span>
-              {session.info.tls && <span className="badge good">TLS</span>}
-              {active.ssh && <span className="badge good">SSH</span>}
-              <span className="spacer" />
-              <button className="primary" disabled={running} onClick={() => run(sql)}>
-                {running ? "執行中…" : "▶ 執行"}
-              </button>
-              <button onClick={disconnect}>中斷連線</button>
-            </>
-          ) : (
-            <span className="muted">點左側的連線開始。</span>
-          )}
-        </header>
+        {session && active && (
+          <header className="topbar">
+            <strong>{active.name}</strong>
+            <span className="badge">{session.info.server_version}</span>
+            {session.info.tls && <span className="badge good">TLS</span>}
+            {active.ssh && <span className="badge good">SSH</span>}
+            <span className="spacer" />
+            <button className="primary" disabled={running} onClick={() => run(sql)}>
+              {running ? "執行中…" : "▶ 執行"}
+            </button>
+            <button onClick={disconnect}>中斷連線</button>
+          </header>
+        )}
 
         {notice && (
-          <div className="notice" onClick={() => setNotice(null)}>
-            {notice}
+          <div className={`notice ${notice.kind}`} onClick={() => setNotice(null)} title="點一下關閉">
+            {notice.text}
           </div>
         )}
 
@@ -130,10 +129,14 @@ export default function App() {
             <ResultsPanel outcome={outcome} />
           </div>
         ) : (
-          <div className="welcome">
-            <h1>MyDB Studio</h1>
-            <p>MySQL / MariaDB 用戶端，支援 SSL/TLS 與 SSH 通道。</p>
-          </div>
+          <Home
+            connections={connections}
+            connecting={connecting}
+            onConnect={connect}
+            onEdit={setEditing}
+            onNew={() => setEditing(newProfile())}
+            onToggleFavorite={toggleFavorite}
+          />
         )}
       </main>
 

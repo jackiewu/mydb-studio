@@ -18,6 +18,13 @@ pub struct ConnectionProfile {
     pub ssl: SslConfig,
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Starred connections sort first on the home screen and sidebar.
+    #[serde(default)]
+    pub favorite: bool,
+    /// When this connection was last opened (RFC 3339). Maintained by the
+    /// store; ignored when saving.
+    #[serde(default)]
+    pub last_used_at: Option<String>,
 }
 
 impl ConnectionProfile {
@@ -32,6 +39,8 @@ impl ConnectionProfile {
             database: None,
             ssl: SslConfig::default(),
             ssh: None,
+            favorite: false,
+            last_used_at: None,
         }
     }
 }

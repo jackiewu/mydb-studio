@@ -124,9 +124,57 @@ input, select {
   color: var(--bad);
   cursor: pointer;
 }
+.notice.info { border-color: var(--warn); color: var(--warn); }
 
-.welcome { margin: auto; text-align: center; color: var(--muted); }
-.welcome h1 { color: var(--text); font-weight: 600; }
+.home { flex: 1; overflow: auto; padding: 24px 28px; }
+.home-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.home h1 { font-size: 22px; font-weight: 600; margin: 0; }
+.home h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 20px 0 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.card:hover { border-color: var(--accent); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-addr { font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.empty-state { text-align: center; color: var(--muted); padding: 60px 0; }
+.small-text { font-size: 12px; }
+
+.star { border: none; background: none; padding: 0 4px; color: var(--muted); font-size: 15px; line-height: 1; }
+.star.on { color: #e3a008; }
+
+.schema { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.schema-error { color: var(--bad); font-size: 12px; padding: 8px 12px; }
+.pad { padding: 4px 12px; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree { overflow: auto; flex: 1; padding: 4px 0; }
+.tree ul { padding-left: 14px; }
+.tree-db, .tree-table {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+.tree-db:hover, .tree-table:hover { background: var(--code-bg); }
+.tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree .caret, .tree .icon { color: var(--muted); width: 12px; flex-shrink: 0; font-size: 11px; }
+.tree .count { color: var(--muted); font-size: 11px; }
+.schema > .link { text-align: left; padding: 8px 12px; color: var(--muted); }
 
 .split {
   flex: 1;

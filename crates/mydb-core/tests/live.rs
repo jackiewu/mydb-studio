@@ -217,3 +217,77 @@ async fn ssh_tunnel_with_tls_checks_real_host_name() {
     let session = Session::connect(&profile).await.unwrap();
     assert!(session.info().tls);
 }
+
+async fn connection_id(session: &Session) -> String {
+    let out = session.execute("SELECT CONNECTION_ID()", 1).await;
+    out.results[0].rows[0][0].as_str().unwrap().to_string()
+}
+
+/// Simulates the server dropping an idle connection (`wait_timeout`).
+async fn kill_from_outside(profile: &ConnectionProfile, id: &str) {
+    let admin = Session::connect(profile).await.unwrap();
+    let out = admin.execute(&format!("KILL {id}"), 1).await;
+    assert!(out.error.is_none(), "{:?}", out.error);
+    admin.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reconnects_after_server_drops_connection() {
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    let out = session.execute("USE demo", 1).await;
+    assert!(out.error.is_none() && !out.reconnected);
+    let before = connection_id(&session).await;
+
+    kill_from_outside(&profile, &before).await;
+
+    let out = session.execute("SELECT DATABASE()", 1).await;
+    assert!(out.error.is_none(), "{:?}", out.error);
+    assert!(out.reconnected);
+    // The database chosen with USE survives the reconnect.
+    assert_eq!(out.results[0].rows[0][0], serde_json::json!("demo"));
+    assert_ne!(connection_id(&session).await, before);
+}
+
+#[tokio::test]
+async fn reconnects_through_ssh_tunnel() {
+    let mut profile = profile_or_skip!();
+    let Some(ssh) = ssh_config() else {
+        return;
+    };
+    let direct = profile.clone();
+    profile.ssh = Some(ssh);
+    let session = Session::connect(&profile).await.unwrap();
+    let before = connection_id(&session).await;
+    kill_from_outside(&direct, &before).await;
+    let out = session.execute("SELECT 1", 1).await;
+    assert!(out.error.is_none(), "{:?}", out.error);
+    assert!(out.reconnected);
+}
+
+#[tokio::test]
+async fn lists_databases_and_tables() {
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    session
+        .execute(
+            "CREATE TABLE IF NOT EXISTS demo.mydb_list_a (id INT PRIMARY KEY);
+             CREATE OR REPLACE VIEW demo.mydb_list_v AS SELECT 1 AS x;",
+            1,
+        )
+        .await;
+    let dbs = session.list_databases().await.unwrap();
+    let demo = dbs.iter().find(|d| d.name == "demo").expect("demo listed");
+    assert!(demo.table_count >= 2);
+    assert!(dbs.iter().any(|d| d.name == "information_schema"));
+
+    let tables = session.list_tables("demo").await.unwrap();
+    let a = tables.iter().find(|t| t.name == "mydb_list_a").unwrap();
+    assert_eq!(a.kind, "BASE TABLE");
+    assert!(a.engine.is_some());
+    let v = tables.iter().find(|t| t.name == "mydb_list_v").unwrap();
+    assert_eq!(v.kind, "VIEW");
+    session
+        .execute("DROP VIEW demo.mydb_list_v; DROP TABLE demo.mydb_list_a", 1)
+        .await;
+}

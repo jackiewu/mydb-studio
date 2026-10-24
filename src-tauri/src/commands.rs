@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mydb_core::{
-    ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, ExecutionOutcome, Result, Session, SessionInfo,
-    Store,
+    ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Result,
+    Session, SessionInfo, Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::State;
@@ -56,6 +56,11 @@ pub fn save_connection(
 }
 
 #[tauri::command]
+pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<()> {
+    state.store.lock().unwrap().set_favorite(&id, favorite)
+}
+
+#[tauri::command]
 pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
     state.store.lock().unwrap().delete_connection(&id)
 }
@@ -93,6 +98,12 @@ pub async fn open_session(
         state.store.lock().unwrap().save_connection(&profile)?;
     }
 
+    state
+        .store
+        .lock()
+        .unwrap()
+        .touch_connection(&connection_id)?;
+
     let session_id = uuid_v4();
     state
         .sessions
@@ -127,6 +138,27 @@ pub async fn execute(
     Ok(session
         .execute(&sql, max_rows.unwrap_or(DEFAULT_MAX_ROWS))
         .await)
+}
+
+#[tauri::command]
+pub async fn list_databases(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<DatabaseInfo>> {
+    state.session(&session_id).await?.list_databases().await
+}
+
+#[tauri::command]
+pub async fn list_tables(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> Result<Vec<TableInfo>> {
+    state
+        .session(&session_id)
+        .await?
+        .list_tables(&database)
+        .await
 }
 
 fn uuid_v4() -> String {

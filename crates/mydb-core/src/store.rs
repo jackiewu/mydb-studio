@@ -17,6 +17,8 @@ const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );",
+    // 2: recently used ordering
+    "ALTER TABLE connections ADD COLUMN last_used_at TEXT;",
 ];
 
 pub struct Store {
@@ -53,16 +55,47 @@ impl Store {
         Ok(())
     }
 
+    /// Saved connections: favorites first, then most recently used, then by
+    /// name.
     pub fn list_connections(&self) -> Result<Vec<ConnectionProfile>> {
         let mut stmt = self
             .db
-            .prepare("SELECT profile FROM connections ORDER BY name COLLATE NOCASE")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            .prepare("SELECT profile, last_used_at FROM connections")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
         let mut out = Vec::new();
-        for json in rows {
-            out.push(serde_json::from_str(&json?)?);
+        for row in rows {
+            let (json, last_used_at) = row?;
+            let mut profile: ConnectionProfile = serde_json::from_str(&json)?;
+            profile.last_used_at = last_used_at;
+            out.push(profile);
         }
+        out.sort_by(|a, b| {
+            b.favorite
+                .cmp(&a.favorite)
+                // RFC 3339 strings sort chronologically; None sorts last.
+                .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         Ok(out)
+    }
+
+    /// Records that a connection was just opened.
+    pub fn touch_connection(&self, id: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE connections SET last_used_at = ?2 WHERE id = ?1",
+            params![id, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_favorite(&self, id: &str, favorite: bool) -> Result<()> {
+        if let Some(mut profile) = self.get_connection(id)? {
+            profile.favorite = favorite;
+            self.save_connection(&profile)?;
+        }
+        Ok(())
     }
 
     pub fn get_connection(&self, id: &str) -> Result<Option<ConnectionProfile>> {
@@ -83,7 +116,14 @@ impl Store {
                name = excluded.name,
                profile = excluded.profile,
                updated_at = datetime('now')",
-            params![profile.id, profile.name, serde_json::to_string(profile)?],
+            params![
+                profile.id,
+                profile.name,
+                serde_json::to_string(&ConnectionProfile {
+                    last_used_at: None,
+                    ..profile.clone()
+                })?
+            ],
         )?;
         Ok(())
     }
@@ -122,6 +162,34 @@ mod tests {
         store.delete_connection(&a.id).unwrap();
         assert_eq!(store.list_connections().unwrap().len(), 1);
         assert!(store.get_connection(&a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn favorites_then_recent_then_name() {
+        let store = Store::open_in_memory().unwrap();
+        let a = ConnectionProfile::new("a", "h", "u");
+        let b = ConnectionProfile::new("b", "h", "u");
+        let c = ConnectionProfile::new("c", "h", "u");
+        let d = ConnectionProfile::new("d", "h", "u");
+        for p in [&a, &b, &c, &d] {
+            store.save_connection(p).unwrap();
+        }
+        store.touch_connection(&c.id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.touch_connection(&b.id).unwrap();
+        store.set_favorite(&d.id, true).unwrap();
+
+        let list = store.list_connections().unwrap();
+        let names: Vec<_> = list.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["d", "b", "c", "a"]);
+        assert!(list[0].favorite);
+        assert!(list[1].last_used_at.is_some());
+
+        // Saving an edited profile keeps its usage time.
+        let mut b2 = list[1].clone();
+        b2.port = 3307;
+        store.save_connection(&b2).unwrap();
+        assert_eq!(store.list_connections().unwrap()[1].name, "b");
     }
 
     #[test]

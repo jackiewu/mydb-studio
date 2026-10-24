@@ -33,6 +33,8 @@ export interface ConnectionProfile {
   database?: string | null;
   ssl: SslConfig;
   ssh?: SshConfig | null;
+  favorite?: boolean;
+  last_used_at?: string | null;
 }
 
 export interface SessionInfo {
@@ -72,7 +74,7 @@ export interface StatementResult {
 export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
-  | { kind: "driver" | "ssh" | "io" | "store" | "config"; message: string }
+  | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config"; message: string }
   | { kind: "not_connected"; id: string };
 
 export interface ExecutionOutcome {
@@ -81,6 +83,21 @@ export interface ExecutionOutcome {
   results: StatementResult[];
   error?: CoreError | null;
   failed_statement?: string | null;
+  reconnected: boolean;
+}
+
+export interface DatabaseInfo {
+  name: string;
+  table_count: number;
+}
+
+export interface TableInfo {
+  name: string;
+  kind: string;
+  engine?: string | null;
+  rows_estimate?: number | null;
+  size_bytes?: number | null;
+  comment: string;
 }
 
 export function newProfile(): ConnectionProfile {
@@ -105,6 +122,8 @@ export function describeError(e: unknown): string {
       return `錯誤 ${err.code} (${err.state})：${err.message}`;
     case "host_key_mismatch":
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
+    case "connection":
+      return `連線中斷：${err.message}`;
     case "not_connected":
       return "連線已關閉，請重新連線。";
     case undefined:
@@ -119,6 +138,7 @@ export const api = {
   saveConnection: (profile: ConnectionProfile) =>
     invoke<ConnectionProfile>("save_connection", { profile }),
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
+  setFavorite: (id: string, favorite: boolean) => invoke<void>("set_favorite", { id, favorite }),
   testConnection: (profile: ConnectionProfile) =>
     invoke<SessionInfo>("test_connection", { profile }),
   openSession: (connectionId: string) =>
@@ -126,4 +146,12 @@ export const api = {
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
   execute: (sessionId: string, sql: string, maxRows?: number) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows }),
+  listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
+  listTables: (sessionId: string, database: string) =>
+    invoke<TableInfo[]>("list_tables", { sessionId, database }),
 };
+
+/** Quotes an identifier with backticks. */
+export function quoteIdent(name: string): string {
+  return "`" + name.replace(/`/g, "``") + "`";
+}

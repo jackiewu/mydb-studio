@@ -15,6 +15,9 @@ pub enum CoreError {
     },
     #[error("driver error: {message}")]
     Driver { message: String },
+    /// The network connection to the server failed or was closed.
+    #[error("connection error: {message}")]
+    Connection { message: String },
     #[error("SSH error: {message}")]
     Ssh { message: String },
     #[error("SSH host key for {host} changed (expected {expected}, got {actual})")]
@@ -42,6 +45,14 @@ impl From<mysql_async::Error> for CoreError {
                 code: e.code,
                 state: e.state,
                 message: e.message,
+            },
+            // The driver's Display repeats "Input/output error" for both
+            // layers, so report the innermost message only.
+            mysql_async::Error::Io(mysql_async::IoError::Io(e)) => CoreError::Connection {
+                message: e.to_string(),
+            },
+            mysql_async::Error::Io(e) => CoreError::Connection {
+                message: e.to_string(),
             },
             other => CoreError::Driver {
                 message: other.to_string(),

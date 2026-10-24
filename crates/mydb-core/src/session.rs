@@ -17,9 +17,20 @@ use crate::tunnel::SshTunnel;
 pub const DEFAULT_MAX_ROWS: usize = 1000;
 
 /// An open connection, possibly running through an SSH tunnel.
+///
+/// If the server drops the connection (for example after `wait_timeout`),
+/// the next call reconnects transparently, re-opening the tunnel if needed
+/// and returning to the database selected with `USE`.
 pub struct Session {
-    conn: Mutex<Conn>,
+    profile: ConnectionProfile,
+    link: Mutex<Option<Link>>,
     info: SessionInfo,
+    /// Database chosen with `USE`, restored after a reconnect.
+    current_db: std::sync::Mutex<Option<String>>,
+}
+
+struct Link {
+    conn: Conn,
     // Declared after `conn` so the tunnel outlives the connection on drop.
     _tunnel: Option<SshTunnel>,
 }
@@ -67,48 +78,59 @@ pub struct ExecutionOutcome {
     pub error: Option<CoreError>,
     /// The statement that raised `error`, when it came from one.
     pub failed_statement: Option<String>,
+    /// The connection had been lost and was re-established before running.
+    pub reconnected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DatabaseInfo {
+    pub name: String,
+    pub table_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TableInfo {
+    pub name: String,
+    /// `BASE TABLE`, `VIEW`, `SYSTEM VIEW`, ...
+    pub kind: String,
+    pub engine: Option<String>,
+    /// InnoDB's estimate, not an exact count.
+    pub rows_estimate: Option<u64>,
+    /// Data plus index size in bytes.
+    pub size_bytes: Option<u64>,
+    pub comment: String,
 }
 
 impl Session {
     pub async fn connect(profile: &ConnectionProfile) -> Result<Self> {
-        let tunnel = match &profile.ssh {
-            Some(ssh) => Some(SshTunnel::open(ssh, &profile.host, profile.port).await?),
-            None => None,
-        };
-        let (host, port) = match &tunnel {
-            Some(t) => ("127.0.0.1".to_string(), t.local_port()),
-            None => (profile.host.clone(), profile.port),
-        };
-
-        let mut opts = OptsBuilder::default()
-            .ip_or_hostname(host)
-            .tcp_port(port)
-            .user(Some(profile.user.clone()))
-            .pass(profile.password.clone())
-            .db_name(profile.database.clone().filter(|d| !d.is_empty()))
-            .prefer_socket(false);
-        let tls = profile.ssl.mode != SslMode::Disabled;
-        if tls {
-            opts = opts.ssl_opts(ssl_opts(profile)?);
-        }
-
-        let mut conn = Conn::new(opts).await?;
-        let server_version: Option<String> = conn.query_first("SELECT VERSION()").await?;
-        let info = SessionInfo {
-            server_version: server_version.unwrap_or_default(),
-            connection_id: conn.id(),
-            tls,
-            ssh_host_fingerprint: tunnel.as_ref().map(|t| t.host_fingerprint().to_string()),
-        };
+        let (link, info) = open_link(profile, None).await?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            profile: profile.clone(),
+            link: Mutex::new(Some(link)),
             info,
-            _tunnel: tunnel,
+            current_db: std::sync::Mutex::new(None),
         })
     }
 
     pub fn info(&self) -> &SessionInfo {
         &self.info
+    }
+
+    /// Returns a live connection, reconnecting if the old one is gone.
+    /// The bool is true when a reconnect happened.
+    async fn live<'a>(&self, link: &'a mut Option<Link>) -> Result<(&'a mut Conn, bool)> {
+        let alive = match link.as_mut() {
+            Some(l) => l.conn.ping().await.is_ok(),
+            None => false,
+        };
+        if !alive {
+            // Drop the dead link (and its tunnel) before opening a new one.
+            *link = None;
+            let db = self.current_db.lock().unwrap().clone();
+            let (new_link, _) = open_link(&self.profile, db).await?;
+            *link = Some(new_link);
+        }
+        Ok((&mut link.as_mut().unwrap().conn, !alive))
     }
 
     /// Runs `sql` (one or more statements) and collects every result set,
@@ -117,30 +139,155 @@ impl Session {
         let started_at = Utc::now();
         let timer = Instant::now();
         let mut results = Vec::new();
-        let mut conn = self.conn.lock().await;
         let mut failed_statement = None;
-        let error = run(
-            &mut conn,
-            sql,
-            max_rows,
-            &mut results,
-            &mut failed_statement,
-        )
-        .await
-        .err();
+        let mut reconnected = false;
+        let mut guard = self.link.lock().await;
+
+        let error = match self.live(&mut guard).await {
+            Err(e) => Some(e),
+            Ok((conn, r)) => {
+                reconnected = r;
+                let res = run(conn, sql, max_rows, &mut results, &mut failed_statement).await;
+                if results.iter().any(|r| is_use(&r.sql))
+                    && let Ok(db) = conn
+                        .query_first::<Option<String>, _>("SELECT DATABASE()")
+                        .await
+                {
+                    *self.current_db.lock().unwrap() = db.flatten();
+                }
+                res.err()
+            }
+        };
+        // Anything but a server-reported error may have broken the link;
+        // the ping on the next call decides whether to reconnect.
         ExecutionOutcome {
             started_at,
             duration_ms: timer.elapsed().as_secs_f64() * 1000.0,
             results,
             error,
             failed_statement,
+            reconnected,
         }
     }
 
+    /// Databases visible to this user, with their table counts.
+    pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let rows: Vec<(String, u64)> = conn
+            .query(
+                "SELECT s.SCHEMA_NAME, COUNT(t.TABLE_NAME)
+                 FROM information_schema.SCHEMATA s
+                 LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME
+                 GROUP BY s.SCHEMA_NAME
+                 ORDER BY s.SCHEMA_NAME",
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, table_count)| DatabaseInfo { name, table_count })
+            .collect())
+    }
+
+    /// Tables and views in `database`.
+    pub async fn list_tables(&self, database: &str) -> Result<Vec<TableInfo>> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<u64>,
+            Option<u64>,
+            String,
+        );
+        let rows: Vec<Row> = conn
+            .exec(
+                "SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS,
+                        DATA_LENGTH + INDEX_LENGTH, TABLE_COMMENT
+                 FROM information_schema.TABLES
+                 WHERE TABLE_SCHEMA = ?
+                 ORDER BY TABLE_NAME",
+                (database,),
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(name, kind, engine, rows_estimate, size_bytes, comment)| TableInfo {
+                    name,
+                    kind,
+                    engine,
+                    rows_estimate,
+                    size_bytes,
+                    comment,
+                },
+            )
+            .collect())
+    }
+
     pub async fn close(self) -> Result<()> {
-        self.conn.into_inner().disconnect().await?;
+        if let Some(link) = self.link.into_inner() {
+            link.conn.disconnect().await?;
+        }
         Ok(())
     }
+}
+
+/// Opens the tunnel (if any) and the MySQL connection. `database` overrides
+/// the profile's default database.
+async fn open_link(
+    profile: &ConnectionProfile,
+    database: Option<String>,
+) -> Result<(Link, SessionInfo)> {
+    let tunnel = match &profile.ssh {
+        Some(ssh) => Some(SshTunnel::open(ssh, &profile.host, profile.port).await?),
+        None => None,
+    };
+    let (host, port) = match &tunnel {
+        Some(t) => ("127.0.0.1".to_string(), t.local_port()),
+        None => (profile.host.clone(), profile.port),
+    };
+
+    let mut opts = OptsBuilder::default()
+        .ip_or_hostname(host)
+        .tcp_port(port)
+        .user(Some(profile.user.clone()))
+        .pass(profile.password.clone())
+        .db_name(
+            database
+                .or_else(|| profile.database.clone())
+                .filter(|d| !d.is_empty()),
+        )
+        .prefer_socket(false);
+    let tls = profile.ssl.mode != SslMode::Disabled;
+    if tls {
+        opts = opts.ssl_opts(ssl_opts(profile)?);
+    }
+
+    let mut conn = Conn::new(opts).await?;
+    let server_version: Option<String> = conn.query_first("SELECT VERSION()").await?;
+    let info = SessionInfo {
+        server_version: server_version.unwrap_or_default(),
+        connection_id: conn.id(),
+        tls,
+        ssh_host_fingerprint: tunnel.as_ref().map(|t| t.host_fingerprint().to_string()),
+    };
+    Ok((
+        Link {
+            conn,
+            _tunnel: tunnel,
+        },
+        info,
+    ))
+}
+
+fn is_use(stmt: &str) -> bool {
+    stmt.get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("use "))
+        || stmt
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("use`"))
 }
 
 async fn run(

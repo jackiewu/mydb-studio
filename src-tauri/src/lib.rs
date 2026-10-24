@@ -25,10 +25,13 @@ pub fn run() {
             commands::list_connections,
             commands::save_connection,
             commands::delete_connection,
+            commands::set_favorite,
             commands::test_connection,
             commands::open_session,
             commands::close_session,
             commands::execute,
+            commands::list_databases,
+            commands::list_tables,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

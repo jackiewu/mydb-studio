@@ -11,6 +11,9 @@ pub mod tunnel;
 
 pub use error::{CoreError, Result};
 pub use profile::{ConnectionProfile, SshAuth, SshConfig, SslConfig, SslMode};
-pub use session::{DEFAULT_MAX_ROWS, ExecutionOutcome, Session, SessionInfo, StatementResult};
+pub use session::{
+    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo, StatementResult,
+    TableInfo,
+};
 pub use split::split_statements;
 pub use store::Store;
