@@ -20,6 +20,7 @@ import { ResultsPanel } from "./components/ResultsPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
+import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
@@ -57,6 +58,8 @@ export default function App() {
   // Database selected with USE (double-click in the tree, the picker, or SQL).
   const [currentDb, setCurrentDb] = useState<string | null>(null);
   const editor = useRef<EditorHandle | null>(null);
+  // What ▶ would run; drives its label.
+  const [runTarget, setRunTarget] = useState<RunTarget | null>(null);
   const schema = useSchema(session?.session_id ?? null);
   const systemDark = useSystemDark();
 
@@ -210,6 +213,12 @@ export default function App() {
   }
 
   const databaseNames = (schema.databases ?? []).map((d) => d.name);
+  const runLabel =
+    runTarget?.kind === "all"
+      ? { text: `執行全部（${runTarget.count} 句）`, hint: "執行全部" }
+      : runTarget?.kind === "selection"
+        ? { text: runTarget.count > 1 ? `執行選取（${runTarget.count} 句）` : "執行選取", hint: "執行選取的部分" }
+        : { text: "執行這一句", hint: "執行游標所在的那一句（淡色底的那段）" };
 
   return (
     <div className="app">
@@ -270,15 +279,26 @@ export default function App() {
             >
               Explain
             </button>
+            {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
+              <button
+                disabled={running}
+                onClick={() => run(editor.current?.allText()?.text ?? sql)}
+                title="依序執行編輯器裡的每一句（⌘／Ctrl + Shift + Enter）"
+              >
+                全部（{runTarget?.total} 句）
+              </button>
+            )}
             <button
               className="primary"
-              disabled={running}
-              onClick={() => run(editor.current?.runText() ?? sql)}
-              title="執行選取的部分，沒選取就執行全部（⌘／Ctrl + Enter）"
+              disabled={running || runTarget?.count === 0}
+              onClick={() => run(editor.current?.runTarget()?.text ?? sql)}
+              title={`${runLabel.hint}（⌘／Ctrl + Enter）\n${runTarget?.text.trim().slice(0, 200) ?? ""}`}
             >
-              {running ? "執行中…" : "▶ 執行"}
+              {running ? "執行中…" : `▶ ${runLabel.text}`}
             </button>
-            <button onClick={disconnect}>中斷連線</button>
+            <button onClick={disconnect} title="中斷連線">
+              ✕
+            </button>
           </header>
         )}
 
@@ -302,6 +322,7 @@ export default function App() {
               handle={editor}
               onNeedColumns={loadColumns}
               onExplain={explain}
+              onRunTargetChange={setRunTarget}
               onChange={setSql}
               onRun={run}
             />

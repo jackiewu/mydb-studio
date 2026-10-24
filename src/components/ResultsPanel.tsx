@@ -32,8 +32,8 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
   if (!outcome) {
     return (
       <div className="results empty">
-        <p>⌘／Ctrl + Enter：執行選取的部分，沒選取就執行全部（多句用 ; 分開，依序執行）。</p>
-        <p>⌘／Ctrl + Shift + Enter：只執行游標所在的那一句。</p>
+        <p>⌘／Ctrl + Enter：執行游標所在的那一句（淡色底的那段）；有選取就執行選取的部分。</p>
+        <p>⌘／Ctrl + Shift + Enter：依序執行全部（多句用 ; 分開）。</p>
         <p>⌘／Ctrl + E：Explain 選取的部分或游標所在的那一句。</p>
       </div>
     );

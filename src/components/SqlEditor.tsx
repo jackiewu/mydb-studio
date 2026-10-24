@@ -7,23 +7,25 @@ import { sql, MySQL, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import type { Snippet } from "../api";
 import { columnSource, type SchemaMap } from "../editor/columns";
 import { statementAt } from "../editor/statements";
+import { allStatements, runTarget, statementMarks, type RunTarget } from "../editor/statementMarks";
 import type { EditorTheme } from "../editor/themes";
 
 /** Lets the app insert text into the editor. */
 export interface EditorHandle {
   /** Inserts a snippet at the cursor (replacing the selection). */
   insertSnippet: (body: string) => void;
-  /** The selection if there is one, otherwise the whole text. */
-  runText: () => string;
+  /** What ▶ runs: the selection if there is one, otherwise the statement at the cursor. */
+  runTarget: () => RunTarget | null;
+  /** Everything in the editor. */
+  allText: () => RunTarget | null;
   /** The selection if there is one, otherwise the statement at the cursor. */
   statementText: () => string;
 }
 
-function selectionOr(v: EditorView, fallback: "all" | "statement") {
+function selectionOr(v: EditorView) {
   const { from, to, head } = v.state.selection.main;
   if (from !== to) return v.state.sliceDoc(from, to);
-  const doc = v.state.doc.toString();
-  return fallback === "all" ? doc : statementAt(doc, head);
+  return statementAt(v.state.doc.toString(), head);
 }
 
 interface Props {
@@ -40,8 +42,10 @@ interface Props {
   /** The editor wants the columns of `db` for autocomplete. */
   onNeedColumns?: (db: string) => void;
   onChange: (value: string) => void;
-  /** ⌘Enter: the selection or the whole text; ⌘⇧Enter: the statement at the cursor. */
+  /** ⌘Enter: the selection, or the statement at the cursor; ⌘⇧Enter: everything. */
   onRun: (sql: string) => void;
+  /** What ⌘Enter would run, whenever that changes. */
+  onRunTargetChange?: (target: RunTarget) => void;
   /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
   onExplain?: (sql: string) => void;
 }
@@ -110,16 +114,24 @@ export function SqlEditor(props: Props) {
 
   useEffect(() => {
     const run = (v: EditorView) => {
-      handlers.current.onRun(selectionOr(v, "all"));
+      handlers.current.onRun(runTarget(v.state).text);
       return true;
     };
-    const runStatement = (v: EditorView) => {
-      handlers.current.onRun(selectionOr(v, "statement"));
+    const runAll = (v: EditorView) => {
+      handlers.current.onRun(v.state.doc.toString());
       return true;
     };
     const explain = (v: EditorView) => {
-      handlers.current.onExplain?.(selectionOr(v, "statement"));
+      handlers.current.onExplain?.(selectionOr(v));
       return true;
+    };
+    let lastTarget = "";
+    const report = (state: EditorState) => {
+      const t = runTarget(state);
+      const key = `${t.kind}:${t.count}:${t.text.slice(0, 60)}`;
+      if (key === lastTarget) return;
+      lastTarget = key;
+      handlers.current.onRunTargetChange?.(t);
     };
     const p = parts.current;
     view.current = new EditorView({
@@ -130,18 +142,23 @@ export function SqlEditor(props: Props) {
         p.language.of(language(mariadb, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
-        Prec.highest(keymap.of([
+        statementMarks(),
+        Prec.highest(
+          keymap.of([
             { key: "Mod-Enter", run },
-            { key: "Mod-Shift-Enter", run: runStatement },
+            { key: "Mod-Shift-Enter", run: runAll },
             { key: "Mod-e", run: explain },
-          ])),
+          ]),
+        ),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) handlers.current.onChange(u.state.doc.toString());
+          if (u.docChanged || u.selectionSet) report(u.state);
         }),
         EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" } }),
       ],
     });
     view.current.focus();
+    report(view.current.state);
     return () => {
       view.current?.destroy();
       view.current = null;
@@ -169,8 +186,9 @@ export function SqlEditor(props: Props) {
   useEffect(() => {
     if (!handle) return;
     handle.current = {
-      runText: () => (view.current ? selectionOr(view.current, "all") : ""),
-      statementText: () => (view.current ? selectionOr(view.current, "statement") : ""),
+      runTarget: () => (view.current ? runTarget(view.current.state) : null),
+      allText: () => (view.current ? allStatements(view.current.state) : null),
+      statementText: () => (view.current ? selectionOr(view.current) : ""),
       insertSnippet: (body) => {
         const v = view.current;
         if (!v) return;
