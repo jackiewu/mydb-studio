@@ -80,7 +80,8 @@ export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
   | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config"; message: string }
-  | { kind: "not_connected"; id: string };
+  | { kind: "not_connected"; id: string }
+  | { kind: "cancelled" };
 
 export interface ExecutionOutcome {
   started_at: string;
@@ -89,6 +90,8 @@ export interface ExecutionOutcome {
   error?: CoreError | null;
   failed_statement?: string | null;
   reconnected: boolean;
+  /** The user pressed 停止; `error` is where it stopped. */
+  cancelled?: boolean;
   /** Set when recording was on for this run. */
   record_id?: number | null;
   /** The database in use after the run (a USE may have changed it). */
@@ -280,6 +283,12 @@ export interface AiStatus {
   cpu_threads: number;
 }
 
+export interface ExportOptions {
+  format: "tsv" | "csv" | "json" | "insert" | "insert_batch" | "markdown";
+  header: boolean;
+  table?: string | null;
+}
+
 export interface ServerOverview {
   version: string;
   current_user: string;
@@ -422,6 +431,8 @@ export function describeError(e: unknown): string {
       return `連線中斷：${err.message}${tlsHint(err.message)}`;
     case "not_connected":
       return "連線已關閉，請重新連線。";
+    case "cancelled":
+      return "已停止。";
     case undefined:
       return String(e);
     default:
@@ -458,6 +469,10 @@ export const api = {
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
   deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
+  cancelQuery: (sessionId: string) => invoke<boolean>("cancel_query", { sessionId }),
+  /** Runs `sql` again and writes every row to `path`; returns the row count. */
+  exportQuery: (sessionId: string, sql: string, options: ExportOptions, path: string) =>
+    invoke<number>("export_query", { sessionId, sql, options, path }),
   serverOverview: (sessionId: string) => invoke<ServerOverview>("server_overview", { sessionId }),
   serverProcesses: (sessionId: string) => invoke<ProcessInfo[]>("server_processes", { sessionId }),
   serverUsers: (sessionId: string) => invoke<UserAccount[]>("server_users", { sessionId }),

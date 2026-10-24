@@ -525,3 +525,70 @@ async fn server_admin_overview_users_and_privileges() {
             .any(|u| u.user == user)
     );
 }
+
+#[tokio::test]
+async fn cancel_stops_the_running_statement_and_the_rest() {
+    let profile = profile_or_skip!();
+    let session = std::sync::Arc::new(Session::connect(&profile).await.unwrap());
+    assert!(!session.cancel().await.unwrap(), "nothing to cancel yet");
+
+    let runner = session.clone();
+    let run = tokio::spawn(async move {
+        runner
+            .execute("SELECT 1; SELECT SLEEP(30); SELECT 3;", 10)
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let started = std::time::Instant::now();
+    assert!(session.cancel().await.unwrap());
+    let out = run.await.unwrap();
+    assert!(started.elapsed().as_secs() < 5);
+    assert!(out.cancelled);
+    // SLEEP returns 1 when interrupted rather than failing; either way the
+    // third statement must not run.
+    assert!(out.results.len() <= 2, "{:?}", out.results);
+    assert!(out.error.is_some());
+
+    // The session is usable again and a new run is not marked cancelled.
+    let again = session.execute("SELECT 42", 10).await;
+    assert!(again.error.is_none() && !again.cancelled);
+}
+
+#[tokio::test]
+async fn export_streams_every_row() {
+    use mydb_core::export::{ExportFormat, ExportOptions, RowWriter};
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    let export = |sql: &'static str| {
+        let session = &session;
+        async move {
+            let mut buf = Vec::new();
+            let writer = std::sync::Mutex::new(RowWriter::new(
+                &mut buf,
+                ExportOptions {
+                    format: ExportFormat::Csv,
+                    header: true,
+                    table: None,
+                },
+            ));
+            let n = session
+                .stream_rows(
+                    sql,
+                    |c| writer.lock().unwrap().begin(c),
+                    |r| writer.lock().unwrap().row(&r),
+                )
+                .await
+                .unwrap();
+            assert_eq!(writer.into_inner().unwrap().finish().unwrap(), n);
+            (n, String::from_utf8(buf).unwrap())
+        }
+    };
+    // More rows than the grid keeps (DEFAULT_MAX_ROWS).
+    let (n, csv) =
+        export("SELECT seq AS n, CONCAT('row ', seq) AS label FROM demo.seq_1_to_5000").await;
+    assert_eq!(n, 5000);
+    assert!(csv.ends_with("\r\n5000,row 5000"));
+    let (_, csv) =
+        export("SELECT seq AS n, CONCAT('row ', seq) AS label FROM demo.seq_1_to_3").await;
+    assert_eq!(csv, "n,label\r\n1,row 1\r\n2,row 2\r\n3,row 3");
+}

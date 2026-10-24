@@ -34,6 +34,9 @@ pub enum CoreError {
     Config { message: String },
     #[error("not connected: {id}")]
     NotConnected { id: String },
+    /// The user stopped the run before this statement started.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

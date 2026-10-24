@@ -370,6 +370,40 @@ pub fn add_limit(stmt: &str, n: u64) -> Option<String> {
     Some(format!("{}\nLIMIT {n}", stmt.trim_end()))
 }
 
+/// Whether `stmt` only reads: a query, SHOW, DESCRIBE or EXPLAIN, without
+/// `INTO`, locking clauses or a data-changing part (`WITH … DELETE`). Used
+/// before running a statement again, e.g. to export all of its rows.
+pub fn is_plain_read(stmt: &str) -> bool {
+    let toks = tokens(stmt);
+    let top: Vec<&Tok> = toks
+        .iter()
+        .filter(|(_, d)| *d == 0)
+        .map(|(t, _)| t)
+        .collect();
+    let starts = match top.first() {
+        Some(Tok::Word(w)) => [
+            "SELECT", "WITH", "SHOW", "DESC", "DESCRIBE", "EXPLAIN", "TABLE", "VALUES",
+        ]
+        .contains(&w.as_str()),
+        Some(Tok::Punct('(')) => true,
+        _ => false,
+    };
+    starts
+        && ![
+            "INTO",
+            "FOR",
+            "LOCK",
+            "ANALYZE",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "REPLACE",
+            "PROCEDURE",
+        ]
+        .iter()
+        .any(|w| top.iter().any(|t| is_word(t, w)))
+}
+
 // ---------- Pre-run checks ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1035,5 +1069,31 @@ mod tests {
             message: "x".into(),
         };
         assert!(error_advice(&unknown).is_none());
+    }
+
+    #[test]
+    fn plain_reads() {
+        for yes in [
+            "SELECT * FROM t",
+            "  /* x */ select a from t where b = 'DELETE'",
+            "WITH c AS (SELECT 1) SELECT * FROM c",
+            "SHOW PROCESSLIST",
+            "DESCRIBE t",
+            "EXPLAIN SELECT 1",
+            "(SELECT 1) UNION (SELECT 2)",
+        ] {
+            assert!(is_plain_read(yes), "{yes}");
+        }
+        for no in [
+            "DELETE FROM t",
+            "SELECT * FROM t FOR UPDATE",
+            "SELECT * INTO OUTFILE '/tmp/x' FROM t",
+            "WITH c AS (SELECT 1) DELETE FROM t",
+            "EXPLAIN ANALYZE DELETE FROM t",
+            "CALL p()",
+            "",
+        ] {
+            assert!(!is_plain_read(no), "{no}");
+        }
     }
 }

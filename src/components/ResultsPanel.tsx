@@ -38,8 +38,11 @@ export function ResultsPanel({
   outcome,
   onRunWithoutLimit,
   onAskAi,
+  sessionId,
 }: {
   outcome: ExecutionOutcome | null;
+  /** Lets the grid export every row by running a query again. */
+  sessionId?: string;
   /** Runs one statement again without the automatic LIMIT. */
   onRunWithoutLimit?: (sql: string) => void;
   /** Opens the AI drawer about part of this outcome. */
@@ -83,7 +86,16 @@ export function ResultsPanel({
         </div>
       </div>
 
-      {outcome.error && (
+      {outcome.error && outcome.cancelled && (
+        <div className="cancelled-box">
+          ⏹ 已停止
+          {outcome.failed_statement
+            ? `：停在下面這句，${outcome.results.length ? `之前的 ${outcome.results.length} 句已完成。` : "前面沒有已完成的語句。"}`
+            : "。"}
+          {outcome.failed_statement && <pre>{outcome.failed_statement}</pre>}
+        </div>
+      )}
+      {outcome.error && !outcome.cancelled && (
         <div className="error-box">
           <strong>{describeError(outcome.error)}</strong>
           {outcome.failed_statement && <pre>{outcome.failed_statement}</pre>}
@@ -200,7 +212,12 @@ export function ResultsPanel({
             </div>
           )}
           {current.columns.length > 0 && (
-            <ResultGrid key={`${outcome.started_at}:${tab}`} result={current} cellLevel={plan?.cellLevel} />
+            <ResultGrid
+              key={`${outcome.started_at}:${tab}`}
+              result={current}
+              cellLevel={plan?.cellLevel}
+              sessionId={sessionId}
+            />
           )}
         </>
       )}

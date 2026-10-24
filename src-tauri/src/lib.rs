@@ -95,6 +95,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
+            commands::cancel_query,
+            commands::export_query,
             commands::server_overview,
             commands::server_processes,
             commands::server_users,
