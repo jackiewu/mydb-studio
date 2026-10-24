@@ -116,6 +116,20 @@ impl Session {
         &self.info
     }
 
+    pub fn profile(&self) -> &ConnectionProfile {
+        &self.profile
+    }
+
+    /// The database in use: the last `USE`, else the profile default.
+    pub fn current_database(&self) -> Option<String> {
+        self.current_db
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.profile.database.clone())
+            .filter(|d| !d.is_empty())
+    }
+
     /// Returns a live connection, reconnecting if the old one is gone.
     /// The bool is true when a reconnect happened.
     async fn live<'a>(&self, link: &'a mut Option<Link>) -> Result<(&'a mut Conn, bool)> {

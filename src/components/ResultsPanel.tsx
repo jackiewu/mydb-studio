@@ -32,6 +32,7 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
         <span>
           完成 {outcome.results.length} 個陳述式，共 {ms(outcome.duration_ms)}
         </span>
+        {outcome.record_id != null && <span className="recorded">📝 已記錄 #{outcome.record_id}</span>}
         <div className="result-tabs">
           {outcome.results.map((r, i) => (
             <button

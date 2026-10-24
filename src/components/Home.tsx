@@ -7,6 +7,7 @@ interface Props {
   onEdit: (c: ConnectionProfile) => void;
   onNew: () => void;
   onToggleFavorite: (c: ConnectionProfile) => void;
+  onOpenRecords: () => void;
 }
 
 function lastUsed(iso?: string | null) {
@@ -19,7 +20,7 @@ function lastUsed(iso?: string | null) {
   return `${Math.round(hours / 24)} 天前使用`;
 }
 
-function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Omit<Props, "connections" | "onNew"> & { c: ConnectionProfile }) {
+function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Omit<Props, "connections" | "onNew" | "onOpenRecords"> & { c: ConnectionProfile }) {
   return (
     <div className="card" onClick={() => onConnect(c)} role="button" tabIndex={0}>
       <div className="card-head">
@@ -64,7 +65,7 @@ function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Omit<Props
 }
 
 export function Home(props: Props) {
-  const { connections, onNew } = props;
+  const { connections, onNew, onOpenRecords } = props;
   const favorites = connections.filter((c) => c.favorite);
   const others = connections.filter((c) => !c.favorite);
 
@@ -72,9 +73,12 @@ export function Home(props: Props) {
     <div className="home">
       <div className="home-head">
         <h1>連線</h1>
-        <button className="primary" onClick={onNew}>
-          ＋ 新增連線
-        </button>
+        <div className="home-actions">
+          <button onClick={onOpenRecords}>📋 執行紀錄與報表</button>
+          <button className="primary" onClick={onNew}>
+            ＋ 新增連線
+          </button>
+        </div>
       </div>
       {connections.length === 0 && (
         <div className="empty-state">

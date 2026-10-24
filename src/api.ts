@@ -84,6 +84,59 @@ export interface ExecutionOutcome {
   error?: CoreError | null;
   failed_statement?: string | null;
   reconnected: boolean;
+  /** Set when recording was on for this run. */
+  record_id?: number | null;
+}
+
+export interface RecordedStatement {
+  sql: string;
+  duration_ms: number;
+  affected_rows: number;
+  returned_rows?: number | null;
+  warnings: number;
+  info: string;
+  columns: string[];
+  preview: Cell[][];
+}
+
+export interface ExecutionRecord {
+  id: number;
+  connection_id?: string | null;
+  connection_name: string;
+  server: string;
+  server_version: string;
+  database?: string | null;
+  started_at: string;
+  duration_ms: number;
+  sql: string;
+  /** Empty in list results; filled by getRecord. */
+  statements: RecordedStatement[];
+  statement_count: number;
+  affected_rows: number;
+  returned_rows: number;
+  error_code?: number | null;
+  error_message?: string | null;
+  failed_statement?: string | null;
+  note: string;
+}
+
+export interface RecordFilter {
+  connection_id?: string | null;
+  text?: string | null;
+  from?: string | null;
+  to?: string | null;
+  only_errors?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export type ReportFormat = "markdown" | "html" | "csv";
+
+export interface ReportOptions {
+  format: ReportFormat;
+  title?: string | null;
+  include_results: boolean;
+  max_result_rows: number;
 }
 
 export interface DatabaseInfo {
@@ -144,11 +197,18 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
-  execute: (sessionId: string, sql: string, maxRows?: number) =>
-    invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows }),
+  execute: (sessionId: string, sql: string, record = false, maxRows?: number) =>
+    invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, record }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
     invoke<TableInfo[]>("list_tables", { sessionId, database }),
+  listRecords: (filter: RecordFilter) => invoke<ExecutionRecord[]>("list_records", { filter }),
+  getRecord: (id: number) => invoke<ExecutionRecord | null>("get_record", { id }),
+  setRecordNote: (id: number, note: string) => invoke<void>("set_record_note", { id, note }),
+  deleteRecords: (ids: number[]) => invoke<void>("delete_records", { ids }),
+  generateReport: (ids: number[], options: ReportOptions) =>
+    invoke<string>("generate_report", { ids, options }),
+  saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
 };
 
 /** Quotes an identifier with backticks. */
