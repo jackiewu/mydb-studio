@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { SYSTEM_DBS, type Schema } from "../schema";
 
 interface Props {
@@ -11,6 +11,19 @@ interface Props {
   onUseDatabase: (database: string) => void;
   /** Called when a table is clicked. */
   onOpenTable: (database: string, table: string) => void;
+}
+
+/** `text` with the part matching `filter` marked. */
+function highlight(text: string, filter: string): ReactNode {
+  const at = filter ? text.toLowerCase().indexOf(filter) : -1;
+  if (at < 0) return text;
+  return (
+    <>
+      {text.slice(0, at)}
+      <mark>{text.slice(at, at + filter.length)}</mark>
+      {text.slice(at + filter.length)}
+    </>
+  );
 }
 
 function size(bytes?: number | null) {
@@ -28,6 +41,8 @@ function size(bytes?: number | null) {
 export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, onUseDatabase, onOpenTable }: Props) {
   const { databases: dbs, tables, error } = schema;
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [filterText, setFilterText] = useState("");
+  const filter = filterText.trim().toLowerCase();
 
   const expand = (db: string, isOpen: boolean) => {
     setOpen((prev) => {
@@ -46,23 +61,58 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
     schema.reload();
   };
 
-  const visible = (dbs ?? []).filter((d) => showSystem || !SYSTEM_DBS.has(d.name));
-  const hidden = (dbs?.length ?? 0) - visible.length;
+  const shown = (dbs ?? []).filter((d) => showSystem || !SYSTEM_DBS.has(d.name));
+  const hidden = (dbs?.length ?? 0) - shown.length;
+  // With a filter: databases whose name matches, plus databases that have
+  // matching tables (opened, showing only those tables).
+  const tableHits = (db: string) =>
+    filter ? (schema.tableNames[db] ?? []).filter((t) => t.toLowerCase().includes(filter)) : [];
+  const visible = filter
+    ? shown.filter((d) => d.name.toLowerCase().includes(filter) || tableHits(d.name).length > 0)
+    : shown;
+  const forcedOpen = visible
+    .filter((d) => !d.name.toLowerCase().includes(filter) && tableHits(d.name).length > 0)
+    .map((d) => d.name);
+  const forcedKey = filter ? forcedOpen.join("\n") : "";
+
+  // Load the tables of databases opened by the filter.
+  useEffect(() => {
+    for (const db of forcedKey ? forcedKey.split("\n") : []) if (!tables[db]) schema.loadTables(db);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forcedKey]);
 
   return (
     <div className="schema">
       <div className="sidebar-head">
-        <span>資料庫 {dbs && <small className="muted">({visible.length})</small>}</span>
+        <span>
+          資料庫 {dbs && <small className="muted">({filter ? `${visible.length}/${shown.length}` : shown.length})</small>}
+        </span>
         <button className="small ghost" title="重新整理" onClick={reload}>
           ⟳
         </button>
       </div>
+      <div className="schema-filter">
+        <input
+          type="search"
+          placeholder="篩選資料庫或資料表…"
+          value={filterText}
+          spellCheck={false}
+          onChange={(e) => setFilterText(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setFilterText("")}
+        />
+      </div>
+      {filter && dbs && visible.length === 0 && <div className="hint pad">沒有符合「{filterText.trim()}」的資料庫或資料表</div>}
       {error && <div className="schema-error">{error}</div>}
       {!dbs && !error && <div className="hint pad">載入中…</div>}
       <ul className="tree">
         {visible.map((d) => {
-          const list = tables[d.name];
-          const isOpen = open.has(d.name);
+          const onlyTables = forcedOpen.includes(d.name);
+          const loaded = tables[d.name];
+          const list =
+            onlyTables && Array.isArray(loaded)
+              ? loaded.filter((t) => t.name.toLowerCase().includes(filter))
+              : loaded;
+          const isOpen = open.has(d.name) || onlyTables;
           const isCurrent = d.name === currentDb;
           return (
             <li key={d.name}>
@@ -79,7 +129,7 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                 }}
               >
                 <span className="caret">{isOpen ? "▾" : "▸"}</span>
-                <span className="tree-name">{d.name}</span>
+                <span className="tree-name">{highlight(d.name, filter)}</span>
                 {isCurrent && <span className="current-mark">USE</span>}
                 <span className="count">{d.table_count}</span>
               </button>
@@ -104,7 +154,7 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                           onClick={() => onOpenTable(d.name, t.name)}
                         >
                           <span className="icon">{t.kind.includes("VIEW") ? "◇" : "▤"}</span>
-                          <span className="tree-name">{t.name}</span>
+                          <span className="tree-name">{highlight(t.name, filter)}</span>
                           {t.rows_estimate != null && !t.kind.includes("VIEW") && (
                             <span className="count">{t.rows_estimate ? t.rows_estimate.toLocaleString() : "—"}</span>
                           )}

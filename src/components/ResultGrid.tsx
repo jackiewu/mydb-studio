@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, describeError, type StatementResult } from "../api";
 import { COPY_FORMATS, copyText, fileExtension, formatBlock, type Block, type CopyFormat } from "../copy";
@@ -16,7 +16,9 @@ let lastHeader = false;
  * Result rows with spreadsheet-style selection: click a cell, drag or
  * shift-click for a range, click a row number or column header for whole
  * rows or columns. ⌘/Ctrl+C copies the selection (or everything) in the
- * chosen format; right-click offers the other formats.
+ * chosen format; right-click offers the other formats. The search box
+ * keeps only the loaded rows with a matching cell; selection and copying
+ * then work on those rows.
  */
 export function ResultGrid({
   result,
@@ -26,7 +28,19 @@ export function ResultGrid({
   /** Highlights cells, e.g. the problems in an EXPLAIN. */
   cellLevel?: (row: number, col: number) => "bad" | "warn" | undefined;
 }) {
-  const { columns, rows } = result;
+  const { columns, rows: allRows } = result;
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  // Original row numbers of the rows on screen.
+  const shown = useMemo(
+    () =>
+      allRows.flatMap((row, i) =>
+        !needle || row.some((v) => (v === null ? "null" : String(v)).toLowerCase().includes(needle)) ? [i] : [],
+      ),
+    [allRows, needle],
+  );
+  const rows = useMemo(() => (needle ? shown.map((i) => allRows[i]) : allRows), [allRows, shown, needle]);
+  const searchBox = useRef<HTMLInputElement>(null);
   const [anchor, setAnchor] = useState<Pos | null>(null);
   const [focus, setFocus] = useState<Pos | null>(null);
   const [format, setFormat] = useState<CopyFormat>(lastFormat);
@@ -48,6 +62,12 @@ export function ResultGrid({
     window.addEventListener("mouseup", up);
     return () => window.removeEventListener("mouseup", up);
   }, []);
+
+  // A new search starts with nothing selected.
+  useEffect(() => {
+    setAnchor(null);
+    setFocus(null);
+  }, [needle]);
 
   useEffect(() => {
     if (!flash) return;
@@ -82,7 +102,9 @@ export function ResultGrid({
       : { columns, rows };
 
   const describe = (b: Block) =>
-    `${b.rows.length} 列 × ${b.columns.length} 欄${!range && result.truncated ? "（只含已載入的部分）" : ""}`;
+    `${b.rows.length} 列 × ${b.columns.length} 欄${
+      range ? "" : needle ? "（搜尋結果）" : result.truncated ? "（只含已載入的部分）" : ""
+    }`;
 
   const copy = async (f: CopyFormat = format) => {
     const b = block();
@@ -111,6 +133,10 @@ export function ResultGrid({
     if (mod && e.key.toLowerCase() === "c") {
       e.preventDefault();
       copy();
+    } else if (mod && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      searchBox.current?.focus();
+      searchBox.current?.select();
     } else if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       select({ r: 0, c: 0 }, { r: lastRow, c: lastCol }, false);
@@ -141,6 +167,29 @@ export function ResultGrid({
   return (
     <>
       <div className="copy-bar">
+        <input
+          ref={searchBox}
+          className="grid-search"
+          type="search"
+          placeholder="搜尋結果…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setQuery("");
+              wrap.current?.focus();
+            } else if (e.key === "Enter" || e.key === "ArrowDown") {
+              e.preventDefault();
+              wrap.current?.focus();
+            }
+          }}
+          title="只顯示有符合儲存格的列（⌘/Ctrl + F），Esc 清除"
+        />
+        {needle && (
+          <span className={shown.length ? "muted" : "no-match"}>
+            {shown.length} / {allRows.length} 列
+          </span>
+        )}
         <span className="muted">{range ? `已選取 ${describe(block())}` : "點儲存格、列號或欄名來選取"}</span>
         <span className="spacer" />
         {flash && <span className="flash">{flash}</span>}
@@ -158,7 +207,7 @@ export function ResultGrid({
           </label>
         )}
         <button className="small" onClick={() => copy()} title="⌘/Ctrl + C">
-          複製{range ? "選取" : "全部"}
+          複製{range ? "選取" : needle ? "符合的列" : "全部"}
         </button>
         <button className="small" onClick={saveFile}>
           存檔…
@@ -200,12 +249,16 @@ export function ResultGrid({
                   className={inRange(r, 0) && range!.c1 === 0 && range!.c2 === lastCol ? "rownum sel" : "rownum"}
                   onClick={(e) => select({ r, c: 0 }, { r, c: lastCol }, e.shiftKey)}
                 >
-                  {r + 1}
+                  {(needle ? shown[r] : r) + 1}
                 </td>
                 {row.map((cell, c) => (
                   <td
                     key={c}
-                    className={[cell === null ? "null" : "", inRange(r, c) ? "sel" : "", cellLevel?.(r, c) ?? ""].join(" ")}
+                    className={[
+                      cell === null ? "null" : "",
+                      inRange(r, c) ? "sel" : "",
+                      cellLevel?.(needle ? shown[r] : r, c) ?? "",
+                    ].join(" ")}
                     onMouseDown={(e) => {
                       if (e.button !== 0) return;
                       dragging.current = true;
@@ -218,7 +271,7 @@ export function ResultGrid({
                       setMenu({ x: e.clientX, y: e.clientY, cell: { r, c } });
                     }}
                   >
-                    {cell === null ? "NULL" : String(cell)}
+                    {highlight(cell === null ? "NULL" : String(cell), needle)}
                   </td>
                 ))}
               </tr>
@@ -266,4 +319,20 @@ export function ResultGrid({
       )}
     </>
   );
+}
+
+/** Marks each case-insensitive occurrence of `needle` in `text`. */
+function highlight(text: string, needle: string) {
+  if (!needle) return text;
+  const lower = text.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let at = 0;
+  for (let i = lower.indexOf(needle); i >= 0; i = lower.indexOf(needle, at)) {
+    if (i > at) parts.push(text.slice(at, i));
+    parts.push(<mark key={i}>{text.slice(i, i + needle.length)}</mark>);
+    at = i + needle.length;
+  }
+  if (!parts.length) return text;
+  if (at < text.length) parts.push(text.slice(at));
+  return parts;
 }

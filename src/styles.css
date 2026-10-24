@@ -403,6 +403,9 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .copy-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
 .copy-bar select { width: auto; font-size: 12px; padding: 2px 6px; }
 .copy-bar .flash { color: var(--good); }
+.copy-bar .grid-search { width: 180px; font-size: 12px; padding: 2px 8px; }
+.copy-bar .no-match { color: var(--bad); }
+.grid mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: inherit; border-radius: 2px; }
 .check-inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
 .check-inline input { width: auto; }
 .grid-wrap:focus { outline: none; }
@@ -451,3 +454,6 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .tab .close:hover { opacity: 1; color: var(--bad); }
 .tab-rec { color: var(--warn); font-size: 9px; }
 .tab-add { border: none; background: none; padding: 0 8px; color: var(--muted); }
+.schema-filter { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.schema-filter input { padding: 4px 8px; font-size: 12px; }
+.tree mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 2px; }

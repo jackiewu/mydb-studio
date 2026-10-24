@@ -17,6 +17,8 @@ export interface Schema {
   reload: () => Promise<void>;
   loadTables: (db: string) => Promise<void>;
   loadColumns: (db: string) => Promise<void>;
+  /** Table names per database, loaded once per connection. */
+  tableNames: Record<string, string[]>;
   /** Databases → tables → columns, for autocomplete. */
   namespace: SchemaMap;
 }
@@ -104,5 +106,5 @@ export function useSchema(sessionId: string | null): Schema {
     return ns;
   }, [databases, tableNames, columns]);
 
-  return { databases, tables, error, reload, loadTables, loadColumns, namespace };
+  return { databases, tables, tableNames, error, reload, loadTables, loadColumns, namespace };
 }
