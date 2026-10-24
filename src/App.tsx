@@ -462,6 +462,7 @@ export default function App() {
                   handle={t.key === tab?.key ? editor : undefined}
                   onNeedColumns={loadColumns}
                   onExplain={explain}
+                  autoLimit={settings.auto_limit}
                   onSaveSnippet={(body) => {
                     setSnippetDraft({ id: 0, prefix: "", name: tabTitle(body, ""), body });
                     setDialog("snippets");

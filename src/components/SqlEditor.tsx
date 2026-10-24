@@ -12,6 +12,7 @@ import { statementAt } from "../editor/statements";
 import { allStatements, runTarget, statementMarks, type RunTarget } from "../editor/statementMarks";
 import type { EditorTheme } from "../editor/themes";
 import { openMenu } from "../contextMenu";
+import { advisorLint } from "../editor/advisorLint";
 import { copyText } from "../copy";
 
 /** Lets the app insert text into the editor. */
@@ -54,6 +55,8 @@ interface Props {
   onRunTargetChange?: (target: RunTarget) => void;
   /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
   onExplain?: (sql: string) => void;
+  /** The automatic LIMIT in effect (0 when off); hides advice it covers. */
+  autoLimit?: number;
   /** Opens the snippet editor with `body` as a new snippet. */
   onSaveSnippet?: (body: string) => void;
 }
@@ -209,6 +212,7 @@ export function SqlEditor(props: Props) {
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
         statementMarks(),
+        advisorLint(() => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
         EditorView.domEventHandlers({ contextmenu: contextMenu }),
         Prec.highest(
           keymap.of([
