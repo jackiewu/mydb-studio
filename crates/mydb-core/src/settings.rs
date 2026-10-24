@@ -45,3 +45,18 @@ pub struct Snippet {
     pub prefix: String,
     pub body: String,
 }
+
+/// An editor tab the user pinned to a connection. Pinned tabs are saved as
+/// they change and reopen with the connection until closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PinnedTab {
+    /// 0 for a tab that has not been saved yet.
+    #[serde(default)]
+    pub id: i64,
+    pub connection_id: String,
+    pub title: String,
+    pub sql: String,
+    /// Order among the connection's pinned tabs.
+    #[serde(default)]
+    pub position: i64,
+}

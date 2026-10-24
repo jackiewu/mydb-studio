@@ -435,3 +435,19 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .grid td.warn { color: var(--warn); font-weight: 600; }
 .result-tabs .tab-no { color: var(--muted); }
 .results.empty p { margin: 0 0 6px; }
+
+/* Editor tabs */
+.editor-pane { min-height: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--panel); }
+.editor-pane .editor { flex: 1; min-height: 0; border-bottom: none; }
+.tab-bar { display: flex; align-items: stretch; gap: 2px; padding: 4px 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
+.tab { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 4px; font-size: 12px; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--code-bg); color: var(--muted); cursor: pointer; max-width: 240px; white-space: nowrap; }
+.tab.active { background: var(--panel); color: var(--text); }
+.tab-title { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.tab button { border: none; background: none; padding: 0 2px; font-size: 12px; line-height: 1; color: inherit; }
+.tab .pin { opacity: 0.25; filter: grayscale(1); }
+.tab .pin:hover { opacity: 0.7; }
+.tab.pinned .pin { opacity: 1; filter: none; }
+.tab .close { opacity: 0.5; font-size: 14px; }
+.tab .close:hover { opacity: 1; color: var(--bad); }
+.tab-rec { color: var(--warn); font-size: 9px; }
+.tab-add { border: none; background: none; padding: 0 8px; color: var(--muted); }

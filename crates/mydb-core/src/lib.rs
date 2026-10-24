@@ -20,6 +20,6 @@ pub use session::{
     ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
     StatementResult, TableInfo,
 };
-pub use settings::{AppSettings, Snippet};
+pub use settings::{AppSettings, PinnedTab, Snippet};
 pub use split::split_statements;
 pub use store::Store;

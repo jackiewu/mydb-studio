@@ -39,6 +39,8 @@ interface Props {
   fontSize: number;
   snippets: Snippet[];
   handle?: RefObject<EditorHandle | null>;
+  /** False while another tab is shown; the editor stays mounted to keep its state. */
+  active?: boolean;
   /** The editor wants the columns of `db` for autocomplete. */
   onNeedColumns?: (db: string) => void;
   onChange: (value: string) => void;
@@ -111,6 +113,8 @@ export function SqlEditor(props: Props) {
   const handlers = useRef(props);
   handlers.current = props;
   const needColumns = (db: string) => handlers.current.onNeedColumns?.(db);
+  const lastTarget = useRef("");
+  const reportRef = useRef<(state: EditorState, force?: boolean) => void>(() => {});
 
   useEffect(() => {
     const run = (v: EditorView) => {
@@ -125,14 +129,15 @@ export function SqlEditor(props: Props) {
       handlers.current.onExplain?.(selectionOr(v));
       return true;
     };
-    let lastTarget = "";
-    const report = (state: EditorState) => {
+    const report = (state: EditorState, force = false) => {
+      if (handlers.current.active === false) return;
       const t = runTarget(state);
-      const key = `${t.kind}:${t.count}:${t.text.slice(0, 60)}`;
-      if (key === lastTarget) return;
-      lastTarget = key;
+      const key = `${t.kind}:${t.count}:${t.total}:${t.text.slice(0, 60)}`;
+      if (key === lastTarget.current && !force) return;
+      lastTarget.current = key;
       handlers.current.onRunTargetChange?.(t);
     };
+    reportRef.current = report;
     const p = parts.current;
     view.current = new EditorView({
       doc: initialValue,
@@ -157,7 +162,7 @@ export function SqlEditor(props: Props) {
         EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" } }),
       ],
     });
-    view.current.focus();
+    if (props.active !== false) view.current.focus();
     report(view.current.state);
     return () => {
       view.current?.destroy();
@@ -174,6 +179,15 @@ export function SqlEditor(props: Props) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mariadb, schema, defaultSchema]);
+
+  // Coming back to a tab: re-measure (it was hidden), focus, and say what ▶ runs.
+  useEffect(() => {
+    const v = view.current;
+    if (!v || props.active === false) return;
+    v.requestMeasure();
+    v.focus();
+    reportRef.current(v.state, true);
+  }, [props.active]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: parts.current.look.reconfigure(look(theme, fontSize)) });
@@ -202,5 +216,5 @@ export function SqlEditor(props: Props) {
     };
   }, [handle]);
 
-  return <div className="editor" ref={host} />;
+  return <div className="editor" ref={host} hidden={props.active === false} />;
 }

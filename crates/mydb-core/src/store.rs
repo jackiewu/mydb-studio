@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
-use crate::settings::{AppSettings, Snippet};
+use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
 const MIGRATIONS: &[&str] = &[
@@ -77,6 +77,16 @@ WHERE ${condition};'),
 FROM information_schema.TABLES
 WHERE TABLE_SCHEMA = DATABASE()
 ORDER BY size_mb DESC;');",
+    // 5: pinned editor tabs
+    "CREATE TABLE pinned_tabs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        sql           TEXT NOT NULL,
+        position      INTEGER NOT NULL DEFAULT 0,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX pinned_tabs_connection ON pinned_tabs (connection_id, position);",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -405,6 +415,48 @@ impl Store {
             .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
+    /// Pinned tabs of a connection, in tab order.
+    pub fn list_pinned_tabs(&self, connection_id: &str) -> Result<Vec<PinnedTab>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, connection_id, title, sql, position FROM pinned_tabs
+             WHERE connection_id = ?1 ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map([connection_id], |r| {
+            Ok(PinnedTab {
+                id: r.get(0)?,
+                connection_id: r.get(1)?,
+                title: r.get(2)?,
+                sql: r.get(3)?,
+                position: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Inserts a tab with id 0, otherwise updates it. Returns it with its id.
+    pub fn save_pinned_tab(&self, tab: &PinnedTab) -> Result<PinnedTab> {
+        let mut saved = tab.clone();
+        if tab.id == 0 {
+            self.db.execute(
+                "INSERT INTO pinned_tabs (connection_id, title, sql, position) VALUES (?1, ?2, ?3, ?4)",
+                params![tab.connection_id, tab.title, tab.sql, tab.position],
+            )?;
+            saved.id = self.db.last_insert_rowid();
+        } else {
+            self.db.execute(
+                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![tab.id, tab.title, tab.sql, tab.position],
+            )?;
+        }
+        Ok(saved)
+    }
+
+    pub fn delete_pinned_tab(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM pinned_tabs WHERE id = ?1", [id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -649,6 +701,40 @@ mod tests {
 
         store.delete_snippet(mine.id).unwrap();
         assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn pinned_tabs_per_connection() {
+        let store = Store::open_in_memory().unwrap();
+        let tab = |conn: &str, title: &str, position| PinnedTab {
+            id: 0,
+            connection_id: conn.into(),
+            title: title.into(),
+            sql: format!("SELECT '{title}';"),
+            position,
+        };
+        let b = store.save_pinned_tab(&tab("c1", "b", 1)).unwrap();
+        let a = store.save_pinned_tab(&tab("c1", "a", 0)).unwrap();
+        store.save_pinned_tab(&tab("c2", "other", 0)).unwrap();
+
+        let titles = |c: &str| -> Vec<String> {
+            store
+                .list_pinned_tabs(c)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.title)
+                .collect()
+        };
+        assert_eq!(titles("c1"), ["a", "b"]);
+
+        let mut a2 = a.clone();
+        a2.sql = "SELECT 42;".into();
+        store.save_pinned_tab(&a2).unwrap();
+        assert_eq!(store.list_pinned_tabs("c1").unwrap()[0].sql, "SELECT 42;");
+
+        store.delete_pinned_tab(b.id).unwrap();
+        assert_eq!(titles("c1"), ["a"]);
+        assert_eq!(titles("c2"), ["other"]);
     }
 
     #[test]

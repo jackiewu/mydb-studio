@@ -47,6 +47,9 @@ pub fn run() {
             commands::list_snippets,
             commands::save_snippet,
             commands::delete_snippet,
+            commands::list_pinned_tabs,
+            commands::save_pinned_tab,
+            commands::delete_pinned_tab,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

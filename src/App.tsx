@@ -6,7 +6,6 @@ import {
   newProfile,
   type AppSettings,
   type ConnectionProfile,
-  type ExecutionOutcome,
   type ExecutionRecord,
   type OpenedSession,
   quoteIdent,
@@ -24,6 +23,7 @@ import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
+import { tabTitle, useTabs } from "./tabs";
 import "./styles.css";
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -44,14 +44,8 @@ export default function App() {
   const [session, setSession] = useState<OpenedSession | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
-  const [sql, setSql] = useState("SELECT VERSION();");
   const [running, setRunning] = useState(false);
-  const [outcome, setOutcome] = useState<ExecutionOutcome | null>(null);
   const [view, setView] = useState<"main" | "records">("main");
-  // Off by default: a run is stored only when the user asks for it.
-  const [recording, setRecording] = useState(false);
-  // Bumped to reseed the (uncontrolled) editor with `sql`.
-  const [editorSeed, setEditorSeed] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
@@ -61,6 +55,10 @@ export default function App() {
   // What ▶ would run; drives its label.
   const [runTarget, setRunTarget] = useState<RunTarget | null>(null);
   const schema = useSchema(session?.session_id ?? null);
+  const tabs = useTabs(session?.connection_id ?? null, settings.record_by_default);
+  const tab = tabs.active;
+  // SQL to open in a new tab once a connection's tabs have loaded.
+  const pendingSql = useRef<string | null>(null);
   const systemDark = useSystemDark();
 
   const reload = useCallback(async () => {
@@ -96,8 +94,6 @@ export default function App() {
       const opened = await api.openSession(c.id);
       setSession(opened);
       setCurrentDb(opened.current_database ?? null);
-      setOutcome(null);
-      setRecording(settings.record_by_default);
       // Refresh last-used ordering (and a first-time SSH host fingerprint).
       await reload();
       return true;
@@ -113,24 +109,50 @@ export default function App() {
   const openRecordInEditor = async (rec: ExecutionRecord) => {
     setView("main");
     const target = connections.find((c) => c.id === rec.connection_id);
-    if (target && session?.connection_id !== target.id && !(await connect(target))) return;
-    setSql(rec.sql);
-    setEditorSeed((n) => n + 1);
+    if (target && session?.connection_id !== target.id) {
+      pendingSql.current = rec.sql;
+      await connect(target);
+    } else {
+      tabs.add(rec.sql);
+    }
   };
+
+  const { add: addTab } = tabs;
+  const tabsLoaded = tabs.tabs.length > 0;
+  useEffect(() => {
+    if (tabsLoaded && pendingSql.current != null) {
+      addTab(pendingSql.current);
+      pendingSql.current = null;
+    }
+  }, [tabsLoaded, addTab]);
+
+  // ⌘/Ctrl+T opens a tab.
+  useEffect(() => {
+    if (!session) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        addTab();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [session, addTab]);
 
   const disconnect = async () => {
     if (!session) return;
     await api.closeSession(session.session_id).catch(() => {});
     setSession(null);
-    setOutcome(null);
   };
 
-  const run = async (text: string, record = recording) => {
-    if (!session || running || !text.trim()) return;
+  const run = async (text: string, record = tab?.recording ?? false) => {
+    if (!session || !tab || running || !text.trim()) return;
+    // Results go to the tab that ran, even if another one is shown by then.
+    const key = tab.key;
     setRunning(true);
     try {
       const result = await api.execute(session.session_id, text, record, settings.max_rows);
-      setOutcome(result);
+      tabs.update(key, { outcome: result });
       setCurrentDb(result.current_database ?? null);
       setNotice(
         result.reconnected
@@ -190,7 +212,7 @@ export default function App() {
           snippets={snippets}
           onChanged={reloadSnippets}
           onInsert={
-            session && view === "main"
+            session && tab && view === "main"
               ? (s) => {
                   setDialog(null);
                   editor.current?.insertSnippet(s.body);
@@ -216,9 +238,11 @@ export default function App() {
   const runLabel =
     runTarget?.kind === "all"
       ? { text: `執行全部（${runTarget.count} 句）`, hint: "執行全部" }
-      : runTarget?.kind === "selection"
-        ? { text: runTarget.count > 1 ? `執行選取（${runTarget.count} 句）` : "執行選取", hint: "執行選取的部分" }
-        : { text: "執行這一句", hint: "執行游標所在的那一句（淡色底的那段）" };
+      : runTarget && runTarget.count > 1
+        ? { text: `執行多行（${runTarget.count} 句）`, hint: "執行選取的部分" }
+        : runTarget?.kind === "selection"
+          ? { text: "執行單行", hint: "執行選取的那一句" }
+          : { text: "執行單行", hint: "執行游標所在的那一句（淡色底的那段）" };
 
   return (
     <div className="app">
@@ -261,8 +285,15 @@ export default function App() {
               </select>
             </label>
             <span className="spacer" />
-            <label className={recording ? "record-toggle on" : "record-toggle"} title="打開後，每次執行的 SQL 與統計都會存進「紀錄」">
-              <input type="checkbox" checked={recording} onChange={(e) => setRecording(e.target.checked)} />
+            <label
+              className={tab?.recording ? "record-toggle on" : "record-toggle"}
+              title="打開後，這個分頁每次執行的 SQL 與統計都會存進「紀錄」（釘選的分頁預設打開）"
+            >
+              <input
+                type="checkbox"
+                checked={!!tab?.recording}
+                onChange={(e) => tab && tabs.update(tab.key, { recording: e.target.checked })}
+              />
               📝 紀錄
             </label>
             <button onClick={() => setView("records")}>紀錄清單</button>
@@ -274,7 +305,7 @@ export default function App() {
             </button>
             <button
               disabled={running}
-              onClick={() => explain(editor.current?.statementText() ?? sql)}
+              onClick={() => explain(editor.current?.statementText() ?? "")}
               title="Explain 選取的部分或游標所在的那一句（⌘／Ctrl + E）"
             >
               Explain
@@ -282,7 +313,7 @@ export default function App() {
             {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
               <button
                 disabled={running}
-                onClick={() => run(editor.current?.allText()?.text ?? sql)}
+                onClick={() => run(editor.current?.allText()?.text ?? "")}
                 title="依序執行編輯器裡的每一句（⌘／Ctrl + Shift + Enter）"
               >
                 全部（{runTarget?.total} 句）
@@ -291,7 +322,7 @@ export default function App() {
             <button
               className="primary"
               disabled={running || runTarget?.count === 0}
-              onClick={() => run(editor.current?.runTarget()?.text ?? sql)}
+              onClick={() => run(editor.current?.runTarget()?.text ?? "")}
               title={`${runLabel.hint}（⌘／Ctrl + Enter）\n${runTarget?.text.trim().slice(0, 200) ?? ""}`}
             >
               {running ? "執行中…" : `▶ ${runLabel.text}`}
@@ -310,23 +341,67 @@ export default function App() {
 
         {session ? (
           <div className="split">
-            <SqlEditor
-              key={`${session.session_id}:${editorSeed}`}
-              initialValue={sql}
-              mariadb={isMaria}
-              schema={settings.schema_autocomplete ? schema.namespace : null}
-              defaultSchema={currentDb}
-              theme={editorTheme(settings.editor_theme, systemDark)}
-              fontSize={settings.editor_font_size}
-              snippets={snippets}
-              handle={editor}
-              onNeedColumns={loadColumns}
-              onExplain={explain}
-              onRunTargetChange={setRunTarget}
-              onChange={setSql}
-              onRun={run}
-            />
-            <ResultsPanel outcome={outcome} />
+            <div className="editor-pane">
+              <div className="tab-bar" role="tablist">
+                {tabs.tabs.map((t, i) => (
+                  <div
+                    key={t.key}
+                    role="tab"
+                    aria-selected={t.key === tab?.key}
+                    className={["tab", t.key === tab?.key ? "active" : "", t.pinnedId != null ? "pinned" : ""].join(" ")}
+                    onClick={() => tabs.setActive(t.key)}
+                    onAuxClick={(e) => e.button === 1 && tabs.close(t.key)}
+                    title={t.sql.slice(0, 300)}
+                  >
+                    <button
+                      className="pin"
+                      title={t.pinnedId != null ? "取消釘選" : "釘選：內容會保留，下次打開這個連線時還原，預設打開紀錄"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        tabs.togglePin(t.key);
+                      }}
+                    >
+                      📌
+                    </button>
+                    <span className="tab-title">{tabTitle(t.sql, `查詢 ${i + 1}`)}</span>
+                    {t.recording && <span className="tab-rec" title="這個分頁會記錄執行">●</span>}
+                    <button
+                      className="close"
+                      title={t.pinnedId != null ? "關閉並取消保留" : "關閉"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        tabs.close(t.key);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button className="tab-add" title="新分頁（⌘／Ctrl + T）" onClick={() => tabs.add()}>
+                  ＋
+                </button>
+              </div>
+              {tabs.tabs.map((t) => (
+                <SqlEditor
+                  key={`${session.session_id}:${t.key}:${t.seed}`}
+                  active={t.key === tab?.key}
+                  initialValue={t.sql}
+                  mariadb={isMaria}
+                  schema={settings.schema_autocomplete ? schema.namespace : null}
+                  defaultSchema={currentDb}
+                  theme={editorTheme(settings.editor_theme, systemDark)}
+                  fontSize={settings.editor_font_size}
+                  snippets={snippets}
+                  handle={t.key === tab?.key ? editor : undefined}
+                  onNeedColumns={loadColumns}
+                  onExplain={explain}
+                  onRunTargetChange={setRunTarget}
+                  onChange={(value) => tabs.setSql(t.key, value)}
+                  onRun={run}
+                />
+              ))}
+            </div>
+            <ResultsPanel outcome={tab?.outcome ?? null} />
           </div>
         ) : (
           <Home

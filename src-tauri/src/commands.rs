@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use mydb_core::report::{self, ReportOptions};
 use mydb_core::{
     AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
-    ExecutionOutcome, ExecutionRecord, RecordContext, RecordFilter, Result, Session, SessionInfo,
-    Snippet, Store, TableInfo,
+    ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext, RecordFilter, Result, Session,
+    SessionInfo, Snippet, Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::State;
@@ -301,6 +301,24 @@ pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snip
 #[tauri::command]
 pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.store.lock().unwrap().delete_snippet(id)
+}
+
+#[tauri::command]
+pub fn list_pinned_tabs(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<PinnedTab>> {
+    state.store.lock().unwrap().list_pinned_tabs(&connection_id)
+}
+
+#[tauri::command]
+pub fn save_pinned_tab(state: State<'_, AppState>, tab: PinnedTab) -> Result<PinnedTab> {
+    state.store.lock().unwrap().save_pinned_tab(&tab)
+}
+
+#[tauri::command]
+pub fn delete_pinned_tab(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.store.lock().unwrap().delete_pinned_tab(id)
 }
 
 fn uuid_v4() -> String {

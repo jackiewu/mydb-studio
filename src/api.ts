@@ -194,6 +194,15 @@ export interface Snippet {
   body: string;
 }
 
+export interface PinnedTab {
+  /** 0 until saved. */
+  id: number;
+  connection_id: string;
+  title: string;
+  sql: string;
+  position: number;
+}
+
 export function newProfile(): ConnectionProfile {
   return {
     id: "",
@@ -260,6 +269,9 @@ export const api = {
   listSnippets: () => invoke<Snippet[]>("list_snippets"),
   saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
   deleteSnippet: (id: number) => invoke<void>("delete_snippet", { id }),
+  listPinnedTabs: (connectionId: string) => invoke<PinnedTab[]>("list_pinned_tabs", { connectionId }),
+  savePinnedTab: (tab: PinnedTab) => invoke<PinnedTab>("save_pinned_tab", { tab }),
+  deletePinnedTab: (id: number) => invoke<void>("delete_pinned_tab", { id }),
 };
 
 /** Quotes an identifier with backticks. */
