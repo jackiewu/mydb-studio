@@ -363,12 +363,18 @@ async fn open_link(
     ))
 }
 
+/// Whether a statement (as split, so line comments are already gone) is
+/// `USE db`, possibly after block comments.
 fn is_use(stmt: &str) -> bool {
-    stmt.get(..4)
-        .is_some_and(|p| p.eq_ignore_ascii_case("use "))
-        || stmt
-            .get(..4)
-            .is_some_and(|p| p.eq_ignore_ascii_case("use`"))
+    let mut rest = stmt.trim_start();
+    while let Some(after) = rest.strip_prefix("/*") {
+        match after.find("*/") {
+            Some(end) => rest = after[end + 2..].trim_start(),
+            None => return false,
+        }
+    }
+    rest.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("use"))
+        && rest[3..].starts_with(|c: char| c.is_whitespace() || c == '`')
 }
 
 async fn run(
@@ -490,6 +496,28 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_use() {
+        for yes in [
+            "USE shop",
+            "use `my db`",
+            "  Use\nshop",
+            "/* go */ USE shop",
+            "use\tshop",
+        ] {
+            assert!(is_use(yes), "{yes}");
+        }
+        for no in [
+            "SELECT 1",
+            "user_id",
+            "USER()",
+            "/* use x */ SELECT 1",
+            "used",
+        ] {
+            assert!(!is_use(no), "{no}");
+        }
+    }
 
     #[test]
     fn large_integers_become_strings() {
