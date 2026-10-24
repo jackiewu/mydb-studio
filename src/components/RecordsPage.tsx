@@ -34,6 +34,14 @@ function dayToIso(day: string, nextDay = false) {
   return d.toISOString();
 }
 
+/** Returned rows for queries, affected rows for changes (a SELECT affects 0). */
+function rowCount(r: ExecutionRecord) {
+  const parts = [];
+  if (r.affected_rows) parts.push(`影響 ${r.affected_rows.toLocaleString()}`);
+  if (r.returned_rows) parts.push(`回傳 ${r.returned_rows.toLocaleString()}`);
+  return parts.join("，") || "0";
+}
+
 function firstLine(sql: string) {
   const line = sql.split("\n").find((l) => l.trim()) ?? "";
   return line.length > 90 ? line.slice(0, 90) + "…" : line;
@@ -181,7 +189,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                   <th>連線 / 資料庫</th>
                   <th>SQL</th>
                   <th>耗時</th>
-                  <th>影響</th>
+                  <th>筆數</th>
                   <th>狀態</th>
                 </tr>
               </thead>
@@ -207,7 +215,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                       {r.note && <div className="note-line">📝 {r.note}</div>}
                     </td>
                     <td className="num">{ms(r.duration_ms)}</td>
-                    <td className="num">{r.affected_rows}</td>
+                    <td className="num">{rowCount(r)}</td>
                     <td className={r.error_message ? "bad" : "ok"}>
                       {r.error_message ? `錯誤${r.error_code ? " " + r.error_code : ""}` : "成功"}
                     </td>
