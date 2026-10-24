@@ -2,6 +2,7 @@
 //! the local app database. Kept free of any UI code so the desktop app and a
 //! future MCP server can share it.
 
+pub mod admin;
 pub mod advisor;
 pub mod ai;
 pub mod error;
@@ -21,7 +22,7 @@ pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatemen
 pub use report::{ReportFormat, ReportOptions};
 pub use session::{
     ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
-    StatementResult, TableInfo,
+    StatementResult, TableInfo, TextRows,
 };
 pub use settings::{AppSettings, PinnedTab, Snippet};
 pub use split::split_statements;

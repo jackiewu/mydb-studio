@@ -394,3 +394,134 @@ async fn automatic_limit_caps_plain_queries() {
     assert_eq!(r[2].limit_added, None);
     session.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn server_admin_overview_users_and_privileges() {
+    use mydb_core::admin::{self, AdminChange, GrantTarget, PrivilegeEdit};
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+
+    let overview = admin::overview(&session).await.unwrap();
+    assert!(overview.status.contains_key("Uptime"));
+    assert!(overview.variables.contains_key("max_connections"));
+    assert!(!overview.current_user.is_empty());
+    let me = session.info().connection_id as u64;
+    assert!(
+        admin::processes(&session)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.id == me)
+    );
+
+    let (user, host) = ("mydb_admin_test", "%");
+    let _ = admin::apply(
+        &session,
+        &AdminChange::DropUser {
+            user: user.into(),
+            host: host.into(),
+        },
+    )
+    .await;
+    let shop = GrantTarget {
+        database: Some("demo".into()),
+        table: None,
+    };
+    let shown = admin::apply(
+        &session,
+        &AdminChange::CreateUser {
+            user: user.into(),
+            host: host.into(),
+            password: "p'w\\1".into(),
+            privileges: vec![PrivilegeEdit {
+                target: shop.clone(),
+                before: vec![],
+                before_grant_option: false,
+                after: vec!["SELECT".into(), "INSERT".into()],
+                after_grant_option: false,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    assert!(shown[0].contains("'********'"));
+
+    // The new password works.
+    let mut login = profile.clone();
+    login.user = user.into();
+    login.password = Some("p'w\\1".into());
+    Session::connect(&login)
+        .await
+        .unwrap()
+        .close()
+        .await
+        .unwrap();
+
+    let grants = admin::grants(&session, user, host).await.unwrap();
+    let on_demo = grants
+        .iter()
+        .find(|g| g.target.as_ref() == Some(&shop))
+        .unwrap();
+    let mut privs = on_demo.privileges.clone();
+    privs.sort();
+    assert_eq!(privs, ["INSERT", "SELECT"]);
+    assert!(grants.iter().all(|g| !g.text.contains("PASSWORD '")));
+
+    admin::apply(
+        &session,
+        &AdminChange::Privileges {
+            user: user.into(),
+            host: host.into(),
+            edits: vec![PrivilegeEdit {
+                target: shop.clone(),
+                before: privs,
+                before_grant_option: false,
+                after: vec!["SELECT".into(), "UPDATE".into()],
+                after_grant_option: true,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    let grants = admin::grants(&session, user, host).await.unwrap();
+    let on_demo = grants
+        .iter()
+        .find(|g| g.target.as_ref() == Some(&shop))
+        .unwrap();
+    let mut privs = on_demo.privileges.clone();
+    privs.sort();
+    assert_eq!(privs, ["SELECT", "UPDATE"]);
+    assert!(on_demo.grant_option);
+
+    admin::apply(
+        &session,
+        &AdminChange::SetLocked {
+            user: user.into(),
+            host: host.into(),
+            locked: true,
+        },
+    )
+    .await
+    .unwrap();
+    let users = admin::users(&session).await.unwrap();
+    let account = users.iter().find(|u| u.user == user).unwrap();
+    assert!(account.locked);
+    assert!(Session::connect(&login).await.is_err());
+
+    admin::apply(
+        &session,
+        &AdminChange::DropUser {
+            user: user.into(),
+            host: host.into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !admin::users(&session)
+            .await
+            .unwrap()
+            .iter()
+            .any(|u| u.user == user)
+    );
+}

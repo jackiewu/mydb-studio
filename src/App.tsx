@@ -26,6 +26,7 @@ import { RecordsPage } from "./components/RecordsPage";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
+import { ServerPage } from "./components/server/ServerPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
@@ -55,7 +56,7 @@ export default function App() {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
   const [running, setRunning] = useState(false);
-  const [view, setView] = useState<"main" | "records">("main");
+  const [view, setView] = useState<"main" | "records" | "server">("main");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
@@ -210,6 +211,7 @@ export default function App() {
     if (ask && !(await leaveTabs("中斷連線"))) return;
     await api.closeSession(session.session_id).catch(() => {});
     setSession(null);
+    setView("main");
   };
 
   // Risky statements waiting for the user's go-ahead.
@@ -488,60 +490,75 @@ export default function App() {
               </select>
             </label>
             <span className="spacer" />
-            <label
-              className={tab?.recording ? "record-toggle on" : "record-toggle"}
-              title="打開後，這個分頁每次執行的 SQL 與統計都會存進「紀錄」（釘選的分頁預設打開）"
-            >
-              <input
-                type="checkbox"
-                checked={!!tab?.recording}
-                onChange={(e) => tab && tabs.update(tab.key, { recording: e.target.checked })}
-              />
-              📝 紀錄
-            </label>
-            <button onClick={() => setView("records")}>紀錄清單</button>
-            <button onClick={() => (setSnippetDraft(null), setDialog("snippets"))} title="Snippet：常用 SQL 範本">
-              {"{ }"}
-            </button>
-            <button onClick={() => (setSettingsTab(undefined), setDialog("settings"))} title="設定">
-              ⚙
-            </button>
             <button
-              className={aiOpen ? "active" : undefined}
-              onClick={() => {
-                if (aiOpen) return setAiOpen(false);
-                const sql = editor.current?.statementText().trim() ?? "";
-                if (!aiRequest && sql) askAi({ sql });
-                else setAiOpen(true);
-              }}
-              title="AI 分析（⌘／Ctrl + I 分析選取的部分或游標所在的那一句）"
+              className={view === "server" ? "active" : undefined}
+              onClick={() => setView(view === "server" ? "main" : "server")}
+              title="伺服器狀態、執行中的查詢、使用者與權限"
             >
-              ✨ AI
+              🖥 伺服器
             </button>
-            <button
-              disabled={running}
-              onClick={() => explain(editor.current?.statementText() ?? "")}
-              title="Explain 選取的部分或游標所在的那一句（⌘／Ctrl + E）"
-            >
-              Explain
-            </button>
-            {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
-              <button
-                disabled={running}
-                onClick={() => run(editor.current?.allText()?.text ?? "")}
-                title="依序執行編輯器裡的每一句（⌘／Ctrl + Shift + Enter）"
-              >
-                全部（{runTarget?.total} 句）
+            {view === "server" ? (
+              <button className="primary" onClick={() => setView("main")}>
+                ← 回到編輯器
               </button>
+            ) : (
+              <>
+                <label
+                  className={tab?.recording ? "record-toggle on" : "record-toggle"}
+                  title="打開後，這個分頁每次執行的 SQL 與統計都會存進「紀錄」（釘選的分頁預設打開）"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!tab?.recording}
+                    onChange={(e) => tab && tabs.update(tab.key, { recording: e.target.checked })}
+                  />
+                  📝 紀錄
+                </label>
+                <button onClick={() => setView("records")}>紀錄清單</button>
+                <button onClick={() => (setSnippetDraft(null), setDialog("snippets"))} title="Snippet：常用 SQL 範本">
+                  {"{ }"}
+                </button>
+                <button onClick={() => (setSettingsTab(undefined), setDialog("settings"))} title="設定">
+                  ⚙
+                </button>
+                <button
+                  className={aiOpen ? "active" : undefined}
+                  onClick={() => {
+                    if (aiOpen) return setAiOpen(false);
+                    const sql = editor.current?.statementText().trim() ?? "";
+                    if (!aiRequest && sql) askAi({ sql });
+                    else setAiOpen(true);
+                  }}
+                  title="AI 分析（⌘／Ctrl + I 分析選取的部分或游標所在的那一句）"
+                >
+                  ✨ AI
+                </button>
+                <button
+                  disabled={running}
+                  onClick={() => explain(editor.current?.statementText() ?? "")}
+                  title="Explain 選取的部分或游標所在的那一句（⌘／Ctrl + E）"
+                >
+                  Explain
+                </button>
+                {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
+                  <button
+                    disabled={running}
+                    onClick={() => run(editor.current?.allText()?.text ?? "")}
+                    title="依序執行編輯器裡的每一句（⌘／Ctrl + Shift + Enter）"
+                  >
+                    全部（{runTarget?.total} 句）
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  disabled={running || runTarget?.count === 0}
+                  onClick={() => run(editor.current?.runTarget()?.text ?? "")}
+                  title={`${runLabel.hint}（⌘／Ctrl + Enter）\n${runTarget?.text.trim().slice(0, 200) ?? ""}`}
+                >
+                  {running ? "執行中…" : `▶ ${runLabel.text}`}
+                </button>
+              </>
             )}
-            <button
-              className="primary"
-              disabled={running || runTarget?.count === 0}
-              onClick={() => run(editor.current?.runTarget()?.text ?? "")}
-              title={`${runLabel.hint}（⌘／Ctrl + Enter）\n${runTarget?.text.trim().slice(0, 200) ?? ""}`}
-            >
-              {running ? "執行中…" : `▶ ${runLabel.text}`}
-            </button>
           </header>
         )}
 
@@ -551,8 +568,20 @@ export default function App() {
           </div>
         )}
 
+        {session && view === "server" && (
+          <ServerPage
+            key={session.session_id}
+            sessionId={session.session_id}
+            connectionId={session.info.connection_id}
+            mariadb={isMaria}
+            onOpenSql={(sql) => {
+              setView("main");
+              tabs.add(sql);
+            }}
+          />
+        )}
         {session ? (
-          <div className="split">
+          <div className="split" hidden={view === "server"}>
             <div className="editor-pane">
               <div className="tab-bar" role="tablist">
                 {tabs.tabs.map((t, i) => (
