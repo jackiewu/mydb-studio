@@ -8,6 +8,7 @@ use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
+use crate::secrets::{self, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
@@ -136,6 +137,8 @@ fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, 
 
 pub struct Store {
     db: Connection,
+    /// Where passwords go instead of `db`, when set.
+    secrets: Option<std::cell::RefCell<Secrets>>,
 }
 
 impl Store {
@@ -150,9 +153,37 @@ impl Store {
     fn init(db: Connection) -> Result<Self> {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
-        let mut store = Self { db };
+        let mut store = Self { db, secrets: None };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Keeps passwords in `vault` from now on, moving any saved in the
+    /// database there.
+    pub fn use_vault(&mut self, vault: Box<dyn SecretVault>) -> Result<()> {
+        self.secrets = Some(std::cell::RefCell::new(Secrets::new(vault)));
+        let mut stmt = self.db.prepare("SELECT profile FROM connections")?;
+        let saved: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for json in saved {
+            let profile: ConnectionProfile = serde_json::from_str(&json)?;
+            if !secrets::strip(&profile).1.is_empty() {
+                self.save_connection(&profile)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `profile` with its passwords from the vault.
+    fn with_secrets(&self, mut profile: ConnectionProfile) -> ConnectionProfile {
+        if let Some(s) = &self.secrets
+            && let Some(found) = s.borrow_mut().get(&profile.id)
+        {
+            secrets::fill(&mut profile, &found);
+        }
+        profile
     }
 
     fn migrate(&mut self) -> Result<()> {
@@ -182,7 +213,7 @@ impl Store {
             let (json, last_used_at) = row?;
             let mut profile: ConnectionProfile = serde_json::from_str(&json)?;
             profile.last_used_at = last_used_at;
-            out.push(profile);
+            out.push(self.with_secrets(profile));
         }
         out.sort_by(|a, b| {
             b.favorite
@@ -218,11 +249,20 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+        let profile: Option<ConnectionProfile> =
+            json.map(|j| serde_json::from_str(&j)).transpose()?;
+        Ok(profile.map(|p| self.with_secrets(p)))
     }
 
     /// Inserts or replaces a profile by id.
     pub fn save_connection(&self, profile: &ConnectionProfile) -> Result<()> {
+        // Passwords go to the vault; the database keeps them only when
+        // there is no vault or it can't be used.
+        let (stripped, found) = secrets::strip(profile);
+        let profile = match &self.secrets {
+            Some(s) if s.borrow_mut().put(&profile.id, found) => &stripped,
+            _ => profile,
+        };
         self.db.execute(
             "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET
@@ -365,6 +405,9 @@ impl Store {
     pub fn delete_connection(&self, id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
+        if let Some(s) = &self.secrets {
+            s.borrow_mut().put(id, Default::default());
+        }
         Ok(())
     }
 
@@ -862,6 +905,66 @@ mod tests {
 
         store.delete_snippet(mine.id).unwrap();
         assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn passwords_live_in_the_vault() {
+        use crate::profile::{SshAuth, SshConfig};
+        use crate::secrets::MemoryVault;
+        let mut store = Store::open_in_memory().unwrap();
+        // Saved before there was a vault: moved over when one is set.
+        let mut p = ConnectionProfile::new("prod", "db", "app");
+        p.password = Some("s3cret".into());
+        p.ssh = Some(SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "me".into(),
+            auth: SshAuth::Password {
+                password: "sshpw".into(),
+            },
+            known_host_fingerprint: None,
+        });
+        store.save_connection(&p).unwrap();
+        let vault = MemoryVault::default();
+        store.use_vault(Box::new(vault.clone())).unwrap();
+
+        let raw: String = store
+            .db
+            .query_row("SELECT profile FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(!raw.contains("s3cret") && !raw.contains("sshpw"), "{raw}");
+        let kept = vault.0.lock().unwrap().clone().unwrap();
+        assert!(kept.contains("s3cret") && kept.contains("sshpw"));
+
+        // Reading fills them back in, so a copy carries them too.
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap(), p);
+        assert_eq!(
+            store.list_connections().unwrap()[0].password.as_deref(),
+            Some("s3cret")
+        );
+        let copy = ConnectionProfile {
+            id: "copy".into(),
+            ..store.get_connection(&p.id).unwrap().unwrap()
+        };
+        store.save_connection(&copy).unwrap();
+        assert_eq!(
+            store
+                .get_connection("copy")
+                .unwrap()
+                .unwrap()
+                .password
+                .as_deref(),
+            Some("s3cret")
+        );
+
+        // Clearing the password removes it; deleting drops the rest.
+        let mut cleared = p.clone();
+        cleared.password = Some(String::new());
+        store.save_connection(&cleared).unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+        store.delete_connection(&p.id).unwrap();
+        store.delete_connection("copy").unwrap();
+        assert_eq!(vault.0.lock().unwrap().as_deref(), Some("{}"));
     }
 
     #[test]

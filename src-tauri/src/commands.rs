@@ -86,6 +86,43 @@ pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> 
     Ok(info)
 }
 
+/// Database names on the server `profile` points at, for the form's
+/// default database list. Connects just for this.
+#[tauri::command]
+pub async fn list_server_databases(profile: ConnectionProfile) -> Result<Vec<String>> {
+    let profile = ConnectionProfile {
+        database: None,
+        ..profile
+    };
+    let session = Session::connect(&profile).await?;
+    let names = session
+        .list_databases()
+        .await
+        .map(|dbs| dbs.into_iter().map(|d| d.name).collect());
+    let _ = session.close().await;
+    names
+}
+
+/// Writes the AWS RDS CA bundle that ships with the app to the app's data
+/// folder and returns its path, for the SSL settings.
+#[tauri::command]
+pub fn aws_rds_ca_path(app: AppHandle) -> Result<String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| CoreError::Config {
+            message: e.to_string(),
+        })?
+        .join("certs");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("aws-rds-global-bundle.pem");
+    let bundle = mydb_core::profile::AWS_RDS_CA_BUNDLE;
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(bundle) {
+        std::fs::write(&path, bundle)?;
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[derive(Serialize)]
 pub struct OpenedSession {
     session_id: String,

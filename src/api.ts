@@ -9,6 +9,8 @@ export interface SslConfig {
   ca_path?: string | null;
   cert_path?: string | null;
   key_path?: string | null;
+  /** The cloud service the settings were filled in for. */
+  cloud?: "aws" | "gcp" | "azure" | null;
 }
 
 export type SshAuth =
@@ -331,6 +333,16 @@ export function newProfile(): ConnectionProfile {
   };
 }
 
+/** Plain words for the TLS failures people run into with cloud servers. */
+function tlsHint(message: string) {
+  if (/UnknownIssuer/i.test(message))
+    return "\n伺服器的憑證不是由指定的 CA 簽發。請確認 SSL/TLS 頁的 CA 檔和「雲端服務」選項是否正確。";
+  if (/NotValidForName|CertNotValidForName/i.test(message))
+    return "\n憑證上的主機名稱和你填的「主機」不同。請改填憑證上的名稱（例如 RDS endpoint），或把模式改成「加密，驗證 CA」。";
+  if (/Expired/i.test(message)) return "\n伺服器的憑證已過期。";
+  return "";
+}
+
 export function describeError(e: unknown): string {
   if (typeof e === "string") return e;
   const err = e as CoreError;
@@ -340,7 +352,7 @@ export function describeError(e: unknown): string {
     case "host_key_mismatch":
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
     case "connection":
-      return `連線中斷：${err.message}`;
+      return `連線中斷：${err.message}${tlsHint(err.message)}`;
     case "not_connected":
       return "連線已關閉，請重新連線。";
     case undefined:
@@ -356,6 +368,8 @@ export const api = {
     invoke<ConnectionProfile>("save_connection", { profile }),
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
   setFavorite: (id: string, favorite: boolean) => invoke<void>("set_favorite", { id, favorite }),
+  listServerDatabases: (profile: ConnectionProfile) => invoke<string[]>("list_server_databases", { profile }),
+  awsRdsCaPath: () => invoke<string>("aws_rds_ca_path"),
   testConnection: (profile: ConnectionProfile) =>
     invoke<SessionInfo>("test_connection", { profile }),
   openSession: (connectionId: string) =>

@@ -59,7 +59,16 @@ pub struct SslConfig {
     /// Private key matching `cert_path`.
     #[serde(default)]
     pub key_path: Option<String>,
+    /// The cloud service the settings were filled in for (`aws`, `gcp`,
+    /// `azure`), so the form can show its hints again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<String>,
 }
+
+/// Amazon RDS's CA bundle for every region, shipped with the app so AWS
+/// connections can verify the server without a download. From
+/// <https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem>.
+pub const AWS_RDS_CA_BUNDLE: &str = include_str!("../certs/aws-rds-global-bundle.pem");
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

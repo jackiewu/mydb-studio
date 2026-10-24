@@ -1,4 +1,5 @@
 mod commands;
+mod keychain;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -45,7 +46,10 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let store = Store::open(dir.join("mydb-studio.db"))?;
+            let mut store = Store::open(dir.join("mydb-studio.db"))?;
+            if let Some(vault) = keychain::vault() {
+                store.use_vault(vault)?;
+            }
             let crash = crash_watch(&dir);
             let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
             ai.stop_leftover();
@@ -95,6 +99,8 @@ pub fn run() {
             commands::delete_connection,
             commands::set_favorite,
             commands::test_connection,
+            commands::list_server_databases,
+            commands::aws_rds_ca_path,
             commands::open_session,
             commands::close_session,
             commands::execute,
