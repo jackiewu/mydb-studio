@@ -398,3 +398,40 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .topbar > strong { flex-shrink: 1; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
 .topbar > .badge:first-of-type { flex-shrink: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; }
 .topbar > .spacer { flex-shrink: 1; }
+
+/* Result selection and copy */
+.copy-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.copy-bar select { width: auto; font-size: 12px; padding: 2px 6px; }
+.copy-bar .flash { color: var(--good); }
+.check-inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.check-inline input { width: auto; }
+.grid-wrap:focus { outline: none; }
+.grid.selectable { user-select: none; cursor: cell; }
+.grid.selectable th, .grid.selectable .rownum { cursor: pointer; }
+.grid td.sel { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
+.grid th.sel, .grid td.rownum.sel { background: color-mix(in srgb, var(--accent) 35%, var(--code-bg)); }
+.menu-backdrop { position: fixed; inset: 0; z-index: 50; }
+.context-menu {
+  position: fixed;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+}
+.context-menu button { width: 100%; text-align: left; border: none; background: none; padding: 5px 10px; border-radius: 4px; }
+.context-menu button:hover { background: var(--accent); color: var(--accent-text); }
+.context-menu label { padding: 5px 10px; }
+.context-menu .sep { border-top: 1px solid var(--border); margin: 4px 0; }
+.plan-notes { padding: 6px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--border); }
+.plan-notes .bad { color: var(--bad); }
+.plan-notes .warn { color: var(--warn); }
+.plan-notes .ok { color: var(--good); }
+.grid td.bad { color: var(--bad); font-weight: 600; }
+.grid td.warn { color: var(--warn); font-weight: 600; }
+.result-tabs .tab-no { color: var(--muted); }
+.results.empty p { margin: 0 0 6px; }

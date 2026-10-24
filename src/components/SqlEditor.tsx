@@ -6,12 +6,24 @@ import { completeFromList, snippet, snippetCompletion } from "@codemirror/autoco
 import { sql, MySQL, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import type { Snippet } from "../api";
 import { columnSource, type SchemaMap } from "../editor/columns";
+import { statementAt } from "../editor/statements";
 import type { EditorTheme } from "../editor/themes";
 
 /** Lets the app insert text into the editor. */
 export interface EditorHandle {
   /** Inserts a snippet at the cursor (replacing the selection). */
   insertSnippet: (body: string) => void;
+  /** The selection if there is one, otherwise the whole text. */
+  runText: () => string;
+  /** The selection if there is one, otherwise the statement at the cursor. */
+  statementText: () => string;
+}
+
+function selectionOr(v: EditorView, fallback: "all" | "statement") {
+  const { from, to, head } = v.state.selection.main;
+  if (from !== to) return v.state.sliceDoc(from, to);
+  const doc = v.state.doc.toString();
+  return fallback === "all" ? doc : statementAt(doc, head);
 }
 
 interface Props {
@@ -28,8 +40,10 @@ interface Props {
   /** The editor wants the columns of `db` for autocomplete. */
   onNeedColumns?: (db: string) => void;
   onChange: (value: string) => void;
-  /** Called with the selection if there is one, otherwise the whole text. */
+  /** ⌘Enter: the selection or the whole text; ⌘⇧Enter: the statement at the cursor. */
   onRun: (sql: string) => void;
+  /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
+  onExplain?: (sql: string) => void;
 }
 
 function language(
@@ -96,9 +110,15 @@ export function SqlEditor(props: Props) {
 
   useEffect(() => {
     const run = (v: EditorView) => {
-      const { from, to } = v.state.selection.main;
-      const text = from === to ? v.state.doc.toString() : v.state.sliceDoc(from, to);
-      handlers.current.onRun(text);
+      handlers.current.onRun(selectionOr(v, "all"));
+      return true;
+    };
+    const runStatement = (v: EditorView) => {
+      handlers.current.onRun(selectionOr(v, "statement"));
+      return true;
+    };
+    const explain = (v: EditorView) => {
+      handlers.current.onExplain?.(selectionOr(v, "statement"));
       return true;
     };
     const p = parts.current;
@@ -110,7 +130,11 @@ export function SqlEditor(props: Props) {
         p.language.of(language(mariadb, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
-        Prec.highest(keymap.of([{ key: "Mod-Enter", run }])),
+        Prec.highest(keymap.of([
+            { key: "Mod-Enter", run },
+            { key: "Mod-Shift-Enter", run: runStatement },
+            { key: "Mod-e", run: explain },
+          ])),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) handlers.current.onChange(u.state.doc.toString());
         }),
@@ -145,6 +169,8 @@ export function SqlEditor(props: Props) {
   useEffect(() => {
     if (!handle) return;
     handle.current = {
+      runText: () => (view.current ? selectionOr(view.current, "all") : ""),
+      statementText: () => (view.current ? selectionOr(view.current, "statement") : ""),
       insertSnippet: (body) => {
         const v = view.current;
         if (!v) return;

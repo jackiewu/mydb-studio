@@ -20,6 +20,7 @@ import { ResultsPanel } from "./components/ResultsPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
+import { statementRanges } from "./editor/statements";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
 import "./styles.css";
@@ -121,11 +122,11 @@ export default function App() {
     setOutcome(null);
   };
 
-  const run = async (text: string) => {
+  const run = async (text: string, record = recording) => {
     if (!session || running || !text.trim()) return;
     setRunning(true);
     try {
-      const result = await api.execute(session.session_id, text, recording, settings.max_rows);
+      const result = await api.execute(session.session_id, text, record, settings.max_rows);
       setOutcome(result);
       setCurrentDb(result.current_database ?? null);
       setNotice(
@@ -146,6 +147,14 @@ export default function App() {
   const toggleFavorite = async (c: ConnectionProfile) => {
     await api.setFavorite(c.id, !c.favorite);
     await reload();
+  };
+
+  // EXPLAIN the first statement of the selection (or of the statement at the cursor).
+  const explain = (text: string) => {
+    const first = statementRanges(text)[0];
+    if (!first) return;
+    const stmt = text.slice(first.from, first.to).trim().replace(/^(explain|analyze)\s+/i, "");
+    run(`EXPLAIN ${stmt}`, false);
   };
 
   const switchDatabase = async (db: string) => {
@@ -254,7 +263,19 @@ export default function App() {
             <button onClick={() => setDialog("settings")} title="設定">
               ⚙
             </button>
-            <button className="primary" disabled={running} onClick={() => run(sql)}>
+            <button
+              disabled={running}
+              onClick={() => explain(editor.current?.statementText() ?? sql)}
+              title="Explain 選取的部分或游標所在的那一句（⌘／Ctrl + E）"
+            >
+              Explain
+            </button>
+            <button
+              className="primary"
+              disabled={running}
+              onClick={() => run(editor.current?.runText() ?? sql)}
+              title="執行選取的部分，沒選取就執行全部（⌘／Ctrl + Enter）"
+            >
               {running ? "執行中…" : "▶ 執行"}
             </button>
             <button onClick={disconnect}>中斷連線</button>
@@ -280,6 +301,7 @@ export default function App() {
               snippets={snippets}
               handle={editor}
               onNeedColumns={loadColumns}
+              onExplain={explain}
               onChange={setSql}
               onRun={run}
             />
