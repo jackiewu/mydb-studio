@@ -48,6 +48,7 @@ export interface OpenedSession {
   session_id: string;
   connection_id: string;
   info: SessionInfo;
+  current_database?: string | null;
 }
 
 export interface ColumnInfo {
@@ -86,6 +87,8 @@ export interface ExecutionOutcome {
   reconnected: boolean;
   /** Set when recording was on for this run. */
   record_id?: number | null;
+  /** The database in use after the run (a USE may have changed it). */
+  current_database?: string | null;
 }
 
 export interface RecordedStatement {
@@ -153,6 +156,44 @@ export interface TableInfo {
   comment: string;
 }
 
+export interface ColumnDef {
+  table: string;
+  name: string;
+  column_type: string;
+  /** PRI, UNI, MUL or empty. */
+  key: string;
+  nullable: boolean;
+  comment: string;
+}
+
+export interface AppSettings {
+  /** Editor theme id from EDITOR_THEMES; "auto" follows the system. */
+  editor_theme: string;
+  editor_font_size: number;
+  max_rows: number;
+  record_by_default: boolean;
+  show_system_databases: boolean;
+  schema_autocomplete: boolean;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  editor_theme: "auto",
+  editor_font_size: 13,
+  max_rows: 1000,
+  record_by_default: false,
+  show_system_databases: false,
+  schema_autocomplete: true,
+};
+
+export interface Snippet {
+  /** 0 until saved. */
+  id: number;
+  name: string;
+  prefix: string;
+  /** SQL; ${name} marks a field to fill in. */
+  body: string;
+}
+
 export function newProfile(): ConnectionProfile {
   return {
     id: "",
@@ -197,7 +238,7 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
-  execute: (sessionId: string, sql: string, record = false, maxRows?: number) =>
+  execute: (sessionId: string, sql: string, record = false, maxRows?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, record }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
@@ -209,6 +250,16 @@ export const api = {
   generateReport: (ids: number[], options: ReportOptions) =>
     invoke<string>("generate_report", { ids, options }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
+  useDatabase: (sessionId: string, database: string) =>
+    invoke<void>("use_database", { sessionId, database }),
+  listAllTables: (sessionId: string) => invoke<[string, string][]>("list_all_tables", { sessionId }),
+  listColumns: (sessionId: string, database: string) =>
+    invoke<ColumnDef[]>("list_columns", { sessionId, database }),
+  getSettings: () => invoke<AppSettings>("get_settings"),
+  saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
+  listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
+  deleteSnippet: (id: number) => invoke<void>("delete_snippet", { id }),
 };
 
 /** Quotes an identifier with backticks. */

@@ -39,6 +39,14 @@ pub fn run() {
             commands::delete_records,
             commands::generate_report,
             commands::save_text_file,
+            commands::use_database,
+            commands::list_all_tables,
+            commands::list_columns,
+            commands::get_settings,
+            commands::save_settings,
+            commands::list_snippets,
+            commands::save_snippet,
+            commands::delete_snippet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

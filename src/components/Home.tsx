@@ -8,6 +8,7 @@ interface Props {
   onNew: () => void;
   onToggleFavorite: (c: ConnectionProfile) => void;
   onOpenRecords: () => void;
+  onOpenSettings: () => void;
 }
 
 function lastUsed(iso?: string | null) {
@@ -20,7 +21,7 @@ function lastUsed(iso?: string | null) {
   return `${Math.round(hours / 24)} 天前使用`;
 }
 
-function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Omit<Props, "connections" | "onNew" | "onOpenRecords"> & { c: ConnectionProfile }) {
+function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Pick<Props, "connecting" | "onConnect" | "onEdit" | "onToggleFavorite"> & { c: ConnectionProfile }) {
   return (
     <div className="card" onClick={() => onConnect(c)} role="button" tabIndex={0}>
       <div className="card-head">
@@ -65,7 +66,7 @@ function Card({ c, connecting, onConnect, onEdit, onToggleFavorite }: Omit<Props
 }
 
 export function Home(props: Props) {
-  const { connections, onNew, onOpenRecords } = props;
+  const { connections, onNew, onOpenRecords, onOpenSettings } = props;
   const favorites = connections.filter((c) => c.favorite);
   const others = connections.filter((c) => !c.favorite);
 
@@ -75,6 +76,9 @@ export function Home(props: Props) {
         <h1>連線</h1>
         <div className="home-actions">
           <button onClick={onOpenRecords}>📋 執行紀錄與報表</button>
+          <button onClick={onOpenSettings} title="設定">
+            ⚙ 設定
+          </button>
           <button className="primary" onClick={onNew}>
             ＋ 新增連線
           </button>

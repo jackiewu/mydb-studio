@@ -101,6 +101,19 @@ pub struct TableInfo {
     pub comment: String,
 }
 
+/// A column, as needed for autocomplete and table details.
+#[derive(Debug, Clone, Serialize)]
+pub struct ColumnDef {
+    pub table: String,
+    pub name: String,
+    /// Full type, e.g. `varchar(64)` or `int(10) unsigned`.
+    pub column_type: String,
+    /// `PRI`, `UNI`, `MUL` or empty.
+    pub key: String,
+    pub nullable: bool,
+    pub comment: String,
+}
+
 impl Session {
     pub async fn connect(profile: &ConnectionProfile) -> Result<Self> {
         let (link, info) = open_link(profile, None).await?;
@@ -234,6 +247,60 @@ impl Session {
                     engine,
                     rows_estimate,
                     size_bytes,
+                    comment,
+                },
+            )
+            .collect())
+    }
+
+    /// Switches to `database`, as `USE` would. It stays selected after an
+    /// automatic reconnect.
+    pub async fn use_database(&self, database: &str) -> Result<()> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        conn.query_drop(format!("USE `{}`", database.replace('`', "``")))
+            .await?;
+        *self.current_db.lock().unwrap() = Some(database.to_string());
+        Ok(())
+    }
+
+    /// Table names of every user database, as `(database, table)` pairs.
+    /// Cheap enough to load once per connection for autocomplete.
+    pub async fn list_all_tables(&self) -> Result<Vec<(String, String)>> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        Ok(conn
+            .query(
+                "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES
+                 WHERE TABLE_SCHEMA NOT IN ('information_schema', 'performance_schema')
+                 ORDER BY TABLE_SCHEMA, TABLE_NAME",
+            )
+            .await?)
+    }
+
+    /// Columns of every table in `database`, in table and column order.
+    pub async fn list_columns(&self, database: &str) -> Result<Vec<ColumnDef>> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let rows: Vec<(String, String, String, String, String, String)> = conn
+            .exec(
+                "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY, IS_NULLABLE,
+                        COLUMN_COMMENT
+                 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = ?
+                 ORDER BY TABLE_NAME, ORDINAL_POSITION",
+                (database,),
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(table, name, column_type, key, nullable, comment)| ColumnDef {
+                    table,
+                    name,
+                    column_type,
+                    key,
+                    nullable: nullable == "YES",
                     comment,
                 },
             )

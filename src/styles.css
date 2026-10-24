@@ -31,8 +31,6 @@
     --row-alt: #22252d;
     --code-bg: #262a33;
   }
-  .cm-editor { background: var(--panel); color: var(--text); }
-  .cm-gutters { background: var(--panel) !important; border-color: var(--border) !important; }
 }
 
 * { box-sizing: border-box; }
@@ -56,7 +54,7 @@ button.small { padding: 2px 8px; font-size: 12px; }
 button.ghost { border-color: transparent; background: transparent; }
 button.link { border: none; background: none; color: var(--accent); padding: 0 4px; }
 
-input, select {
+input, select, textarea {
   font: inherit;
   color: var(--text);
   background: var(--bg);
@@ -358,3 +356,45 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .record-detail table.grid th:first-child { width: 28px; }
 .record-detail table.grid th:nth-child(n + 3) { width: 64px; }
 .record-detail .sql-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Current database */
+.tree-db.current .tree-name { font-weight: 600; color: var(--accent); }
+.current-mark { font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--accent); color: var(--accent-text); }
+.db-picker { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.db-picker select { font-size: 13px; padding: 2px 4px; max-width: 220px; }
+
+/* Settings and snippets */
+.settings-dialog { width: 520px; max-height: 90vh; overflow: auto; background: var(--panel); border-radius: 10px; padding: 20px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25); }
+.settings-dialog h2, .snippet-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.settings-dialog .fields { min-height: 0; }
+.theme-swatch { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.theme-swatch button { text-align: left; font-size: 12px; }
+.theme-swatch button.active { border-color: var(--accent); color: var(--accent); }
+.snippet-dialog {
+  width: min(860px, 92vw);
+  height: min(600px, 88vh);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+.snippet-body { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.snippet-list { width: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin: 0; padding: 4px; list-style: none; }
+.snippet-list button { width: 100%; text-align: left; border: none; background: none; padding: 5px 8px; display: flex; gap: 8px; align-items: baseline; }
+.snippet-list button.active { background: var(--code-bg); }
+.snippet-list code { color: var(--accent); min-width: 44px; }
+.snippet-list .name { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snippet-edit { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.snippet-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.snippet-edit textarea { flex: 1; min-height: 200px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; resize: none; }
+.snippet-edit .grow-label { flex: 1; }
+.field-group { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.snippet-edit .row { display: flex; gap: 10px; }
+.snippet-edit .grow { flex: 1; }
+.hint code { background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
+.topbar > * { flex-shrink: 0; white-space: nowrap; }
+.topbar > strong { flex-shrink: 1; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+.topbar > .badge:first-of-type { flex-shrink: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; }
+.topbar > .spacer { flex-shrink: 1; }

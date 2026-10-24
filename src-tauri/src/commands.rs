@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use mydb_core::report::{self, ReportOptions};
 use mydb_core::{
-    ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome,
-    ExecutionRecord, RecordContext, RecordFilter, Result, Session, SessionInfo, Store, TableInfo,
+    AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
+    ExecutionOutcome, ExecutionRecord, RecordContext, RecordFilter, Result, Session, SessionInfo,
+    Snippet, Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::State;
@@ -80,6 +81,7 @@ pub struct OpenedSession {
     session_id: String,
     connection_id: String,
     info: SessionInfo,
+    current_database: Option<String>,
 }
 
 #[tauri::command]
@@ -90,6 +92,7 @@ pub async fn open_session(
     let mut profile = state.connection(&connection_id)?;
     let session = Session::connect(&profile).await?;
     let info = session.info().clone();
+    let current_database = session.current_database();
 
     // Trust on first use: remember the SSH host key for next time.
     if let (Some(ssh), Some(fp)) = (profile.ssh.as_mut(), &info.ssh_host_fingerprint)
@@ -115,6 +118,7 @@ pub async fn open_session(
         session_id,
         connection_id,
         info,
+        current_database,
     })
 }
 
@@ -134,6 +138,8 @@ pub struct ExecuteResponse {
     outcome: ExecutionOutcome,
     /// Id of the saved record when recording was on.
     record_id: Option<i64>,
+    /// The database in use after the run (a `USE` may have changed it).
+    current_database: Option<String>,
 }
 
 #[tauri::command]
@@ -165,7 +171,11 @@ pub async fn execute(
     } else {
         None
     };
-    Ok(ExecuteResponse { outcome, record_id })
+    Ok(ExecuteResponse {
+        outcome,
+        record_id,
+        current_database: session.current_database(),
+    })
 }
 
 #[tauri::command]
@@ -231,6 +241,66 @@ pub async fn list_tables(
         .await?
         .list_tables(&database)
         .await
+}
+
+#[tauri::command]
+pub async fn use_database(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> Result<()> {
+    state
+        .session(&session_id)
+        .await?
+        .use_database(&database)
+        .await
+}
+
+/// Table names per database, for autocomplete.
+#[tauri::command]
+pub async fn list_all_tables(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<(String, String)>> {
+    state.session(&session_id).await?.list_all_tables().await
+}
+
+#[tauri::command]
+pub async fn list_columns(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> Result<Vec<ColumnDef>> {
+    state
+        .session(&session_id)
+        .await?
+        .list_columns(&database)
+        .await
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
+    state.store.lock().unwrap().get_settings()
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
+    state.store.lock().unwrap().save_settings(&settings)
+}
+
+#[tauri::command]
+pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    state.store.lock().unwrap().list_snippets()
+}
+
+#[tauri::command]
+pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snippet> {
+    state.store.lock().unwrap().save_snippet(&snippet)
+}
+
+#[tauri::command]
+pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.store.lock().unwrap().delete_snippet(id)
 }
 
 fn uuid_v4() -> String {

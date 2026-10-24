@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
+use crate::settings::{AppSettings, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
 const MIGRATIONS: &[&str] = &[
@@ -42,6 +43,40 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX executions_started_at ON executions (started_at);
     CREATE INDEX executions_connection ON executions (connection_id, started_at);",
+    // 4: preferences and snippets, with a few starter snippets
+    "CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE snippets (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        prefix     TEXT NOT NULL,
+        body       TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO snippets (name, prefix, body) VALUES
+      ('查詢資料', 'sel', 'SELECT *
+FROM ${table}
+WHERE ${condition}
+LIMIT 100;'),
+      ('計算筆數', 'cnt', 'SELECT COUNT(*) FROM ${table};'),
+      ('新增資料', 'ins', 'INSERT INTO ${table} (${columns})
+VALUES (${values});'),
+      ('更新資料', 'upd', 'UPDATE ${table}
+SET ${column} = ${value}
+WHERE ${id_column} = ${id};'),
+      ('刪除資料', 'del', 'DELETE FROM ${table}
+WHERE ${condition};'),
+      ('資料表結構', 'ddl', 'SHOW CREATE TABLE ${table};'),
+      ('索引', 'idx', 'SHOW INDEX FROM ${table};'),
+      ('執行中的查詢', 'proc', 'SHOW FULL PROCESSLIST;'),
+      ('資料表大小', 'size', 'SELECT TABLE_NAME,
+       ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 1) AS size_mb,
+       TABLE_ROWS AS rows_estimate
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE()
+ORDER BY size_mb DESC;');",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -306,6 +341,70 @@ impl Store {
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    /// Saved preferences, or the defaults if none were saved.
+    pub fn get_settings(&self) -> Result<AppSettings> {
+        let json: Option<String> = self
+            .db
+            .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(match json {
+            Some(j) => serde_json::from_str(&j)?,
+            None => AppSettings::default(),
+        })
+    }
+
+    pub fn save_settings(&self, settings: &AppSettings) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO settings (key, value) VALUES ('app', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [serde_json::to_string(settings)?],
+        )?;
+        Ok(())
+    }
+
+    /// All snippets, by prefix.
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id, name, prefix, body FROM snippets ORDER BY prefix, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Snippet {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                prefix: r.get(2)?,
+                body: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Inserts a snippet with id 0, otherwise updates it. Returns it with its id.
+    pub fn save_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
+        let mut saved = snippet.clone();
+        if snippet.id == 0 {
+            self.db.execute(
+                "INSERT INTO snippets (name, prefix, body) VALUES (?1, ?2, ?3)",
+                params![snippet.name, snippet.prefix, snippet.body],
+            )?;
+            saved.id = self.db.last_insert_rowid();
+        } else {
+            self.db.execute(
+                "UPDATE snippets SET name = ?2, prefix = ?3, body = ?4, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![snippet.id, snippet.name, snippet.prefix, snippet.body],
+            )?;
+        }
+        Ok(saved)
+    }
+
+    pub fn delete_snippet(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +600,55 @@ mod tests {
 
         store.delete_records(&[a, c]).unwrap();
         assert_eq!(ids(RecordFilter::default()), [b]);
+    }
+
+    #[test]
+    fn settings_default_then_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_settings().unwrap(), AppSettings::default());
+        let s = AppSettings {
+            editor_theme: "dracula".into(),
+            max_rows: 200,
+            ..Default::default()
+        };
+        store.save_settings(&s).unwrap();
+        assert_eq!(store.get_settings().unwrap(), s);
+        // Unknown or missing fields from another version still load.
+        store
+            .db
+            .execute(
+                "UPDATE settings SET value = '{\"editor_font_size\": 16, \"gone\": 1}'",
+                [],
+            )
+            .unwrap();
+        let loaded = store.get_settings().unwrap();
+        assert_eq!(loaded.editor_font_size, 16);
+        assert_eq!(loaded.max_rows, crate::DEFAULT_MAX_ROWS);
+    }
+
+    #[test]
+    fn snippets_start_seeded_and_can_be_edited() {
+        let store = Store::open_in_memory().unwrap();
+        let seeded = store.list_snippets().unwrap();
+        assert!(seeded.iter().any(|s| s.prefix == "sel"));
+
+        let mut mine = store
+            .save_snippet(&Snippet {
+                id: 0,
+                name: "最近訂單".into(),
+                prefix: "aaa".into(),
+                body: "SELECT * FROM orders ORDER BY id DESC LIMIT ${n};".into(),
+            })
+            .unwrap();
+        assert!(mine.id > 0);
+        assert_eq!(store.list_snippets().unwrap()[0], mine);
+
+        mine.body = "SELECT 1;".into();
+        store.save_snippet(&mine).unwrap();
+        assert_eq!(store.list_snippets().unwrap()[0].body, "SELECT 1;");
+
+        store.delete_snippet(mine.id).unwrap();
+        assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
     }
 
     #[test]
