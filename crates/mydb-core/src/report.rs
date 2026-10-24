@@ -76,6 +76,17 @@ fn status(r: &ExecutionRecord) -> String {
     }
 }
 
+/// Rows touched by a run: returned rows for queries, affected rows for
+/// changes (the server reports 0 affected rows for a SELECT).
+fn rows(r: &ExecutionRecord) -> String {
+    match (r.returned_rows, r.affected_rows) {
+        (0, 0) => "0".into(),
+        (n, 0) => format!("回傳 {n}"),
+        (0, n) => format!("影響 {n}"),
+        (q, a) => format!("影響 {a}，回傳 {q}"),
+    }
+}
+
 fn target(r: &ExecutionRecord) -> String {
     match &r.database {
         Some(db) if !db.is_empty() => format!("{} / {db}", r.connection_name),
@@ -151,7 +162,7 @@ fn markdown(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &st
         when(generated_at),
         summary_line(records)
     );
-    out.push_str("| 紀錄 | 時間 | 連線 / 資料庫 | 陳述式 | 耗時 | 影響筆數 | 狀態 |\n");
+    out.push_str("| 紀錄 | 時間 | 連線 / 資料庫 | 陳述式 | 耗時 | 筆數 | 狀態 |\n");
     out.push_str("|---|---|---|---|---|---|---|\n");
     for r in records {
         out.push_str(&format!(
@@ -161,7 +172,7 @@ fn markdown(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &st
             md_cell(&target(r)),
             r.statement_count,
             ms(r.duration_ms),
-            r.affected_rows,
+            rows(r),
             status(r)
         ));
     }
@@ -254,7 +265,7 @@ fn html(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &str) -
         esc(&when(generated_at)),
         esc(&summary_line(records))
     ));
-    body.push_str("<table><thead><tr><th>紀錄</th><th>時間</th><th>連線 / 資料庫</th><th>陳述式</th><th>耗時</th><th>影響筆數</th><th>狀態</th></tr></thead><tbody>");
+    body.push_str("<table><thead><tr><th>紀錄</th><th>時間</th><th>連線 / 資料庫</th><th>陳述式</th><th>耗時</th><th>筆數</th><th>狀態</th></tr></thead><tbody>");
     for r in records {
         body.push_str(&format!(
             "<tr><td><a href=\"#r{id}\">#{id}</a></td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"{}\">{}</td></tr>",
@@ -262,7 +273,7 @@ fn html(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &str) -
             esc(&target(r)),
             r.statement_count,
             ms(r.duration_ms),
-            r.affected_rows,
+            esc(&rows(r)),
             if r.succeeded() { "ok" } else { "bad" },
             esc(&status(r)),
             id = r.id,
@@ -469,6 +480,21 @@ fn csv(records: &[ExecutionRecord]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn row_counts_read_by_kind_of_statement() {
+        let mut r = sample().remove(0);
+        for (returned, affected, text) in [
+            (0, 0, "0"),
+            (12, 0, "回傳 12"),
+            (0, 3, "影響 3"),
+            (12, 3, "影響 3，回傳 12"),
+        ] {
+            r.returned_rows = returned;
+            r.affected_rows = affected;
+            assert_eq!(rows(&r), text);
+        }
+    }
 
     fn sample() -> Vec<ExecutionRecord> {
         let ok = ExecutionRecord {
