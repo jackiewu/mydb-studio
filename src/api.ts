@@ -343,6 +343,18 @@ function tlsHint(message: string) {
   return "";
 }
 
+/** `p` without its database password, SSH password or key passphrase. */
+export function withoutSecrets(p: ConnectionProfile): ConnectionProfile {
+  const ssh = p.ssh && {
+    ...p.ssh,
+    auth:
+      p.ssh.auth.method === "password"
+        ? { method: "password" as const, password: "" }
+        : { ...p.ssh.auth, passphrase: null },
+  };
+  return { ...p, password: null, ssh };
+}
+
 export function describeError(e: unknown): string {
   if (typeof e === "string") return e;
   const err = e as CoreError;

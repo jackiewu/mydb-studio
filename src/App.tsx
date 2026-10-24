@@ -7,6 +7,7 @@ import {
   DEFAULT_SETTINGS,
   describeError,
   newProfile,
+  withoutSecrets,
   type AppSettings,
   type ConnectionProfile,
   type ExecutionRecord,
@@ -676,7 +677,13 @@ export default function App() {
             onNew={() => setEditing(newProfile())}
             onToggleFavorite={toggleFavorite}
             onDuplicate={(c) =>
-              setEditing({ ...c, id: "", name: `${c.name} 的副本`, favorite: false, last_used_at: null })
+              setEditing({
+                ...withoutSecrets(c),
+                id: "",
+                name: `${c.name} 的副本`,
+                favorite: false,
+                last_used_at: null,
+              })
             }
             onDelete={deleteConnection}
             onOpenRecords={() => setView("records")}
