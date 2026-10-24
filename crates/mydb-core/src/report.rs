@@ -488,6 +488,46 @@ pub fn redact(records: &mut [ExecutionRecord], known: &[ConnectionSecrets]) {
     }
 }
 
+/// Hides everything that could identify the user's servers or data in a
+/// free text such as a crash log: known hosts, users and connection names,
+/// IPv4 addresses, and quoted names and values (`'...'`, `` `...` ``,
+/// `"..."`), which in error messages are tables, databases or data.
+pub fn redact_text(text: &str, known: &[ConnectionSecrets]) -> String {
+    let hosts: Vec<String> = known.iter().flat_map(|k| k.hosts.clone()).collect();
+    let users: Vec<String> = known.iter().flat_map(|k| k.users.clone()).collect();
+    let mut out = hide_in(text, &hosts, &users);
+    for name in known.iter().map(|k| k.name.trim()).filter(|n| n.len() > 2) {
+        out = replace_whole(&out, name, "連線", true);
+    }
+    hide_quoted(&hide_ipv4(&out))
+}
+
+/// Replaces the contents of quoted strings and identifiers. Only quotes
+/// that open after a non-word character count, so `don't` stays.
+fn hide_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut prev = ' ';
+    while let Some(c) = chars.next() {
+        if matches!(c, '\'' | '`' | '"') && !prev.is_alphanumeric() {
+            let rest: String = chars.clone().take(400).collect();
+            if let Some(end) = rest.find(c).filter(|e| !rest[..*e].contains('\n')) {
+                out.push(c);
+                out.push_str(HIDDEN);
+                out.push(c);
+                for _ in 0..rest[..end].chars().count() + 1 {
+                    chars.next();
+                }
+                prev = c;
+                continue;
+            }
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
+}
+
 fn hide_in(text: &str, hosts: &[String], users: &[String]) -> String {
     let mut out = text.to_string();
     // Longest first, so `db.example.com` goes before `example.com`.
@@ -715,6 +755,22 @@ mod tests {
         assert!(!md.contains("34.150"), "{md}");
         assert!(!md.contains("dev@"), "{md}");
         assert!(md.contains("（10.11.6-MariaDB）"), "{md}");
+    }
+
+    #[test]
+    fn free_text_is_scrubbed() {
+        let known = [ConnectionSecrets {
+            id: "c1".into(),
+            name: "fgpay prod".into(),
+            hosts: vec!["db.example.com".into()],
+            users: vec!["app".into()],
+        }];
+        let text = "Table 'shop.orders' doesn't exist on db.example.com (app@10.1.2.3) in fgpay prod\n\
+                    at `secret_db`.`t` \"val\"";
+        assert_eq!(
+            redact_text(text, &known),
+            "Table '***' doesn't exist on *** (***@***) in 連線\nat `***`.`***` \"***\""
+        );
     }
 
     #[test]

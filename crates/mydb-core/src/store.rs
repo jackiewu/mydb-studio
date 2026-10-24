@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
@@ -87,6 +88,21 @@ ORDER BY size_mb DESC;');",
         updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX pinned_tabs_connection ON pinned_tabs (connection_id, position);",
+    // 6: AI conversations
+    "CREATE TABLE ai_chats (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        title           TEXT NOT NULL,
+        connection_id   TEXT,
+        connection_name TEXT NOT NULL DEFAULT '',
+        context         TEXT NOT NULL,
+        messages        TEXT NOT NULL,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX ai_chats_updated ON ai_chats (updated_at);",
+    // 7: every tab is kept while open (unpinned ones as drafts), with its file
+    "ALTER TABLE pinned_tabs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE pinned_tabs ADD COLUMN file_path TEXT;",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -415,10 +431,98 @@ impl Store {
             .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
+    /// Inserts a conversation with id 0, otherwise updates it. Returns its id.
+    pub fn save_ai_chat(&self, chat: &AiChat) -> Result<i64> {
+        let context = serde_json::to_string(&chat.context)?;
+        let messages = serde_json::to_string(&chat.messages)?;
+        if chat.id == 0 {
+            self.db.execute(
+                "INSERT INTO ai_chats (title, connection_id, connection_name, context, messages)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    chat.title,
+                    chat.connection_id,
+                    chat.connection_name,
+                    context,
+                    messages
+                ],
+            )?;
+            Ok(self.db.last_insert_rowid())
+        } else {
+            self.db.execute(
+                "UPDATE ai_chats SET title = ?2, context = ?3, messages = ?4,
+                 updated_at = datetime('now') WHERE id = ?1",
+                params![chat.id, chat.title, context, messages],
+            )?;
+            Ok(chat.id)
+        }
+    }
+
+    /// Conversations, newest first.
+    pub fn list_ai_chats(&self, limit: usize) -> Result<Vec<AiChatSummary>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, title, connection_name, updated_at, messages FROM ai_chats
+             ORDER BY updated_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            let messages: String = r.get(4)?;
+            Ok(AiChatSummary {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                connection_name: r.get(2)?,
+                updated_at: r.get(3)?,
+                message_count: serde_json::from_str::<Vec<serde_json::Value>>(&messages)
+                    .map_or(0, |m| m.len()),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn get_ai_chat(&self, id: i64) -> Result<Option<AiChat>> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT id, title, connection_id, connection_name, context, messages, updated_at
+                 FROM ai_chats WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, title, connection_id, connection_name, context, messages, updated_at)) = row
+        else {
+            return Ok(None);
+        };
+        Ok(Some(AiChat {
+            id,
+            title,
+            connection_id,
+            connection_name,
+            context: serde_json::from_str(&context).unwrap_or_default(),
+            messages: serde_json::from_str(&messages)?,
+            updated_at,
+        }))
+    }
+
+    pub fn delete_ai_chat(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM ai_chats WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// Pinned tabs of a connection, in tab order.
     pub fn list_pinned_tabs(&self, connection_id: &str) -> Result<Vec<PinnedTab>> {
         let mut stmt = self.db.prepare(
-            "SELECT id, connection_id, title, sql, position FROM pinned_tabs
+            "SELECT id, connection_id, title, sql, position, pinned, file_path FROM pinned_tabs
              WHERE connection_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([connection_id], |r| {
@@ -428,6 +532,8 @@ impl Store {
                 title: r.get(2)?,
                 sql: r.get(3)?,
                 position: r.get(4)?,
+                pinned: r.get(5)?,
+                file_path: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -438,18 +544,43 @@ impl Store {
         let mut saved = tab.clone();
         if tab.id == 0 {
             self.db.execute(
-                "INSERT INTO pinned_tabs (connection_id, title, sql, position) VALUES (?1, ?2, ?3, ?4)",
-                params![tab.connection_id, tab.title, tab.sql, tab.position],
+                "INSERT INTO pinned_tabs (connection_id, title, sql, position, pinned, file_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    tab.connection_id,
+                    tab.title,
+                    tab.sql,
+                    tab.position,
+                    tab.pinned,
+                    tab.file_path
+                ],
             )?;
             saved.id = self.db.last_insert_rowid();
         } else {
             self.db.execute(
-                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, updated_at = datetime('now')
+                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, pinned = ?5,
+                 file_path = ?6, updated_at = datetime('now')
                  WHERE id = ?1",
-                params![tab.id, tab.title, tab.sql, tab.position],
+                params![
+                    tab.id,
+                    tab.title,
+                    tab.sql,
+                    tab.position,
+                    tab.pinned,
+                    tab.file_path
+                ],
             )?;
         }
         Ok(saved)
+    }
+
+    /// Drops a connection's unpinned (draft) tabs, once the user let them go.
+    pub fn delete_draft_tabs(&self, connection_id: &str) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM pinned_tabs WHERE connection_id = ?1 AND pinned = 0",
+            [connection_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_pinned_tab(&self, id: i64) -> Result<()> {
@@ -679,6 +810,36 @@ mod tests {
     }
 
     #[test]
+    fn ai_chats_are_kept() {
+        use crate::ai::{AiContext, ChatMessage};
+        let store = Store::open_in_memory().unwrap();
+        let mut chat = AiChat {
+            id: 0,
+            title: "為什麼慢".into(),
+            connection_id: Some("c1".into()),
+            connection_name: "本機".into(),
+            context: AiContext {
+                sql: "SELECT 1".into(),
+                ..Default::default()
+            },
+            messages: vec![ChatMessage::new("user", "為什麼慢")],
+            updated_at: String::new(),
+        };
+        chat.id = store.save_ai_chat(&chat).unwrap();
+        chat.messages.push(ChatMessage::new("assistant", "加索引"));
+        store.save_ai_chat(&chat).unwrap();
+        let list = store.list_ai_chats(10).unwrap();
+        assert_eq!((list.len(), list[0].message_count), (1, 2));
+        let loaded = store.get_ai_chat(chat.id).unwrap().unwrap();
+        assert_eq!(
+            (loaded.messages, loaded.context),
+            (chat.messages, chat.context)
+        );
+        store.delete_ai_chat(chat.id).unwrap();
+        assert!(store.get_ai_chat(chat.id).unwrap().is_none());
+    }
+
+    #[test]
     fn snippets_start_seeded_and_can_be_edited() {
         let store = Store::open_in_memory().unwrap();
         let seeded = store.list_snippets().unwrap();
@@ -712,6 +873,8 @@ mod tests {
             title: title.into(),
             sql: format!("SELECT '{title}';"),
             position,
+            pinned: true,
+            file_path: None,
         };
         let b = store.save_pinned_tab(&tab("c1", "b", 1)).unwrap();
         let a = store.save_pinned_tab(&tab("c1", "a", 0)).unwrap();
@@ -735,6 +898,23 @@ mod tests {
         store.delete_pinned_tab(b.id).unwrap();
         assert_eq!(titles("c1"), ["a"]);
         assert_eq!(titles("c2"), ["other"]);
+
+        // Drafts come back after a crash and go once let go.
+        let draft = PinnedTab {
+            pinned: false,
+            file_path: Some("/tmp/q.sql".into()),
+            ..tab("c1", "draft", 2)
+        };
+        store.save_pinned_tab(&draft).unwrap();
+        assert_eq!(titles("c1"), ["a", "draft"]);
+        assert_eq!(
+            store.list_pinned_tabs("c1").unwrap()[1]
+                .file_path
+                .as_deref(),
+            Some("/tmp/q.sql")
+        );
+        store.delete_draft_tabs("c1").unwrap();
+        assert_eq!(titles("c1"), ["a"]);
     }
 
     #[test]

@@ -410,6 +410,11 @@ enum Tok {
 
 /// Tokens of one statement with their parenthesis depth. Comments are dropped.
 fn tokens(sql: &str) -> Vec<(Tok, usize)> {
+    tokens_cased(sql, true)
+}
+
+/// Like [`tokens`]; words keep their case unless `upper`.
+fn tokens_cased(sql: &str, upper: bool) -> Vec<(Tok, usize)> {
     let mut out = Vec::new();
     let mut depth = 0usize;
     let mut chars = sql.chars().peekable();
@@ -470,7 +475,8 @@ fn tokens(sql: &str) -> Vec<(Tok, usize)> {
                         break;
                     }
                 }
-                out.push((Tok::Word(w.to_uppercase()), depth));
+                let w = if upper { w.to_uppercase() } else { w };
+                out.push((Tok::Word(w), depth));
             }
             '(' => {
                 out.push((Tok::Punct('('), depth));
@@ -481,6 +487,123 @@ fn tokens(sql: &str) -> Vec<(Tok, usize)> {
                 out.push((Tok::Punct(')'), depth));
             }
             c => out.push((Tok::Punct(c), depth)),
+        }
+    }
+    out
+}
+
+/// Words that end a table reference (so they aren't read as an alias).
+const AFTER_TABLE: &[&str] = &[
+    "WHERE",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "CROSS",
+    "NATURAL",
+    "STRAIGHT_JOIN",
+    "ON",
+    "USING",
+    "GROUP",
+    "ORDER",
+    "LIMIT",
+    "HAVING",
+    "UNION",
+    "FOR",
+    "LOCK",
+    "WINDOW",
+    "SET",
+    "USE",
+    "FORCE",
+    "IGNORE",
+    "PARTITION",
+    "INTO",
+    "VALUES",
+    "VALUE",
+    "SELECT",
+    "WITH",
+];
+
+/// Tables a statement names, as `(database, table)`, in order of first use.
+/// Used to give the AI their structure.
+pub fn referenced_tables(sql: &str) -> Vec<(Option<String>, String)> {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    for stmt in crate::split::split_statements(sql) {
+        let toks = tokens_cased(&stmt, false);
+        let upper = |i: usize| match toks.get(i) {
+            Some((Tok::Word(w), _)) => w.to_uppercase(),
+            _ => String::new(),
+        };
+        // The name starting at `j`, and the index after it.
+        let name_at = |j: usize| -> Option<((Option<String>, String), usize)> {
+            let part = |k: usize| match toks.get(k) {
+                Some((Tok::Word(w), _)) if !w.starts_with('@') => Some(w.clone()),
+                Some((Tok::Ident(w), _)) => Some(w.clone()),
+                _ => None,
+            };
+            let first = part(j)?;
+            if matches!(toks.get(j + 1), Some((Tok::Punct('.'), _)))
+                && let Some(second) = part(j + 2)
+            {
+                return Some(((Some(first), second), j + 3));
+            }
+            Some(match first.split_once('.') {
+                Some((db, t)) if !db.is_empty() && !t.is_empty() => {
+                    ((Some(db.to_string()), t.to_string()), j + 1)
+                }
+                _ => ((None, first), j + 1),
+            })
+        };
+        let mut push = |n: (Option<String>, String)| {
+            if !n.1.is_empty()
+                && !AFTER_TABLE.contains(&n.1.to_uppercase().as_str())
+                && !out.contains(&n)
+            {
+                out.push(n);
+            }
+        };
+        for i in 0..toks.len() {
+            let kw = upper(i);
+            let starts = match kw.as_str() {
+                "FROM" | "JOIN" | "UPDATE" | "INTO" => true,
+                "TABLE" => true,
+                "DESCRIBE" | "DESC" => i == 0,
+                _ => false,
+            };
+            if !starts {
+                continue;
+            }
+            let mut j = i + 1;
+            // CREATE TABLE IF NOT EXISTS t / DROP TABLE IF EXISTS t
+            if upper(j) == "IF" {
+                j += 1;
+                if upper(j) == "NOT" {
+                    j += 1;
+                }
+                if upper(j) == "EXISTS" {
+                    j += 1;
+                }
+            }
+            let depth = toks[i].1;
+            while let Some((name, next)) = name_at(j) {
+                push(name);
+                if kw != "FROM" {
+                    break;
+                }
+                // Skip an alias, then follow `FROM a, b`.
+                j = next;
+                if upper(j) == "AS" {
+                    j += 2;
+                } else if let Some((Tok::Word(w), _)) = toks.get(j)
+                    && !AFTER_TABLE.contains(&w.to_uppercase().as_str())
+                {
+                    j += 1;
+                }
+                match toks.get(j) {
+                    Some((Tok::Punct(','), d)) if *d == depth => j += 1,
+                    _ => break,
+                }
+            }
         }
     }
     out
@@ -871,6 +994,29 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].statement, 1);
         assert_eq!(f[0].sql, "UPDATE t SET a = 1");
+    }
+
+    #[test]
+    fn finds_referenced_tables() {
+        let t = |db: Option<&str>, n: &str| (db.map(str::to_string), n.to_string());
+        assert_eq!(
+            referenced_tables(
+                "SELECT * FROM shop.Orders o, items AS i JOIN `shop`.`users` u ON u.id = o.user_id \
+                 WHERE o.id IN (SELECT order_id FROM refunds);\n\
+                 UPDATE products SET x = 1;\nINSERT INTO logs VALUES (1);\n\
+                 CREATE TABLE IF NOT EXISTS t2 (id INT); SELECT @a INTO @b"
+            ),
+            [
+                t(Some("shop"), "Orders"),
+                t(None, "items"),
+                t(Some("shop"), "users"),
+                t(None, "refunds"),
+                t(None, "products"),
+                t(None, "logs"),
+                t(None, "t2"),
+            ]
+        );
+        assert!(referenced_tables("SELECT 1 ORDER BY 1 DESC LIMIT 1").is_empty());
     }
 
     #[test]

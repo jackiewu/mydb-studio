@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 // Mirrors of the Rust types in crates/mydb-core. Keep in sync.
 
@@ -223,6 +223,53 @@ export interface ModelFile {
   instruct: boolean;
 }
 
+export interface TableDdl {
+  name: string;
+  ddl: string;
+}
+
+/** What the AI is told: SQL, errors, plans and table structure, never row data. */
+export interface AiContext {
+  server: string;
+  database: string | null;
+  sql: string;
+  error: string | null;
+  explain: string | null;
+  tables: TableDdl[];
+  other_tables: string[];
+  findings: string[];
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AiChat {
+  id: number;
+  title: string;
+  connection_id: string | null;
+  connection_name: string;
+  context: AiContext;
+  messages: ChatMessage[];
+  updated_at: string;
+}
+
+export interface AiChatSummary {
+  id: number;
+  title: string;
+  connection_name: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface CrashInfo {
+  unclean_exit: boolean;
+  panic: string | null;
+}
+
+export type AiEvent = { kind: "starting" } | { kind: "thinking" } | { kind: "token"; text: string };
+
 export interface AiStatus {
   llama_server: string | null;
   model: ModelFile | null;
@@ -265,6 +312,9 @@ export interface PinnedTab {
   title: string;
   sql: string;
   position: number;
+  /** False for a draft kept only in case the app closes unexpectedly. */
+  pinned: boolean;
+  file_path: string | null;
 }
 
 export function newProfile(): ConnectionProfile {
@@ -314,6 +364,18 @@ export const api = {
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),
+  aiContext: (sessionId: string | null, sql: string, error: string | null, explain: string | null) =>
+    invoke<AiContext>("ai_context", { sessionId, sql, error, explain }),
+  aiChat: (context: AiContext, messages: ChatMessage[], onEvent: (e: AiEvent) => void) => {
+    const channel = new Channel<AiEvent>();
+    channel.onmessage = onEvent;
+    return invoke<string>("ai_chat", { context, messages, onEvent: channel });
+  },
+  aiCancel: () => invoke<void>("ai_cancel"),
+  saveAiChat: (chat: AiChat) => invoke<number>("save_ai_chat", { chat }),
+  listAiChats: () => invoke<AiChatSummary[]>("list_ai_chats"),
+  getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
+  deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
@@ -340,6 +402,11 @@ export const api = {
   listPinnedTabs: (connectionId: string) => invoke<PinnedTab[]>("list_pinned_tabs", { connectionId }),
   savePinnedTab: (tab: PinnedTab) => invoke<PinnedTab>("save_pinned_tab", { tab }),
   deletePinnedTab: (id: number) => invoke<void>("delete_pinned_tab", { id }),
+  deleteDraftTabs: (connectionId: string) => invoke<void>("delete_draft_tabs", { connectionId }),
+  readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
+  takeCrashInfo: () => invoke<CrashInfo | null>("take_crash_info"),
+  bugReportBody: (what: string, details: string) => invoke<string>("bug_report_body", { what, details }),
+  openBugReport: (title: string, body: string) => invoke<void>("open_bug_report", { title, body }),
 };
 
 /** Quotes an identifier with backticks. */

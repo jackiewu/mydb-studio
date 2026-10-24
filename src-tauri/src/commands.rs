@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mydb_core::advisor::{self, Advice, Finding};
+use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
     AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
@@ -11,6 +12,7 @@ use mydb_core::{
     SessionInfo, Snippet, Store, TableInfo,
 };
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::RwLock;
 
@@ -21,6 +23,10 @@ pub struct AppState {
     /// The report shown in the print window, served by the `mydbreport:`
     /// protocol.
     pub print_html: Mutex<String>,
+    /// The local AI model, started on demand.
+    pub ai: mydb_core::ai::AiRuntime,
+    /// How the previous run ended, until the UI asks.
+    pub crash: Mutex<Option<CrashInfo>>,
 }
 
 impl AppState {
@@ -254,24 +260,7 @@ pub fn generate_report(
     let store = state.store.lock().unwrap();
     let mut records = store.get_records(&ids)?;
     if options.hide_connection {
-        let known: Vec<ConnectionSecrets> = store
-            .list_connections()?
-            .into_iter()
-            .map(|p| {
-                let mut hosts = vec![p.host];
-                let mut users = vec![p.user];
-                if let Some(ssh) = p.ssh {
-                    hosts.push(ssh.host);
-                    users.push(ssh.user);
-                }
-                ConnectionSecrets {
-                    id: p.id,
-                    name: p.name,
-                    hosts,
-                    users,
-                }
-            })
-            .collect();
+        let known = known_secrets(&store)?;
         report::redact(&mut records, &known);
     }
     Ok(report::render(
@@ -324,6 +313,298 @@ const PRINT_URL: &str = "mydbreport://localhost/";
 pub fn save_text_file(path: String, contents: String) -> Result<()> {
     std::fs::write(&path, contents)?;
     Ok(())
+}
+
+/// Hosts, users and names of the saved connections, to hide in exports.
+fn known_secrets(store: &Store) -> Result<Vec<ConnectionSecrets>> {
+    Ok(store
+        .list_connections()?
+        .into_iter()
+        .map(|p| {
+            let mut hosts = vec![p.host];
+            let mut users = vec![p.user];
+            if let Some(ssh) = p.ssh {
+                hosts.push(ssh.host);
+                users.push(ssh.user);
+            }
+            ConnectionSecrets {
+                id: p.id,
+                name: p.name,
+                hosts,
+                users,
+            }
+        })
+        .collect())
+}
+
+/// What went wrong last time, found at startup.
+#[derive(Clone, Serialize)]
+pub struct CrashInfo {
+    /// The app didn't get to shut down normally.
+    pub unclean_exit: bool,
+    /// A Rust panic message and backtrace, when there was one.
+    pub panic: Option<String>,
+}
+
+/// The previous run's crash, once: later calls return nothing.
+#[tauri::command]
+pub fn take_crash_info(state: State<'_, AppState>) -> Option<CrashInfo> {
+    state.crash.lock().unwrap().take()
+}
+
+/// A bug report for GitHub with anything identifying scrubbed: see
+/// [`report::redact_text`].
+#[tauri::command]
+pub fn bug_report_body(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    what: String,
+    details: String,
+) -> Result<String> {
+    let known = known_secrets(&state.store.lock().unwrap())?;
+    let what = report::redact_text(&what, &known);
+    let details = report::redact_text(&details, &known);
+    let details: String = details.chars().take(5000).collect();
+    Ok(format!(
+        "### 發生什麼事\n{what}\n\n### 環境\n- MyDB Studio {}\n- {} {}\n\n### 細節\n```\n{}\n```\n",
+        app.package_info().version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        details.trim()
+    ))
+}
+
+const ISSUES_URL: &str = "https://github.com/jackiewu/mydb-studio/issues/new";
+
+/// Opens the new-issue page, filled in, in the default browser. Nothing is
+/// sent until the user submits it there.
+#[tauri::command]
+pub fn open_bug_report(title: String, body: String) -> Result<()> {
+    fn encode(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+    let url = format!(
+        "{ISSUES_URL}?labels=bug&title={}&body={}",
+        encode(&title),
+        encode(&body)
+    );
+    let mut cmd = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(&url).spawn()?;
+    Ok(())
+}
+
+/// Reads a text file the user picked in the open dialog.
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String> {
+    let bytes = std::fs::read(&path)?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err(CoreError::Config {
+            message: "檔案太大（超過 20 MB）。".into(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Formats a result set as a `|`-separated text table.
+fn text_table(r: &mydb_core::session::StatementResult) -> String {
+    let mut out = r
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    for row in &r.rows {
+        out.push('\n');
+        let cells: Vec<String> = row
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::Null => "NULL".to_string(),
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect();
+        out.push_str(&cells.join(" | "));
+    }
+    out
+}
+
+/// Gathers what the AI is told about `sql`: the server, the database, the
+/// structure of the tables it names, and EXPLAIN for its queries. Never row
+/// data. Works without a session too, with only what was passed in.
+#[tauri::command]
+pub async fn ai_context(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    sql: String,
+    error: Option<String>,
+    explain: Option<String>,
+) -> Result<AiContext> {
+    let mut ctx = AiContext {
+        sql: sql.clone(),
+        error,
+        findings: advisor::check_sql(&sql)
+            .into_iter()
+            .map(|f| format!("第 {} 句：{}", f.statement + 1, f.message))
+            .collect(),
+        ..Default::default()
+    };
+    let session = match session_id {
+        Some(id) => state.session(&id).await.ok(),
+        None => None,
+    };
+    let Some(session) = session else {
+        ctx.explain = explain;
+        return Ok(ctx);
+    };
+    ctx.server = session.info().server_version.clone();
+    ctx.database = session.current_database();
+
+    for (db, table) in advisor::referenced_tables(&sql).into_iter().take(6) {
+        if let Ok(ddl) = session.show_create_table(db.as_deref(), &table).await
+            && !ddl.is_empty()
+        {
+            let name = match db {
+                Some(db) => format!("{db}.{table}"),
+                None => table,
+            };
+            ctx.tables.push(TableDdl { name, ddl });
+        }
+    }
+    if let Some(db) = &ctx.database
+        && let Ok(tables) = session.list_tables(db).await
+    {
+        ctx.other_tables = tables
+            .into_iter()
+            .map(|t| t.name)
+            .filter(|n| !ctx.tables.iter().any(|t| t.name.ends_with(n.as_str())))
+            .take(200)
+            .collect();
+    }
+
+    // EXPLAIN only reads the plan; limited to plain queries all the same.
+    ctx.explain = match explain {
+        Some(e) => Some(e),
+        None => {
+            let mut plans = Vec::new();
+            for stmt in mydb_core::split::split_statements(&sql).iter().take(3) {
+                let head = stmt.trim_start().to_uppercase();
+                if !(head.starts_with("SELECT") || head.starts_with("WITH")) {
+                    continue;
+                }
+                let outcome = session.execute(&format!("EXPLAIN {stmt}"), 50).await;
+                if let Some(r) = outcome.results.first()
+                    && outcome.error.is_none()
+                {
+                    plans.push(text_table(r));
+                }
+            }
+            (!plans.is_empty()).then(|| plans.join("\n\n"))
+        }
+    };
+    Ok(ctx)
+}
+
+fn ai_config(settings: &AppSettings) -> ServerConfig {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    ServerConfig {
+        llama_server: settings.ai_llama_server.clone(),
+        model_path: settings.ai_model_path.clone(),
+        threads: if settings.ai_threads == 0 {
+            (cores / 2).max(1)
+        } else {
+            settings.ai_threads as usize
+        },
+        context: 8192,
+        external_url: settings
+            .ai_use_external
+            .then(|| settings.ai_server_url.clone()),
+    }
+}
+
+/// Progress of an AI answer, streamed to the drawer.
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AiEvent {
+    /// The model is being loaded (the first question after a while).
+    Starting,
+    /// The model has the question.
+    Thinking,
+    Token {
+        text: String,
+    },
+}
+
+/// Asks the local model, streaming the answer through `on_event`. Starts
+/// the model when needed.
+#[tauri::command]
+pub async fn ai_chat(
+    state: State<'_, AppState>,
+    context: AiContext,
+    messages: Vec<ChatMessage>,
+    on_event: Channel<AiEvent>,
+) -> Result<String> {
+    let settings = state.store.lock().unwrap().get_settings()?;
+    if !settings.ai_enabled {
+        return Err(CoreError::Config {
+            message: "AI 建議還沒開啟，請到設定的「AI 建議」開啟並選擇模型。".into(),
+        });
+    }
+    let cfg = ai_config(&settings);
+    if !state.ai.is_ready(&cfg).await {
+        let _ = on_event.send(AiEvent::Starting);
+    }
+    let base = state.ai.ensure(&cfg).await?;
+    let _ = on_event.send(AiEvent::Thinking);
+    let msgs = mydb_core::ai::build_messages(&context, &messages);
+    state
+        .ai
+        .chat(&base, &msgs, 1024, |piece| {
+            let _ = on_event.send(AiEvent::Token {
+                text: piece.to_string(),
+            });
+        })
+        .await
+}
+
+/// Stops the answer being generated.
+#[tauri::command]
+pub fn ai_cancel(state: State<'_, AppState>) {
+    state.ai.cancel();
+}
+
+#[tauri::command]
+pub fn save_ai_chat(state: State<'_, AppState>, chat: AiChat) -> Result<i64> {
+    state.store.lock().unwrap().save_ai_chat(&chat)
+}
+
+#[tauri::command]
+pub fn list_ai_chats(state: State<'_, AppState>) -> Result<Vec<AiChatSummary>> {
+    state.store.lock().unwrap().list_ai_chats(300)
+}
+
+#[tauri::command]
+pub fn get_ai_chat(state: State<'_, AppState>, id: i64) -> Result<Option<AiChat>> {
+    state.store.lock().unwrap().get_ai_chat(id)
+}
+
+#[tauri::command]
+pub fn delete_ai_chat(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.store.lock().unwrap().delete_ai_chat(id)
 }
 
 #[tauri::command]
@@ -423,6 +704,15 @@ pub fn save_pinned_tab(state: State<'_, AppState>, tab: PinnedTab) -> Result<Pin
 #[tauri::command]
 pub fn delete_pinned_tab(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.store.lock().unwrap().delete_pinned_tab(id)
+}
+
+#[tauri::command]
+pub fn delete_draft_tabs(state: State<'_, AppState>, connection_id: String) -> Result<()> {
+    state
+        .store
+        .lock()
+        .unwrap()
+        .delete_draft_tabs(&connection_id)
 }
 
 fn uuid_v4() -> String {

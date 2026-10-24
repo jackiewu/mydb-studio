@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ask } from "./ask";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   DEFAULT_SETTINGS,
@@ -14,20 +17,22 @@ import {
 } from "./api";
 import { openMenu } from "./contextMenu";
 import { copyText } from "./copy";
+import { AiDrawer, type AiRequest } from "./components/AiDrawer";
+import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
 import { RecordsPage } from "./components/RecordsPage";
 import { SchemaTree } from "./components/SchemaTree";
-import { ResultsPanel } from "./components/ResultsPanel";
+import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
-import { tabTitle, useTabs } from "./tabs";
+import { fileName, isUnsaved, tabTitle, useTabs, type EditorTab } from "./tabs";
 import "./styles.css";
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -53,6 +58,13 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  // The AI drawer, and what it was last opened about.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiRequest, setAiRequest] = useState<AiRequest | null>(null);
+  // A crash or unexpected error to offer reporting, and one waiting for the user to ask.
+  const [bug, setBug] = useState<BugInfo | null>(null);
+  const [lastError, setLastError] = useState<BugInfo | null>(null);
   // SQL from the editor to start a new snippet with.
   const [snippetDraft, setSnippetDraft] = useState<Snippet | null>(null);
   // Database selected with USE (double-click in the tree, the picker, or SQL).
@@ -81,6 +93,37 @@ export default function App() {
     reloadSnippets().catch(() => {});
   }, [reload, reloadSnippets]);
 
+  // Offer to report last run's crash, and catch unexpected errors in this one.
+  useEffect(() => {
+    api
+      .takeCrashInfo()
+      .then((c) => {
+        if (!c) return;
+        setBug({
+          reason: c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。",
+          details: c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）",
+        });
+      })
+      .catch(() => {});
+    const onError = (message: string, stack?: string) => {
+      if (/ResizeObserver loop/.test(message)) return;
+      setLastError({ reason: "app 發生了未預期的錯誤。", details: `${message}\n${stack ?? ""}` });
+    };
+    const onWindowError = (e: ErrorEvent) => onError(e.message, e.error?.stack);
+    const onRejection = (e: PromiseRejectionEvent) => {
+      const r = e.reason;
+      // Errors from commands are expected and shown where they happen.
+      if (r && typeof r === "object" && "kind" in r) return;
+      onError(r instanceof Error ? r.message : String(r), r instanceof Error ? r.stack : undefined);
+    };
+    window.addEventListener("error", onWindowError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, []);
+
   // Columns of the database in use feed autocomplete.
   const { loadColumns } = schema;
   useEffect(() => {
@@ -92,7 +135,23 @@ export default function App() {
     api.saveSettings(next).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
   };
 
+  /**
+   * Asks before leaving a connection with tabs that would be lost, then lets
+   * go of their drafts. False when the user wants to stay.
+   */
+  const leaveTabs = async (what: string) => {
+    const unsaved = tabs.tabs.filter(isUnsaved);
+    if (unsaved.length) {
+      const names = unsaved.map((t) => `・${tabTitle(t.sql, "查詢", t.filePath)}`).join("\n");
+      if (!(await ask(`有 ${unsaved.length} 個分頁沒有釘選也沒有存檔，${what}後內容會消失：\n${names}\n\n確定要${what}？`, what)))
+        return false;
+    }
+    await tabs.discardDrafts();
+    return true;
+  };
+
   const connect = async (c: ConnectionProfile) => {
+    if (session && !(await leaveTabs("切換連線"))) return false;
     setNotice(null);
     setConnecting(c.id);
     try {
@@ -145,8 +204,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [session, addTab]);
 
-  const disconnect = async () => {
+  const disconnect = async (ask = true) => {
     if (!session) return;
+    if (ask && !(await leaveTabs("中斷連線"))) return;
     await api.closeSession(session.session_id).catch(() => {});
     setSession(null);
   };
@@ -227,11 +287,105 @@ export default function App() {
   };
 
   const deleteConnection = async (c: ConnectionProfile) => {
-    if (!confirm(`刪除連線「${c.name}」？`)) return;
+    if (!(await ask(`刪除連線「${c.name}」？`, "刪除"))) return;
     await api.deleteConnection(c.id);
-    if (session?.connection_id === c.id) await disconnect();
+    if (session?.connection_id === c.id) await disconnect(false);
     setEditing(null);
     await reload();
+  };
+
+  // Unsaved tabs come back after the app was closed unexpectedly.
+  useEffect(() => {
+    if (tabs.restored > 0)
+      setNotice({
+        text: `已還原 ${tabs.restored} 個上次沒存的分頁（app 上次沒有正常關閉）。`,
+        kind: "info",
+      });
+  }, [tabs.restored]);
+
+  // Closing the window: ask about unsaved tabs, then let their drafts go.
+  const leaveRef = useRef(leaveTabs);
+  leaveRef.current = leaveTabs;
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onCloseRequested(async (e) => {
+      if (!(await leaveRef.current("關閉 app"))) e.preventDefault();
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  const saveToFile = async (t: EditorTab, saveAs = false) => {
+    let path = t.filePath;
+    if (!path || saveAs) {
+      const suggested =
+        tabTitle(t.sql, "query", t.filePath)
+          .replace(/[^\p{L}\p{N} _.-]+/gu, " ")
+          .replace(/\s+/g, " ")
+          .trim() || "query";
+      path = await saveDialog({
+        defaultPath: t.filePath ?? `${suggested.replace(/\.sql$/i, "")}.sql`,
+        filters: [{ name: "SQL", extensions: ["sql"] }],
+      });
+      if (!path) return;
+    }
+    try {
+      await api.saveTextFile(path, t.sql);
+      tabs.markSaved(t.key, path, t.sql);
+      setNotice({ text: `已存檔：${fileName(path)}`, kind: "info" });
+    } catch (e) {
+      setNotice({ text: describeError(e), kind: "error" });
+    }
+  };
+
+  const openSqlFiles = async () => {
+    const picked = await openDialog({
+      multiple: true,
+      filters: [
+        { name: "SQL", extensions: ["sql", "txt"] },
+        { name: "所有檔案", extensions: ["*"] },
+      ],
+    });
+    const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+    for (const path of paths) {
+      const already = tabs.tabs.find((t) => t.filePath === path);
+      if (already) {
+        tabs.setActive(already.key);
+        continue;
+      }
+      try {
+        const text = await api.readTextFile(path);
+        tabs.add(text, path);
+      } catch (e) {
+        setNotice({ text: describeError(e), kind: "error" });
+      }
+    }
+  };
+
+  // ⌘S saves the tab to its file (asking where the first time), ⌘⇧S saves
+  // as, ⌘O opens .sql files in new tabs.
+  const fileKeys = useRef({ save: saveToFile, open: openSqlFiles, tab });
+  fileKeys.current = { save: saveToFile, open: openSqlFiles, tab };
+  useEffect(() => {
+    if (!session) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "s" && fileKeys.current.tab) {
+        e.preventDefault();
+        fileKeys.current.save(fileKeys.current.tab, e.shiftKey);
+      } else if (k === "o") {
+        e.preventDefault();
+        fileKeys.current.open();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [session]);
+
+  const askAi = (ask: AskAi) => {
+    setAiRequest({ ...ask, nonce: Date.now() });
+    setAiOpen(true);
   };
 
   const openTable = (db: string, table: string) =>
@@ -244,10 +398,15 @@ export default function App() {
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setDialog(null)}>
       {dialog === "settings" ? (
         <SettingsDialog
+          initialTab={settingsTab}
           settings={settings}
           onChange={updateSettings}
           onClose={() => setDialog(null)}
           onOpenSnippets={() => (setSnippetDraft(null), setDialog("snippets"))}
+          onReportBug={() => {
+            setDialog(null);
+            setBug({ reason: "", details: lastError?.details ?? "（沒有錯誤紀錄）" });
+          }}
         />
       ) : (
         <SnippetsDialog
@@ -292,7 +451,7 @@ export default function App() {
       {session && active && (
         <aside className="sidebar">
           <div className="sidebar-head">
-            <button className="small ghost" onClick={disconnect} title="中斷連線並回到首頁">
+            <button className="small ghost" onClick={() => disconnect()} title="中斷連線並回到首頁">
               ← 所有連線
             </button>
           </div>
@@ -343,8 +502,20 @@ export default function App() {
             <button onClick={() => (setSnippetDraft(null), setDialog("snippets"))} title="Snippet：常用 SQL 範本">
               {"{ }"}
             </button>
-            <button onClick={() => setDialog("settings")} title="設定">
+            <button onClick={() => (setSettingsTab(undefined), setDialog("settings"))} title="設定">
               ⚙
+            </button>
+            <button
+              className={aiOpen ? "active" : undefined}
+              onClick={() => {
+                if (aiOpen) return setAiOpen(false);
+                const sql = editor.current?.statementText().trim() ?? "";
+                if (!aiRequest && sql) askAi({ sql });
+                else setAiOpen(true);
+              }}
+              title="AI 分析（⌘／Ctrl + I 分析選取的部分或游標所在的那一句）"
+            >
+              ✨ AI
             </button>
             <button
               disabled={running}
@@ -388,7 +559,7 @@ export default function App() {
                     key={t.key}
                     role="tab"
                     aria-selected={t.key === tab?.key}
-                    className={["tab", t.key === tab?.key ? "active" : "", t.pinnedId != null ? "pinned" : ""].join(
+                    className={["tab", t.key === tab?.key ? "active" : "", t.pinned ? "pinned" : ""].join(
                       " ",
                     )}
                     onClick={() => tabs.setActive(t.key)}
@@ -396,7 +567,7 @@ export default function App() {
                     onContextMenu={(e) =>
                       openMenu(e, [
                         {
-                          label: t.pinnedId != null ? "取消釘選" : "釘選（下次打開這個連線時還原）",
+                          label: t.pinned ? "取消釘選" : "釘選（下次打開這個連線時還原）",
                           onClick: () => tabs.togglePin(t.key),
                         },
                         {
@@ -405,20 +576,31 @@ export default function App() {
                         },
                         { label: "複製分頁內的 SQL", disabled: !t.sql.trim(), onClick: () => copyText(t.sql) },
                         "sep",
+                        {
+                          label: t.filePath ? `儲存到 ${fileName(t.filePath)}` : "存成 .sql 檔…",
+                          hint: "⌘S",
+                          onClick: () => saveToFile(t),
+                        },
+                        { label: "另存新檔…", hint: "⇧⌘S", onClick: () => saveToFile(t, true) },
+                        { label: "開啟 .sql 檔…", hint: "⌘O", onClick: openSqlFiles },
+                        ...(t.filePath
+                          ? [{ label: "複製檔案路徑", onClick: () => copyText(t.filePath ?? "") }]
+                          : []),
+                        "sep",
                         { label: "新分頁", hint: "⌘T", onClick: () => tabs.add() },
                         { label: "關閉", onClick: () => tabs.close(t.key) },
                         {
                           label: "關閉其他未釘選的分頁",
-                          disabled: !tabs.tabs.some((o) => o.key !== t.key && o.pinnedId == null),
+                          disabled: !tabs.tabs.some((o) => o.key !== t.key && !o.pinned),
                           onClick: () => tabs.closeOthers(t.key),
                         },
                       ])
                     }
-                    title={t.sql.slice(0, 300)}
+                    title={(t.filePath ? `${t.filePath}\n\n` : "") + t.sql.slice(0, 300)}
                   >
                     <button
                       className="pin"
-                      title={t.pinnedId != null ? "取消釘選" : "釘選：內容會保留，下次打開這個連線時還原，預設打開紀錄"}
+                      title={t.pinned ? "取消釘選" : "釘選：內容會保留，下次打開這個連線時還原，預設打開紀錄"}
                       onClick={(e) => {
                         e.stopPropagation();
                         tabs.togglePin(t.key);
@@ -426,7 +608,12 @@ export default function App() {
                     >
                       📌
                     </button>
-                    <span className="tab-title">{tabTitle(t.sql, `查詢 ${i + 1}`)}</span>
+                    <span className="tab-title">{tabTitle(t.sql, `查詢 ${i + 1}`, t.filePath)}</span>
+                    {t.filePath && t.savedSql != null && t.sql !== t.savedSql && (
+                      <span className="tab-dirty" title="有修改還沒存檔（⌘S）">
+                        •
+                      </span>
+                    )}
                     {t.recording && (
                       <span className="tab-rec" title="這個分頁會記錄執行">
                         ●
@@ -434,7 +621,7 @@ export default function App() {
                     )}
                     <button
                       className="close"
-                      title={t.pinnedId != null ? "關閉並取消保留" : "關閉"}
+                      title={t.pinned ? "關閉並取消保留" : "關閉"}
                       onClick={(e) => {
                         e.stopPropagation();
                         tabs.close(t.key);
@@ -467,13 +654,18 @@ export default function App() {
                     setSnippetDraft({ id: 0, prefix: "", name: tabTitle(body, ""), body });
                     setDialog("snippets");
                   }}
+                  onAskAi={(sql) => askAi({ sql })}
                   onRunTargetChange={setRunTarget}
                   onChange={(value) => tabs.setSql(t.key, value)}
                   onRun={run}
                 />
               ))}
             </div>
-            <ResultsPanel outcome={tab?.outcome ?? null} onRunWithoutLimit={(sql) => run(sql, undefined, true)} />
+            <ResultsPanel
+              outcome={tab?.outcome ?? null}
+              onRunWithoutLimit={(sql) => run(sql, undefined, true)}
+              onAskAi={askAi}
+            />
           </div>
         ) : (
           <Home
@@ -488,11 +680,38 @@ export default function App() {
             }
             onDelete={deleteConnection}
             onOpenRecords={() => setView("records")}
-            onOpenSettings={() => setDialog("settings")}
+            onOpenSettings={() => (setSettingsTab(undefined), setDialog("settings"))}
           />
         )}
       </main>
 
+      {aiOpen && session && (
+        <AiDrawer
+          request={aiRequest}
+          sessionId={session.session_id}
+          connectionId={session.connection_id}
+          connectionName={active?.name ?? ""}
+          settings={settings}
+          onClose={() => setAiOpen(false)}
+          onOpenSettings={() => {
+            setSettingsTab("ai");
+            setDialog("settings");
+          }}
+          onNewTab={(sql) => tabs.add(sql)}
+        />
+      )}
+      {lastError && !bug && (
+        <div className="toast">
+          發生未預期的錯誤。
+          <button className="link report-link" onClick={() => (setBug(lastError), setLastError(null))}>
+            回報問題…
+          </button>
+          <button className="link" onClick={() => setLastError(null)}>
+            ✕
+          </button>
+        </div>
+      )}
+      {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
       {dialogs}
       {risk && <RiskDialog findings={risk.findings} connectionName={active?.name ?? ""} onAnswer={risk.answer} />}
       {editing && (

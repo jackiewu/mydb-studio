@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ask } from "../ask";
 import { api, describeError, type Snippet } from "../api";
 
 interface Props {
@@ -41,7 +42,7 @@ export function SnippetsDialog({ snippets, onChanged, onInsert, onClose, initial
   };
 
   const remove = async () => {
-    if (!saved || !confirm(`刪除 snippet「${saved.prefix}」？`)) return;
+    if (!saved || !(await ask(`刪除 snippet「${saved.prefix}」？`, "刪除"))) return;
     await api.deleteSnippet(saved.id);
     await onChanged();
     setDraft(snippets.find((s) => s.id !== saved.id) ?? BLANK);

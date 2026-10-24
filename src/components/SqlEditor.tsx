@@ -59,6 +59,8 @@ interface Props {
   autoLimit?: number;
   /** Opens the snippet editor with `body` as a new snippet. */
   onSaveSnippet?: (body: string) => void;
+  /** ⌘I: opens the AI drawer about the selection or the statement at the cursor. */
+  onAskAi?: (sql: string) => void;
 }
 
 function language(
@@ -135,6 +137,12 @@ export function SqlEditor(props: Props) {
       handlers.current.onExplain?.(selectionOr(v));
       return true;
     };
+    const askAi = (v: EditorView) => {
+      const { from, to } = v.state.selection.main;
+      const selected = v.state.sliceDoc(from, to);
+      handlers.current.onAskAi?.((selected.trim() ? selected : runTarget(v.state).text).trim());
+      return true;
+    };
     const contextMenu = (e: MouseEvent, v: EditorView) => {
       // Right-clicking outside the selection moves the cursor there first.
       const at = v.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -156,6 +164,15 @@ export function SqlEditor(props: Props) {
           ? [{ label: `執行全部（${target.total} 句）`, hint: "⌘⇧↵", onClick: () => runAll(v) }]
           : []),
         { label: "Explain", hint: "⌘E", disabled: target.count === 0, onClick: () => explain(v) },
+        ...(handlers.current.onAskAi
+          ? [
+              {
+                label: `✨ AI 分析${target.count > 1 ? `（${target.count} 句）` : ""}`,
+                hint: "⌘I",
+                onClick: () => askAi(v),
+              },
+            ]
+          : []),
         "sep",
         {
           label: "剪下",
@@ -219,6 +236,7 @@ export function SqlEditor(props: Props) {
             { key: "Mod-Enter", run },
             { key: "Mod-Shift-Enter", run: runAll },
             { key: "Mod-e", run: explain },
+            { key: "Mod-i", run: askAi },
           ]),
         ),
         EditorView.updateListener.of((u) => {

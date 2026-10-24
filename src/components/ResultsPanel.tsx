@@ -21,13 +21,29 @@ function summary(r: StatementResult) {
   return `影響 ${r.affected_rows} 筆`;
 }
 
+/** A result set as a `|`-separated text table, for the AI. */
+function textTable(r: StatementResult) {
+  const cell = (v: unknown) => (v == null ? "NULL" : typeof v === "string" ? v : JSON.stringify(v));
+  return [r.columns.map((c) => c.name).join(" | "), ...r.rows.map((row) => row.map(cell).join(" | "))].join("\n");
+}
+
+export interface AskAi {
+  sql: string;
+  error?: string | null;
+  explain?: string | null;
+  prompt?: string;
+}
+
 export function ResultsPanel({
   outcome,
   onRunWithoutLimit,
+  onAskAi,
 }: {
   outcome: ExecutionOutcome | null;
   /** Runs one statement again without the automatic LIMIT. */
   onRunWithoutLimit?: (sql: string) => void;
+  /** Opens the AI drawer about part of this outcome. */
+  onAskAi?: (ask: AskAi) => void;
 }) {
   const [tab, setTab] = useState(0);
 
@@ -42,6 +58,7 @@ export function ResultsPanel({
         <p>⌘／Ctrl + Enter：執行游標所在的那一句（淡色底的那段）；有選取就執行選取的部分。</p>
         <p>⌘／Ctrl + Shift + Enter：依序執行全部（多句用 ; 分開）。</p>
         <p>⌘／Ctrl + E：Explain 選取的部分或游標所在的那一句。</p>
+        <p>⌘／Ctrl + I：用 AI 分析選取的部分或游標所在的那一句。</p>
       </div>
     );
   }
@@ -81,6 +98,20 @@ export function ResultsPanel({
               </ul>
             </div>
           )}
+          {onAskAi && (
+            <button
+              className="small ai-ask"
+              onClick={() =>
+                onAskAi({
+                  sql: outcome.failed_statement ?? outcome.results.map((r) => r.sql).join(";\n"),
+                  error: describeError(outcome.error),
+                  prompt: "這個錯誤怎麼修？",
+                })
+              }
+            >
+              ✨ 問 AI 怎麼修
+            </button>
+          )}
         </div>
       )}
 
@@ -89,6 +120,20 @@ export function ResultsPanel({
           <summary>
             💡 {notes.length} 個建議
             {notes.some((f) => f.level === "warn") && <span className="warn">（可能影響效能）</span>}
+            {onAskAi && (
+              <button
+                className="small ai-ask"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onAskAi({
+                    sql: outcome.results.map((r) => r.sql).join(";\n"),
+                    prompt: "幫我檢查這段 SQL 有沒有問題",
+                  });
+                }}
+              >
+                ✨ 問 AI
+              </button>
+            )}
           </summary>
           <ul className="findings">
             {notes.map((f, i) => (
@@ -129,6 +174,20 @@ export function ResultsPanel({
           )}
           {plan && (
             <div className="plan-notes">
+              {onAskAi && (
+                <button
+                  className="small ai-ask"
+                  onClick={() =>
+                    onAskAi({
+                      sql: current.sql.replace(/^\s*explain\s+(analyze\s+|format\s*=\s*\w+\s+)?/i, ""),
+                      explain: textTable(current),
+                      prompt: "怎麼讓它跑得更快？",
+                    })
+                  }
+                >
+                  ✨ 問 AI 怎麼加速
+                </button>
+              )}
               {plan.notes.length === 0 ? (
                 <div className="ok">✓ 執行計畫沒有明顯問題（有用到索引，沒有全表掃描、filesort 或暫存表）</div>
               ) : (

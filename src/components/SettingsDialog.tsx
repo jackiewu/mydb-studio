@@ -12,6 +12,8 @@ interface Props {
   onOpenSnippets: () => void;
   /** Section to open on. */
   initialTab?: Tab;
+  /** Opens the GitHub bug report. */
+  onReportBug?: () => void;
 }
 
 export type Tab = "editor" | "run" | "ai" | "system";
@@ -269,7 +271,14 @@ function AiSection({ settings, set }: { settings: AppSettings; set: (p: Partial<
   );
 }
 
-export function SettingsDialog({ settings, onChange, onClose, onOpenSnippets, initialTab = "editor" }: Props) {
+export function SettingsDialog({
+  settings,
+  onChange,
+  onClose,
+  onOpenSnippets,
+  onReportBug,
+  initialTab = "editor",
+}: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const set = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
   const themes = [{ id: "auto", label: "跟隨系統" }, ...EDITOR_THEMES];
@@ -383,6 +392,14 @@ export function SettingsDialog({ settings, onChange, onClose, onOpenSnippets, in
             <Row title="顯示系統資料庫" caption="左側清單顯示 mysql、information_schema、performance_schema、sys。">
               <Switch checked={settings.show_system_databases} onChange={(v) => set({ show_system_databases: v })} />
             </Row>
+            {onReportBug && (
+              <Row
+                title="回報問題"
+                caption="在瀏覽器打開填好的 GitHub issue。連線資訊、IP 和資料名稱會先遮掉，送出前你可以看過內容。"
+              >
+                <button onClick={onReportBug}>回報問題…</button>
+              </Row>
+            )}
             <p className="set-footer">設定即時生效，存在這台電腦上。</p>
           </>
         )}

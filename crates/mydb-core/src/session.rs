@@ -276,6 +276,22 @@ impl Session {
             .collect())
     }
 
+    /// `SHOW CREATE TABLE` for `table` (a view works too), in `database` or
+    /// the current one.
+    pub async fn show_create_table(&self, database: Option<&str>, table: &str) -> Result<String> {
+        let quote = |n: &str| format!("`{}`", n.replace('`', "``"));
+        let name = match database {
+            Some(db) => format!("{}.{}", quote(db), quote(table)),
+            None => quote(table),
+        };
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let row: Option<mysql_async::Row> = conn
+            .query_first(format!("SHOW CREATE TABLE {name}"))
+            .await?;
+        Ok(row.and_then(|r| r.get::<String, _>(1)).unwrap_or_default())
+    }
+
     /// Switches to `database`, as `USE` would. It stays selected after an
     /// automatic reconnect.
     pub async fn use_database(&self, database: &str) -> Result<()> {

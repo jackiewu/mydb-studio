@@ -85,4 +85,15 @@ pub struct PinnedTab {
     /// Order among the connection's pinned tabs.
     #[serde(default)]
     pub position: i64,
+    /// False for a draft: an unpinned tab kept only so a crash doesn't
+    /// lose it. Drafts are dropped when the user closes them.
+    #[serde(default = "yes")]
+    pub pinned: bool,
+    /// The .sql file the tab was opened from or saved to.
+    #[serde(default)]
+    pub file_path: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
