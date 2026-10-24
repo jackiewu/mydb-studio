@@ -21,7 +21,14 @@ function summary(r: StatementResult) {
   return `影響 ${r.affected_rows} 筆`;
 }
 
-export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) {
+export function ResultsPanel({
+  outcome,
+  onRunWithoutLimit,
+}: {
+  outcome: ExecutionOutcome | null;
+  /** Runs one statement again without the automatic LIMIT. */
+  onRunWithoutLimit?: (sql: string) => void;
+}) {
   const [tab, setTab] = useState(0);
 
   // Jump to the last result set (usually the one the user cares about).
@@ -52,12 +59,7 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
         {outcome.record_id != null && <span className="recorded">📝 已記錄 #{outcome.record_id}</span>}
         <div className="result-tabs">
           {outcome.results.map((r, i) => (
-            <button
-              key={i}
-              className={i === tab ? "active" : ""}
-              title={r.sql}
-              onClick={() => setTab(i)}
-            >
+            <button key={i} className={i === tab ? "active" : ""} title={r.sql} onClick={() => setTab(i)}>
               <span className="tab-no">#{i + 1}</span> {label(r.sql)}
             </button>
           ))}
@@ -83,7 +85,7 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
       )}
 
       {notes.length > 0 && (
-        <details className="findings-box" open={notes.some((f) => f.level !== "info")}>
+        <details className="findings-box" open>
           <summary>
             💡 {notes.length} 個建議
             {notes.some((f) => f.level === "warn") && <span className="warn">（可能影響效能）</span>}
@@ -91,7 +93,11 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
           <ul className="findings">
             {notes.map((f, i) => (
               <li key={i} className={f.level}>
-                {outcome.results.length > 1 && <code>#{f.statement + 1} {f.sql}</code>}
+                {outcome.results.length > 1 && (
+                  <code>
+                    #{f.statement + 1} {f.sql}
+                  </code>
+                )}
                 <div>{f.message}</div>
                 <div className="suggestion">建議：{f.suggestion}</div>
               </li>
@@ -109,6 +115,18 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
             {current.last_insert_id ? <span>last insert id {current.last_insert_id}</span> : null}
             {current.info && <span>{current.info}</span>}
           </div>
+          {current.limit_added != null && (
+            <div className="limit-note">
+              已自動加上 LIMIT {current.limit_added.toLocaleString()}
+              {current.total_rows >= current.limit_added ? "，可能還有更多資料。" : "。"}
+              {onRunWithoutLimit && (
+                <button className="link" onClick={() => onRunWithoutLimit(current.sql)}>
+                  不限制筆數重新執行
+                </button>
+              )}
+              <span className="muted">（可在 ⚙ 設定調整數量或關閉）</span>
+            </div>
+          )}
           {plan && (
             <div className="plan-notes">
               {plan.notes.length === 0 ? (

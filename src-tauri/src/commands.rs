@@ -162,11 +162,16 @@ pub async fn execute(
     session_id: String,
     sql: String,
     max_rows: Option<usize>,
+    auto_limit: Option<u64>,
     record: Option<bool>,
 ) -> Result<ExecuteResponse> {
     let session = state.session(&session_id).await?;
     let outcome = session
-        .execute(&sql, max_rows.unwrap_or(DEFAULT_MAX_ROWS))
+        .execute_limited(
+            &sql,
+            max_rows.unwrap_or(DEFAULT_MAX_ROWS),
+            auto_limit.filter(|n| *n > 0),
+        )
         .await;
     let record_id = if record.unwrap_or(false) {
         let p = session.profile();
@@ -188,7 +193,11 @@ pub async fn execute(
     let advice = outcome.error.as_ref().and_then(advisor::error_advice);
     Ok(ExecuteResponse {
         advice,
-        findings: advisor::check_sql(&sql),
+        findings: advisor::check_sql(&sql)
+            .into_iter()
+            // The automatic LIMIT already covers it.
+            .filter(|f| !(auto_limit > Some(0) && f.rule == "select_all_rows"))
+            .collect(),
         outcome,
         record_id,
         current_database: session.current_database(),

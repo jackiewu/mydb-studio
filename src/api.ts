@@ -70,6 +70,8 @@ export interface StatementResult {
   last_insert_id?: number | null;
   warnings: number;
   info: string;
+  /** The LIMIT the app added; `sql` is the statement as written. */
+  limit_added?: number | null;
 }
 
 export type CoreError =
@@ -199,6 +201,8 @@ export interface AppSettings {
   schema_autocomplete: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
+  /** LIMIT added to queries that have none; 0 turns it off. */
+  auto_limit: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -209,6 +213,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   show_system_databases: false,
   schema_autocomplete: true,
   confirm_dangerous: true,
+  auto_limit: 1000,
 };
 
 export interface Snippet {
@@ -273,8 +278,8 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
-  execute: (sessionId: string, sql: string, record = false, maxRows?: number | null) =>
-    invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, record }),
+  execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
+    invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>

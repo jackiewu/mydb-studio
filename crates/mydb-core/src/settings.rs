@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub schema_autocomplete: bool,
     /// Ask before running statements that can destroy data.
     pub confirm_dangerous: bool,
+    /// LIMIT added to queries that have none; 0 turns it off.
+    pub auto_limit: u64,
 }
 
 impl Default for AppSettings {
@@ -33,6 +35,7 @@ impl Default for AppSettings {
             show_system_databases: false,
             schema_autocomplete: true,
             confirm_dangerous: true,
+            auto_limit: 1000,
         }
     }
 }

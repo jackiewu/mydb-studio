@@ -54,6 +54,8 @@ interface Props {
   onRunTargetChange?: (target: RunTarget) => void;
   /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
   onExplain?: (sql: string) => void;
+  /** Opens the snippet editor with `body` as a new snippet. */
+  onSaveSnippet?: (body: string) => void;
 }
 
 function language(
@@ -179,6 +181,11 @@ export function SqlEditor(props: Props) {
           label: "複製這一句",
           disabled: target.count === 0,
           onClick: () => copyText(target.text.trim()),
+        },
+        {
+          label: selected ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
+          disabled: !selected.trim() && target.count === 0,
+          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() ? selected : target.text).trim()),
         },
       ]);
       return true;

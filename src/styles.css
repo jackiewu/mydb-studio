@@ -492,3 +492,6 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .risk-dialog { background: var(--panel); border-radius: 10px; padding: 20px 24px; width: min(640px, 92vw); max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); }
 .risk-dialog h2 { margin: 0 0 6px; font-size: 18px; }
 .risk-dialog .actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.limit-note { margin: 4px 12px; font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.limit-note button.link { font-size: 12px; }
+.settings-dialog .limit-input, .limit-input { width: 100px; }

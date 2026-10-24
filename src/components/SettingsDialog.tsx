@@ -57,6 +57,26 @@ export function SettingsDialog({ settings, onChange, onClose, onOpenSnippets }: 
             </select>
           </label>
         </div>
+        <div className="row">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.auto_limit > 0}
+              onChange={(e) => set({ auto_limit: e.target.checked ? 1000 : 0 })}
+            />
+            SELECT 沒有 LIMIT 時自動加上 LIMIT
+          </label>
+          {settings.auto_limit > 0 && (
+            <input
+              className="limit-input"
+              type="number"
+              min={1}
+              step={100}
+              value={settings.auto_limit}
+              onChange={(e) => set({ auto_limit: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
+            />
+          )}
+        </div>
         <label className="check">
           <input
             type="checkbox"

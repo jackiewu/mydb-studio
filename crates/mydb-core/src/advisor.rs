@@ -341,6 +341,35 @@ fn server_advice(code: u16, message: &str) -> Option<Advice> {
     Some(a)
 }
 
+// ---------- Automatic LIMIT ----------
+
+/// `stmt` with `LIMIT n` added when it is a query that reads rows from a
+/// table without a LIMIT of its own; otherwise `None`.
+///
+/// Locking reads (`FOR UPDATE`, `LOCK IN SHARE MODE`) and `SELECT … INTO`
+/// are left alone, since a LIMIT would change what they lock or write.
+pub fn add_limit(stmt: &str, n: u64) -> Option<String> {
+    let toks = tokens(stmt);
+    let top: Vec<&Tok> = toks
+        .iter()
+        .filter(|(_, d)| *d == 0)
+        .map(|(t, _)| t)
+        .collect();
+    let starts_query = matches!(top.first(), Some(Tok::Word(w)) if w == "SELECT" || w == "WITH")
+        || matches!(top.first(), Some(Tok::Punct('(')));
+    let has = |w: &str| top.iter().any(|t| is_word(t, w));
+    if !starts_query
+        || !toks.iter().any(|(t, _)| is_word(t, "FROM"))
+        || ["LIMIT", "INTO", "FOR", "LOCK", "PROCEDURE"]
+            .iter()
+            .any(|w| has(w))
+    {
+        return None;
+    }
+    // On its own line, so a trailing `-- comment` cannot swallow it.
+    Some(format!("{}\nLIMIT {n}", stmt.trim_end()))
+}
+
 // ---------- Pre-run checks ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -733,6 +762,35 @@ mod tests {
 
     fn rules(sql: &str) -> Vec<&'static str> {
         check_sql(sql).into_iter().map(|f| f.rule).collect()
+    }
+
+    #[test]
+    fn limit_is_added_only_to_plain_queries() {
+        assert_eq!(
+            add_limit("SELECT * FROM t", 100).as_deref(),
+            Some("SELECT * FROM t\nLIMIT 100")
+        );
+        assert_eq!(
+            add_limit("SELECT a FROM t WHERE b = 1 -- note", 5).as_deref(),
+            Some("SELECT a FROM t WHERE b = 1 -- note\nLIMIT 5")
+        );
+        assert!(add_limit("WITH x AS (SELECT 1 FROM t) SELECT * FROM x", 5).is_some());
+        // A LIMIT inside a subquery does not count.
+        assert!(add_limit("SELECT * FROM (SELECT * FROM t LIMIT 3) x", 5).is_some());
+        for sql in [
+            "SELECT * FROM t LIMIT 10",
+            "SELECT * FROM t LIMIT 10 OFFSET 5",
+            "SELECT 1",
+            "SELECT NOW()",
+            "SELECT * FROM t FOR UPDATE",
+            "SELECT * FROM t LOCK IN SHARE MODE",
+            "SELECT a INTO @x FROM t",
+            "UPDATE t SET a = 1",
+            "SHOW TABLES",
+            "EXPLAIN SELECT * FROM t",
+        ] {
+            assert_eq!(add_limit(sql, 5), None, "{sql}");
+        }
     }
 
     #[test]

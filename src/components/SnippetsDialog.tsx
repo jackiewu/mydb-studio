@@ -8,12 +8,14 @@ interface Props {
   /** Present when an editor is open. */
   onInsert?: (s: Snippet) => void;
   onClose: () => void;
+  /** Starts with this unsaved snippet, e.g. SQL picked in the editor. */
+  initial?: Snippet | null;
 }
 
 const BLANK: Snippet = { id: 0, name: "", prefix: "", body: "" };
 
-export function SnippetsDialog({ snippets, onChanged, onInsert, onClose }: Props) {
-  const [draft, setDraft] = useState<Snippet>(snippets[0] ?? BLANK);
+export function SnippetsDialog({ snippets, onChanged, onInsert, onClose, initial }: Props) {
+  const [draft, setDraft] = useState<Snippet>(initial ?? snippets[0] ?? BLANK);
   const [error, setError] = useState<string | null>(null);
   const saved = snippets.find((s) => s.id === draft.id);
   const dirty = !saved || saved.name !== draft.name || saved.prefix !== draft.prefix || saved.body !== draft.body;
@@ -68,7 +70,12 @@ export function SnippetsDialog({ snippets, onChanged, onInsert, onClose }: Props
           <div className="fields-row row">
             <label style={{ width: 140 }}>
               縮寫
-              <input value={draft.prefix} placeholder="例如 sel" onChange={(e) => set({ prefix: e.target.value })} />
+              <input
+                value={draft.prefix}
+                placeholder="例如 sel"
+                autoFocus={!!initial}
+                onChange={(e) => set({ prefix: e.target.value })}
+              />
             </label>
             <label className="grow">
               名稱

@@ -53,6 +53,8 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
+  // SQL from the editor to start a new snippet with.
+  const [snippetDraft, setSnippetDraft] = useState<Snippet | null>(null);
   // Database selected with USE (double-click in the tree, the picker, or SQL).
   const [currentDb, setCurrentDb] = useState<string | null>(null);
   const editor = useRef<EditorHandle | null>(null);
@@ -167,14 +169,20 @@ export default function App() {
     );
   };
 
-  const run = async (text: string, record = tab?.recording ?? false) => {
+  const run = async (text: string, record = tab?.recording ?? false, noLimit = false) => {
     if (!session || !tab || running || !text.trim()) return;
     if (!(await confirmRisk(text))) return;
     // Results go to the tab that ran, even if another one is shown by then.
     const key = tab.key;
     setRunning(true);
     try {
-      const result = await api.execute(session.session_id, text, record, settings.max_rows);
+      const result = await api.execute(
+        session.session_id,
+        text,
+        record,
+        settings.max_rows,
+        noLimit ? 0 : settings.auto_limit,
+      );
       tabs.update(key, { outcome: result });
       setCurrentDb(result.current_database ?? null);
       setNotice(
@@ -239,11 +247,12 @@ export default function App() {
           settings={settings}
           onChange={updateSettings}
           onClose={() => setDialog(null)}
-          onOpenSnippets={() => setDialog("snippets")}
+          onOpenSnippets={() => (setSnippetDraft(null), setDialog("snippets"))}
         />
       ) : (
         <SnippetsDialog
           snippets={snippets}
+          initial={snippetDraft}
           onChanged={reloadSnippets}
           onInsert={
             session && tab && view === "main"
@@ -331,7 +340,7 @@ export default function App() {
               📝 紀錄
             </label>
             <button onClick={() => setView("records")}>紀錄清單</button>
-            <button onClick={() => setDialog("snippets")} title="Snippet：常用 SQL 範本">
+            <button onClick={() => (setSnippetDraft(null), setDialog("snippets"))} title="Snippet：常用 SQL 範本">
               {"{ }"}
             </button>
             <button onClick={() => setDialog("settings")} title="設定">
@@ -453,13 +462,17 @@ export default function App() {
                   handle={t.key === tab?.key ? editor : undefined}
                   onNeedColumns={loadColumns}
                   onExplain={explain}
+                  onSaveSnippet={(body) => {
+                    setSnippetDraft({ id: 0, prefix: "", name: tabTitle(body, ""), body });
+                    setDialog("snippets");
+                  }}
                   onRunTargetChange={setRunTarget}
                   onChange={(value) => tabs.setSql(t.key, value)}
                   onRun={run}
                 />
               ))}
             </div>
-            <ResultsPanel outcome={tab?.outcome ?? null} />
+            <ResultsPanel outcome={tab?.outcome ?? null} onRunWithoutLimit={(sql) => run(sql, undefined, true)} />
           </div>
         ) : (
           <Home
