@@ -571,8 +571,12 @@ impl RedisSession {
                         duration_ms,
                         reply: v.into(),
                     });
-                    // The connection now streams every command; let it go.
-                    if name == "MONITOR" {
+                    // The connection now streams commands or messages
+                    // instead of replies; let it go.
+                    if matches!(
+                        name.as_str(),
+                        "MONITOR" | "SUBSCRIBE" | "PSUBSCRIBE" | "SSUBSCRIBE"
+                    ) {
                         *guard = None;
                     }
                 }

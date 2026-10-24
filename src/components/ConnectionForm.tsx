@@ -264,7 +264,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
           <label>
             密碼
             <input type="password" value={p.password ?? ""} onChange={(e) => set({ password: e.target.value })} />
-            <span className="field-note">存在系統鑰匙圈，不會寫進 app 的資料庫檔案。</span>
+            <span className="field-note">macOS 與 Windows 上存在系統鑰匙圈，不會寫進 app 的資料庫檔案。</span>
           </label>
           {redis ? (
             <label>

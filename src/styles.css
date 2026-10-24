@@ -724,7 +724,7 @@ button.ai-ask { margin-left: 8px; }
 .key-type.t-set { color: #b7791f; }
 .key-type.t-zset { color: #c43c3c; }
 .key-type.t-stream { color: #0f8a8a; }
-.load-more { display: block; padding: 4px 12px 4px 26px; text-align: left; }
+.tree button.load-more { display: block; padding: 4px 12px 4px 26px; text-align: left; }
 .redis-panel { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .redis-panel > .results { flex: 1; }
 .redis-panel-tabs { margin: 0; padding: 0 8px; flex-shrink: 0; }

@@ -123,8 +123,8 @@ function ReplyView({ reply, command }: { reply: Reply; command: string }) {
       return (
         <ResultGrid
           result={grid(
-            ["#", "value"],
-            reply.items.map((it, i) => [i + 1, replyText(it)]),
+            ["value"],
+            reply.items.map((it) => [replyText(it)]),
             command,
           )}
         />
@@ -153,7 +153,7 @@ function CommandResults({ outcome }: { outcome: RedisOutcome | null }) {
   if (!outcome) {
     return (
       <div className="results empty">
-        <p>每行一個指令，例如 <code>GET user:1</code>、<code>HGETALL user:1:profile</code>。</p>
+        <p>每行一個指令，例如 <code>GET user:1</code>、<code>HGETALL user:1:meta</code>。</p>
         <p>⌘／Ctrl + Enter：執行游標所在的那一行；有選取時依序執行選取的多行。</p>
         <p>⌘／Ctrl + Shift + Enter：依序執行全部。以 # 開頭的行是註解。</p>
         <p>左側點 key 可以檢視內容（唯讀）。</p>

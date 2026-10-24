@@ -78,9 +78,12 @@ impl From<::redis::RedisError> for CoreError {
                 message: err.to_string(),
             }
         } else {
-            CoreError::Redis {
-                message: err.to_string(),
-            }
+            // `WRONGTYPE Operation against a key …`, as redis-cli shows it.
+            let message = match (err.code(), err.detail()) {
+                (Some(code), Some(detail)) => format!("{code} {detail}"),
+                _ => err.to_string(),
+            };
+            CoreError::Redis { message }
         }
     }
 }

@@ -155,7 +155,7 @@ export default function App() {
   const leaveTabs = async (what: string) => {
     const unsaved = tabs.tabs.filter(isUnsaved);
     if (unsaved.length) {
-      const names = unsaved.map((t) => `・${tabTitle(t.sql, "查詢", t.filePath)}`).join("\n");
+      const names = unsaved.map((t) => `・${tabTitle(t.sql, "查詢", t.filePath, isRedis)}`).join("\n");
       if (!(await ask(`有 ${unsaved.length} 個分頁沒有釘選也沒有存檔，${what}後內容會消失：\n${names}\n\n確定要${what}？`, what)))
         return false;
     }
@@ -891,7 +891,14 @@ export default function App() {
       )}
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
       {dialogs}
-      {risk && <RiskDialog findings={risk.findings} connectionName={active?.name ?? ""} onAnswer={risk.answer} />}
+      {risk && (
+        <RiskDialog
+          findings={risk.findings}
+          connectionName={active?.name ?? ""}
+          intro={isRedis ? "這些指令可能會刪除資料、拖慢伺服器或影響其他用戶端。" : undefined}
+          onAnswer={risk.answer}
+        />
+      )}
       {editing && (
         <div className="modal-backdrop">
           <ConnectionForm

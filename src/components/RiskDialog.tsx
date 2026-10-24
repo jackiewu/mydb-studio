@@ -5,10 +5,13 @@ import type { Finding } from "../api";
 export function RiskDialog({
   findings,
   connectionName,
+  intro = "這些語句可能會毀損資料，而且通常無法復原。",
   onAnswer,
 }: {
   findings: Finding[];
   connectionName: string;
+  /** What is at stake, after the connection name. */
+  intro?: string;
   onAnswer: (run: boolean) => void;
 }) {
   useEffect(() => {
@@ -22,7 +25,7 @@ export function RiskDialog({
       <div className="risk-dialog" role="alertdialog" aria-labelledby="risk-title">
         <h2 id="risk-title">⚠️ 確定要執行嗎？</h2>
         <p className="muted">
-          連線：<strong>{connectionName}</strong>。這些語句可能會毀損資料，而且通常無法復原。
+          連線：<strong>{connectionName}</strong>。{intro}
         </p>
         <ul className="findings">
           {findings.map((f, i) => (

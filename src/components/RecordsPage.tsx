@@ -273,7 +273,12 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                       onClick={() => copySql(r.sql)}
                     >
                       {firstLine(r.sql)}
-                      {r.statement_count > 1 && <span className="muted"> （{r.statement_count} 句）</span>}
+                      {r.statement_count > 1 && (
+                        <span className="muted">
+                          {" "}
+                          （{r.statement_count} {r.connection_kind === "redis" ? "個指令" : "句"}）
+                        </span>
+                      )}
                       {r.note && <div className="note-line">📝 {r.note}</div>}
                     </td>
                     <td className="num">{ms(r.duration_ms)}</td>
@@ -357,7 +362,11 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                     </td>
                     <td className="num">{ms(s.duration_ms)}</td>
                     <td className="num">{s.affected_rows}</td>
-                    <td className="num">{s.returned_rows ?? "—"}</td>
+                    <td className="num">
+                      {detail.connection_kind === "redis"
+                        ? [s.returned_rows, s.info].filter((v) => v != null && v !== "").join(" · ")
+                        : (s.returned_rows ?? "—")}
+                    </td>
                   </tr>
                 ))}
               </tbody>

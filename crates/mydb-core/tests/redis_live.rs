@@ -272,6 +272,25 @@ async fn command_lines_run_in_order_and_stop_at_errors() {
 }
 
 #[tokio::test]
+async fn monitor_and_subscribe_leave_the_editor_usable() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let replies = run(
+        &s,
+        "MONITOR\nPING\nSUBSCRIBE mydbtest:ch\nGET mydbtest:none",
+    )
+    .await;
+    assert_eq!(replies[0], Reply::Status { value: "OK".into() });
+    assert_eq!(
+        replies[1],
+        Reply::Status {
+            value: "PONG".into()
+        }
+    );
+    assert_eq!(replies[3], Reply::Nil);
+}
+
+#[tokio::test]
 async fn records_never_keep_passwords() {
     let profile = profile_or_skip!();
     let s = RedisSession::connect(&profile).await.unwrap();
