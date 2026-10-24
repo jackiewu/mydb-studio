@@ -18,7 +18,7 @@ pub mod store;
 pub mod tunnel;
 
 pub use error::{CoreError, Result};
-pub use profile::{ConnectionProfile, SshAuth, SshConfig, SslConfig, SslMode};
+pub use profile::{ConnectionProfile, McpAccess, SshAuth, SshConfig, SslConfig, SslMode};
 pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatement};
 pub use report::{ReportFormat, ReportOptions};
 pub use session::{

@@ -2744,12 +2744,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mydb-mcp"
+version = "0.1.0"
+dependencies = [
+ "mydb-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "mydb-studio"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "keyring",
  "mydb-core",
+ "mydb-mcp",
  "serde",
  "serde_json",
  "tauri",

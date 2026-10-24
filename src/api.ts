@@ -37,6 +37,16 @@ export interface ConnectionProfile {
   ssh?: SshConfig | null;
   favorite?: boolean;
   last_used_at?: string | null;
+  /** What AI tools may do through the MCP server (default read_only). */
+  mcp?: McpAccess;
+}
+
+export type McpAccess = "off" | "read_only" | "read_write";
+
+export interface McpSetup {
+  command: string;
+  config_json: string;
+  claude_code: string;
 }
 
 export interface SessionInfo {
@@ -394,6 +404,7 @@ export function newProfile(): ConnectionProfile {
     database: "",
     ssl: { mode: "disabled" },
     ssh: null,
+    mcp: "read_only",
   };
 }
 
@@ -469,6 +480,7 @@ export const api = {
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
   deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
+  mcpSetup: () => invoke<McpSetup>("mcp_setup"),
   cancelQuery: (sessionId: string) => invoke<boolean>("cancel_query", { sessionId }),
   /** Runs `sql` again and writes every row to `path`; returns the row count. */
   exportQuery: (sessionId: string, sql: string, options: ExportOptions, path: string) =>

@@ -1,5 +1,6 @@
 mod commands;
 mod keychain;
+mod mcp;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -40,6 +41,9 @@ fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args().skip(1).any(|a| a == "--mcp") {
+        std::process::exit(mcp::main());
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -96,6 +100,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::cancel_query,
+            commands::mcp_setup,
             commands::export_query,
             commands::server_overview,
             commands::server_processes,

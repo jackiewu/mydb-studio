@@ -862,3 +862,33 @@ pub async fn export_query(
     }
     finished
 }
+
+/// How to add this app as an MCP server in an AI tool.
+#[derive(Serialize)]
+pub struct McpSetup {
+    /// The executable to run with `--mcp`.
+    pub command: String,
+    /// `mcpServers` entry for Claude Desktop and similar clients.
+    pub config_json: String,
+    /// One line for Claude Code.
+    pub claude_code: String,
+}
+
+#[tauri::command]
+pub fn mcp_setup() -> Result<McpSetup> {
+    let exe = std::env::current_exe()?;
+    let command = exe.to_string_lossy().into_owned();
+    let config = serde_json::json!({
+        "mcpServers": { "mydb-studio": { "command": command, "args": ["--mcp"] } }
+    });
+    let quoted = if command.contains(' ') {
+        format!("\"{command}\"")
+    } else {
+        command.clone()
+    };
+    Ok(McpSetup {
+        config_json: serde_json::to_string_pretty(&config)?,
+        claude_code: format!("claude mcp add mydb-studio -- {quoted} --mcp"),
+        command,
+    })
+}
