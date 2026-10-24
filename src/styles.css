@@ -705,3 +705,36 @@ button.ai-ask { margin-left: 8px; }
 .mcp-access.read_only { color: var(--good); }
 .mcp-access.read_write { color: var(--warn); font-weight: 600; }
 .mcp-access.off { color: var(--muted); }
+
+/* Redis */
+.badge.kind-mysql { color: var(--accent); }
+.badge.kind-redis { color: #d1453b; }
+.sidebar-head .badge { margin-left: auto; }
+.kind-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0 16px; }
+.kind-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px; text-align: left; height: auto; }
+.kind-choice strong { font-size: 15px; }
+.kind-choice span { font-size: 12px; white-space: normal; }
+.conn-form h2 .badge { vertical-align: middle; margin-left: 6px; }
+.conn-form h2 .link { margin-left: 8px; font-weight: normal; }
+.redis-key.selected { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.key-type { font-size: 10px; font-weight: 600; padding: 0 4px; border-radius: 4px; background: var(--code-bg); color: var(--muted); flex-shrink: 0; }
+.key-type.t-string { color: #2f6fde; }
+.key-type.t-hash { color: #8a4fd6; }
+.key-type.t-list { color: #1e8a4c; }
+.key-type.t-set { color: #b7791f; }
+.key-type.t-zset { color: #c43c3c; }
+.key-type.t-stream { color: #0f8a8a; }
+.load-more { display: block; padding: 4px 12px 4px 26px; text-align: left; }
+.redis-panel { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
+.redis-panel > .results { flex: 1; }
+.redis-panel-tabs { margin: 0; padding: 0 8px; flex-shrink: 0; }
+.redis-panel-tabs button { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply { padding: 8px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: pre-wrap; }
+.reply.bad { color: var(--bad); }
+.result-tabs button.bad { color: var(--bad); }
+.redis-command { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+.redis-text { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.redis-text-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+.redis-text pre { margin: 0; padding: 8px 12px; overflow: auto; flex: 1; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+.redis-key-head { gap: 8px; }
+.redis-key-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }

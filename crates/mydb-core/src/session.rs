@@ -495,6 +495,38 @@ impl Session {
     }
 }
 
+/// An open connection of either kind, as the app keeps them.
+#[derive(Clone)]
+pub enum AnySession {
+    Mysql(std::sync::Arc<Session>),
+    Redis(std::sync::Arc<crate::redis::RedisSession>),
+}
+
+impl AnySession {
+    pub fn info(&self) -> &SessionInfo {
+        match self {
+            AnySession::Mysql(s) => s.info(),
+            AnySession::Redis(s) => s.info(),
+        }
+    }
+
+    /// Disconnects, unless a call still holds the session.
+    pub async fn close(self) -> Result<()> {
+        match self {
+            AnySession::Mysql(s) => match std::sync::Arc::try_unwrap(s) {
+                Ok(s) => s.close().await,
+                Err(_) => Ok(()),
+            },
+            AnySession::Redis(s) => {
+                if let Ok(s) = std::sync::Arc::try_unwrap(s) {
+                    s.close().await;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 struct BusyGuard<'a>(&'a AtomicBool);
 
 impl Drop for BusyGuard<'_> {

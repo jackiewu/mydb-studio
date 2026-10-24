@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-/// A saved connection to a MySQL or MariaDB server.
+/// A saved connection to a MySQL / MariaDB or Redis server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
+    /// What the server is. Profiles saved before Redis support have none
+    /// and are MySQL.
+    #[serde(default)]
+    pub kind: ConnectionKind,
     pub host: String,
     pub port: u16,
+    /// For Redis, the ACL user name; empty for the `default` user.
     pub user: String,
     /// Stored locally in the app database. Moving secrets to the OS keychain
     /// is tracked as a follow-up.
@@ -26,8 +31,33 @@ pub struct ConnectionProfile {
     #[serde(default)]
     pub last_used_at: Option<String>,
     /// What AI tools may do with this connection through the MCP server.
+    /// Redis connections are never offered to them.
     #[serde(default)]
     pub mcp: McpAccess,
+    /// Redis only: the database (0 to 15) selected after connecting.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub redis_db: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionKind {
+    #[default]
+    Mysql,
+    Redis,
+}
+
+impl ConnectionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnectionKind::Mysql => "mysql",
+            ConnectionKind::Redis => "redis",
+        }
+    }
 }
 
 /// How far the MCP server lets AI tools use a connection.
@@ -48,6 +78,7 @@ impl ConnectionProfile {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
+            kind: ConnectionKind::Mysql,
             host: host.into(),
             port: 3306,
             user: user.into(),
@@ -58,6 +89,30 @@ impl ConnectionProfile {
             favorite: false,
             last_used_at: None,
             mcp: McpAccess::default(),
+            redis_db: 0,
+        }
+    }
+
+    /// A Redis connection with the default port and user.
+    pub fn new_redis(name: impl Into<String>, host: impl Into<String>) -> Self {
+        Self {
+            kind: ConnectionKind::Redis,
+            port: 6379,
+            ..Self::new(name, host, "")
+        }
+    }
+
+    /// Whether AI tools may see and use this connection through MCP. The
+    /// MCP server only speaks SQL, so Redis connections are left out.
+    pub fn mcp_allowed(&self) -> bool {
+        self.kind == ConnectionKind::Mysql && self.mcp != McpAccess::Off
+    }
+
+    /// `user@host:port`, as shown in records.
+    pub fn server_label(&self) -> String {
+        match (self.kind, self.user.is_empty()) {
+            (ConnectionKind::Redis, true) => format!("{}:{}", self.host, self.port),
+            _ => format!("{}@{}:{}", self.user, self.host, self.port),
         }
     }
 }
@@ -164,5 +219,23 @@ mod tests {
         .unwrap();
         assert_eq!(p.ssl.mode, SslMode::Disabled);
         assert!(p.ssh.is_none());
+        // Saved before Redis support: a MySQL connection.
+        assert_eq!(p.kind, ConnectionKind::Mysql);
+        assert!(p.mcp_allowed());
+    }
+
+    #[test]
+    fn redis_profiles_round_trip_and_stay_out_of_mcp() {
+        let mut p = ConnectionProfile::new_redis("cache", "10.0.0.5");
+        p.redis_db = 3;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""kind":"redis""#) && json.contains(r#""redis_db":3"#));
+        assert_eq!(serde_json::from_str::<ConnectionProfile>(&json).unwrap(), p);
+        assert_eq!(p.port, 6379);
+        assert!(!p.mcp_allowed());
+        assert_eq!(p.server_label(), "10.0.0.5:6379");
+        // db 0 is the default and not written out.
+        let plain = ConnectionProfile::new("x", "h", "u");
+        assert!(!serde_json::to_string(&plain).unwrap().contains("redis_db"));
     }
 }

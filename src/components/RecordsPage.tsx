@@ -4,6 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   describeError,
+  type ConnectionKind,
   type ConnectionProfile,
   type ExecutionRecord,
   type RecordFilter,
@@ -63,6 +64,7 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
 
 export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const [connectionId, setConnectionId] = useState("");
+  const [kind, setKind] = useState<ConnectionKind | "">("");
   const [text, setText] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -88,6 +90,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
 
   const filter: RecordFilter = {
     connection_id: connectionId || null,
+    connection_kind: kind || null,
     text: text || null,
     from: dayToIso(from),
     to: dayToIso(to, true),
@@ -102,7 +105,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
       setMessage({ ok: false, text: describeError(e) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, text, from, to, onlyErrors]);
+  }, [connectionId, kind, text, from, to, onlyErrors]);
 
   useEffect(() => {
     const t = setTimeout(load, 200);
@@ -163,15 +166,24 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
       </header>
 
       <div className="filters">
+        <select
+          value={kind}
+          onChange={(e) => (setKind(e.target.value as ConnectionKind | ""), setConnectionId(""))}
+          title="連線類型"
+        >
+          <option value="">所有類型</option>
+          <option value="mysql">MySQL / MariaDB</option>
+          <option value="redis">Redis</option>
+        </select>
         <select value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
           <option value="">所有連線</option>
-          {connections.map((c) => (
+          {connections.filter((c) => !kind || (c.kind ?? "mysql") === kind).map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
             </option>
           ))}
         </select>
-        <input placeholder="搜尋 SQL、備註、錯誤訊息" value={text} onChange={(e) => setText(e.target.value)} />
+        <input placeholder="搜尋 SQL／指令、備註、錯誤訊息" value={text} onChange={(e) => setText(e.target.value)} />
         <label className="inline">
           從 <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
@@ -251,6 +263,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                     <td className="rownum">{r.id}</td>
                     <td>{when(r.started_at)}</td>
                     <td>
+                      {r.connection_kind === "redis" && <span className="badge kind-redis">Redis</span>}{" "}
                       {r.connection_name}
                       {r.database ? ` / ${r.database}` : ""}
                     </td>

@@ -18,11 +18,18 @@ jobs:
         options: >-
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     env:
       MYDB_TEST_HOST: 127.0.0.1
       MYDB_TEST_PORT: 3306
       MYDB_TEST_USER: root
       MYDB_TEST_PASSWORD: secret
+      MYDB_TEST_REDIS: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - name: System packages for Tauri
@@ -40,7 +47,9 @@ jobs:
       - run: npm ci
       - name: Frontend type check and build
         run: npm run build
+      - name: Frontend unit tests
+        run: npm test
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Tests (including live MariaDB tests)
+      - name: Tests (including live MariaDB and Redis tests)
         run: cargo test --workspace

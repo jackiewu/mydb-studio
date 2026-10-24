@@ -25,9 +25,13 @@ export interface SshConfig {
   known_host_fingerprint?: string | null;
 }
 
+export type ConnectionKind = "mysql" | "redis";
+
 export interface ConnectionProfile {
   id: string;
   name: string;
+  /** Missing on profiles saved before Redis support: MySQL. */
+  kind?: ConnectionKind;
   host: string;
   port: number;
   user: string;
@@ -37,8 +41,10 @@ export interface ConnectionProfile {
   ssh?: SshConfig | null;
   favorite?: boolean;
   last_used_at?: string | null;
-  /** What AI tools may do through the MCP server (default read_only). */
+  /** What AI tools may do through the MCP server (default read_only). MySQL only. */
   mcp?: McpAccess;
+  /** Redis: database 0–15 selected after connecting. */
+  redis_db?: number;
 }
 
 export type McpAccess = "off" | "read_only" | "read_write";
@@ -59,8 +65,11 @@ export interface SessionInfo {
 export interface OpenedSession {
   session_id: string;
   connection_id: string;
+  kind: ConnectionKind;
   info: SessionInfo;
   current_database?: string | null;
+  /** Redis: the database selected. */
+  redis_db?: number | null;
 }
 
 export interface ColumnInfo {
@@ -89,7 +98,7 @@ export interface StatementResult {
 export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
-  | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config"; message: string }
+  | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config" | "redis"; message: string }
   | { kind: "not_connected"; id: string }
   | { kind: "cancelled" };
 
@@ -144,6 +153,7 @@ export interface ExecutionRecord {
   id: number;
   connection_id?: string | null;
   connection_name: string;
+  connection_kind?: ConnectionKind;
   server: string;
   server_version: string;
   database?: string | null;
@@ -163,6 +173,7 @@ export interface ExecutionRecord {
 
 export interface RecordFilter {
   connection_id?: string | null;
+  connection_kind?: ConnectionKind | null;
   text?: string | null;
   from?: string | null;
   to?: string | null;
@@ -393,10 +404,26 @@ export interface PinnedTab {
   file_path: string | null;
 }
 
-export function newProfile(): ConnectionProfile {
+export function newProfile(kind: ConnectionKind = "mysql"): ConnectionProfile {
+  if (kind === "redis")
+    return {
+      id: "",
+      name: "",
+      kind: "redis",
+      host: "127.0.0.1",
+      port: 6379,
+      user: "",
+      password: "",
+      database: null,
+      ssl: { mode: "disabled" },
+      ssh: null,
+      mcp: "off",
+      redis_db: 0,
+    };
   return {
     id: "",
     name: "",
+    kind: "mysql",
     host: "127.0.0.1",
     port: 3306,
     user: "root",
@@ -406,6 +433,89 @@ export function newProfile(): ConnectionProfile {
     ssh: null,
     mcp: "read_only",
   };
+}
+
+/** `user@host:port`, or `host:port` for Redis without an ACL user. */
+export function serverLabel(p: ConnectionProfile) {
+  return p.kind === "redis" && !p.user ? `${p.host}:${p.port}` : `${p.user}@${p.host}:${p.port}`;
+}
+
+export const KIND_LABEL: Record<ConnectionKind, string> = { mysql: "MySQL", redis: "Redis" };
+
+// Redis, mirroring crates/mydb-core/src/redis.
+
+export interface KeyName {
+  key: string;
+  /** `key` is hex: the key isn't UTF-8. */
+  binary?: boolean;
+}
+
+export interface KeyEntry extends KeyName {
+  kind: string;
+  /** Seconds; -1 never expires. */
+  ttl: number;
+}
+
+export interface ScanPage {
+  /** "0" when every key was seen. */
+  cursor: string;
+  keys: KeyEntry[];
+}
+
+export interface DbInfo {
+  index: number;
+  keys: number;
+  expires: number;
+}
+
+export interface KeyInfo {
+  kind: string;
+  ttl: number;
+  encoding?: string | null;
+  memory_bytes?: number | null;
+  length?: number | null;
+}
+
+export interface ValuePage {
+  kind: string;
+  text?: string | null;
+  binary: boolean;
+  truncated: boolean;
+  columns: string[];
+  rows: Cell[][];
+  /** Start of the next page; null at the end. */
+  next?: string | null;
+}
+
+export type Reply =
+  | { type: "nil" }
+  | { type: "integer"; value: number }
+  | { type: "text"; value: string; binary: boolean }
+  | { type: "status"; value: string }
+  | { type: "double"; value: number }
+  | { type: "bool"; value: boolean }
+  | { type: "array"; items: Reply[] }
+  | { type: "map"; entries: [Reply, Reply][] }
+  | { type: "error"; message: string };
+
+export interface CommandResult {
+  line: number;
+  /** Passwords masked. */
+  command: string;
+  duration_ms: number;
+  reply: Reply;
+}
+
+export interface RedisOutcome {
+  started_at: string;
+  duration_ms: number;
+  results: CommandResult[];
+  error?: CoreError | null;
+  failed_command?: string | null;
+  reconnected: boolean;
+  cancelled: boolean;
+  db: number;
+  record_id?: number | null;
 }
 
 /** Plain words for the TLS failures people run into with cloud servers. */
@@ -519,6 +629,16 @@ export const api = {
   savePinnedTab: (tab: PinnedTab) => invoke<PinnedTab>("save_pinned_tab", { tab }),
   deletePinnedTab: (id: number) => invoke<void>("delete_pinned_tab", { id }),
   deleteDraftTabs: (connectionId: string) => invoke<void>("delete_draft_tabs", { connectionId }),
+  redisDatabases: (sessionId: string) => invoke<DbInfo[]>("redis_databases", { sessionId }),
+  redisScan: (sessionId: string, db: number, cursor: string, pattern: string) =>
+    invoke<ScanPage>("redis_scan", { sessionId, db, cursor, pattern }),
+  redisKeyInfo: (sessionId: string, db: number, key: KeyName) =>
+    invoke<KeyInfo>("redis_key_info", { sessionId, db, key }),
+  redisReadValue: (sessionId: string, db: number, key: KeyName, from: string) =>
+    invoke<ValuePage>("redis_read_value", { sessionId, db, key, from }),
+  redisCheck: (text: string) => invoke<Finding[]>("redis_check", { text }),
+  redisExecute: (sessionId: string, text: string, record: boolean) =>
+    invoke<RedisOutcome>("redis_execute", { sessionId, text, record }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
   takeCrashInfo: () => invoke<CrashInfo | null>("take_crash_info"),
   bugReportBody: (what: string, details: string) => invoke<string>("bug_report_body", { what, details }),

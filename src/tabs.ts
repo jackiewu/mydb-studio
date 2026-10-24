@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ask } from "./ask";
-import { api, type ExecutionOutcome, type PinnedTab } from "./api";
+import { api, type ExecutionOutcome, type PinnedTab, type RedisOutcome } from "./api";
 import { statementRanges } from "./editor/statements";
 
 /**
@@ -21,6 +21,8 @@ export interface EditorTab {
   /** Run results are stored only while this is on. */
   recording: boolean;
   outcome: ExecutionOutcome | null;
+  /** The last run, in a Redis tab. */
+  redisOutcome?: RedisOutcome | null;
   /** Bumped to replace the editor text with `sql`. */
   seed: number;
 }
@@ -38,9 +40,17 @@ export function fileName(path: string) {
 let nextKey = 1;
 const newKey = () => `tab-${nextKey++}`;
 
-/** A short name for a tab: its file, or the start of its first statement. */
-export function tabTitle(sql: string, fallback: string, filePath?: string | null) {
+/**
+ * A short name for a tab: its file, or the start of its first statement
+ * (first command line in a Redis tab).
+ */
+export function tabTitle(sql: string, fallback: string, filePath?: string | null, redis = false) {
   if (filePath) return fileName(filePath);
+  if (redis) {
+    const line = sql.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("//"));
+    if (!line) return fallback;
+    return line.length > 24 ? line.slice(0, 23) + "…" : line;
+  }
   const first = statementRanges(sql)[0];
   if (!first) return fallback;
   const code = sql
@@ -58,7 +68,7 @@ const SAVE_DELAY_MS = 500;
  * Editor tabs for one connection. Each change is written to the store
  * (debounced while typing) so tabs survive a crash; see {@link EditorTab}.
  */
-export function useTabs(connectionId: string | null, recordByDefault: boolean) {
+export function useTabs(connectionId: string | null, recordByDefault: boolean, redis = false) {
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   /** How many unsaved tabs came back from last time (after a crash). */
@@ -95,7 +105,7 @@ export function useTabs(connectionId: string | null, recordByDefault: boolean) {
       const saved = await api.savePinnedTab({
         id: tab.rowId ?? 0,
         connection_id: connectionId,
-        title: tabTitle(tab.sql, `查詢 ${index + 1}`, tab.filePath),
+        title: tabTitle(tab.sql, `查詢 ${index + 1}`, tab.filePath, redis),
         sql: tab.sql,
         position: index,
         pinned: tab.pinned,
@@ -108,7 +118,7 @@ export function useTabs(connectionId: string | null, recordByDefault: boolean) {
         latest.current = latest.current.map((t) => (t.key === key ? { ...t, rowId: saved.id } : t));
       }
     },
-    [connectionId],
+    [connectionId, redis],
   );
 
   const persist = useCallback(
@@ -168,7 +178,7 @@ export function useTabs(connectionId: string | null, recordByDefault: boolean) {
           outcome: null,
           seed: 0,
         }));
-        const shown = list.length ? list : [blank("SELECT VERSION();")];
+        const shown = list.length ? list : [blank(redis ? "PING" : "SELECT VERSION();")];
         setTabs(shown);
         setActiveKey(shown[0].key);
         setRestored(list.filter((t) => !t.pinned).length);

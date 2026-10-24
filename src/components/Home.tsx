@@ -1,4 +1,4 @@
-import type { ConnectionProfile } from "../api";
+import { KIND_LABEL, serverLabel, type ConnectionProfile } from "../api";
 import { openMenu } from "../contextMenu";
 import { copyText } from "../copy";
 
@@ -37,7 +37,8 @@ function Card({
   onDuplicate,
   onDelete,
 }: CardProps & { c: ConnectionProfile }) {
-  const address = `${c.user}@${c.host}:${c.port}`;
+  const address = serverLabel(c);
+  const kind = c.kind ?? "mysql";
   return (
     <div
       className="card"
@@ -73,9 +74,10 @@ function Card({
       </div>
       <div className="card-addr">
         {address}
-        {c.database ? ` / ${c.database}` : ""}
+        {kind === "redis" ? ` / db${c.redis_db ?? 0}` : c.database ? ` / ${c.database}` : ""}
       </div>
       <div className="card-foot">
+        <span className={`badge kind-${kind}`}>{KIND_LABEL[kind]}</span>
         {c.ssl.mode !== "disabled" && <span className="badge good">TLS</span>}
         {c.ssh && <span className="badge good">SSH {c.ssh.host}</span>}
         <span className="muted small-text">{lastUsed(c.last_used_at)}</span>

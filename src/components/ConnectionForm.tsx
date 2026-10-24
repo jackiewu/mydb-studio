@@ -1,6 +1,18 @@
 import { useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, describeError, type ConnectionProfile, type McpAccess, type SslConfig, type SshAuth, type SslMode } from "../api";
+import {
+  api,
+  describeError,
+  KIND_LABEL,
+  newProfile,
+  serverLabel,
+  type ConnectionKind,
+  type ConnectionProfile,
+  type McpAccess,
+  type SslConfig,
+  type SshAuth,
+  type SslMode,
+} from "../api";
 
 interface Props {
   initial: ConnectionProfile;
@@ -41,9 +53,26 @@ const CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
   },
 ];
 
+/** TLS presets for managed Redis. */
+const REDIS_CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
+  {
+    value: "aws",
+    label: "AWS ElastiCache / MemoryDB",
+    mode: "verify_identity",
+    hint: "需要開啟「傳輸中加密」。憑證由 Amazon 簽發，系統內建的根憑證就能驗證，CA 欄位留空即可。「主機」請填 endpoint（xxx.cache.amazonaws.com），不要填 IP。ElastiCache 只能從 VPC 內連線，通常要搭配「SSH 通道」經由同一個 VPC 的 EC2 跳板機。",
+  },
+  {
+    value: "gcp",
+    label: "GCP Memorystore for Redis",
+    mode: "verify_ca",
+    hint: "到 Memorystore 執行個體頁面下載伺服器 CA（server-ca.pem），在下面選這個檔案。用 IP 連線所以不驗證主機名稱。有開啟 AUTH 的話，把 AUTH 字串填在「一般」頁的密碼欄。",
+  },
+];
+
 /** The cloud a host name points at, to suggest its settings. */
-function cloudOf(host: string): Cloud | null {
+function cloudOf(host: string, kind: ConnectionKind): Cloud | null {
   const h = host.trim().toLowerCase();
+  if (kind === "redis") return h.endsWith(".cache.amazonaws.com") || h.includes(".memorydb.") ? "aws" : null;
   if (h.endsWith(".rds.amazonaws.com") || h.endsWith(".rds.amazonaws.com.cn")) return "aws";
   if (h.endsWith(".database.azure.com")) return "azure";
   return null;
@@ -53,7 +82,11 @@ function cloudOf(host: string): Cloud | null {
 const loginKey = (p: ConnectionProfile) => JSON.stringify([p.host, p.port, p.user, p.password, p.ssl, p.ssh]);
 
 export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) {
-  const [p, setP] = useState<ConnectionProfile>(initial);
+  // A new connection starts by picking what kind of server it is.
+  const [p, setP] = useState<ConnectionProfile>(initial.kind || initial.id ? initial : newProfile());
+  const [choosing, setChoosing] = useState(!initial.id && !initial.kind);
+  const redis = p.kind === "redis";
+  const clouds = redis ? REDIS_CLOUDS : CLOUDS;
   const [tab, setTab] = useState<Tab>("general");
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -94,9 +127,14 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
 
   const applyCloud = async (cloud: Cloud | null) => {
     if (!cloud) return setSsl({ cloud: null });
-    const preset = CLOUDS.find((c) => c.value === cloud)!;
-    const ca_path =
-      cloud === "aws"
+    const preset = clouds.find((c) => c.value === cloud)!;
+    const ca_path = redis
+      ? cloud === "aws"
+        ? null
+        : p.ssl.ca_path?.includes("aws-rds-global-bundle")
+          ? null
+          : (p.ssl.ca_path ?? null)
+      : cloud === "aws"
         ? await api.awsRdsCaPath().catch(() => p.ssl.ca_path ?? null)
         : cloud === "azure"
           ? null
@@ -105,7 +143,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             : (p.ssl.ca_path ?? null);
     setSsl({ cloud, mode: preset.mode, ca_path });
   };
-  const suggestedCloud = !p.ssl.cloud ? cloudOf(p.host) : null;
+  const suggestedCloud = !p.ssl.cloud ? cloudOf(p.host, p.kind ?? "mysql") : null;
 
   const pickFile = async (field: "ca_path" | "cert_path" | "key_path") => {
     const picked = await openDialog({
@@ -125,7 +163,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
       const info = await api.testConnection(p);
       const extras = [info.tls && "TLS", p.ssh && "SSH"].filter(Boolean).join("、");
       setStatus({ ok: true, text: `連線成功：${info.server_version}${extras ? `（${extras}）` : ""}` });
-      loadDatabases();
+      if (!redis) loadDatabases();
     } catch (e) {
       setStatus({ ok: false, text: describeError(e) });
     } finally {
@@ -136,19 +174,56 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      onSaved(await api.saveConnection({ ...p, name: p.name.trim() || `${p.user}@${p.host}` }));
+      onSaved(await api.saveConnection({ ...p, name: p.name.trim() || serverLabel(p) }));
     } catch (err) {
       setStatus({ ok: false, text: describeError(err) });
     }
   };
 
+  if (choosing) {
+    return (
+      <div className="conn-form">
+        <h2>新增連線</h2>
+        <p className="hint">先選擇要連線的資料庫類型：</p>
+        <div className="kind-choices">
+          <button
+            type="button"
+            className="kind-choice"
+            autoFocus
+            onClick={() => (setP(newProfile("mysql")), setChoosing(false))}
+          >
+            <strong>MySQL / MariaDB</strong>
+            <span className="muted">SQL 編輯器、資料表瀏覽、Explain、伺服器管理</span>
+          </button>
+          <button type="button" className="kind-choice" onClick={() => (setP(newProfile("redis")), setChoosing(false))}>
+            <strong>Redis</strong>
+            <span className="muted">Key 瀏覽（SCAN）、值的檢視、指令列</span>
+          </button>
+        </div>
+        <div className="actions">
+          <span className="spacer" />
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <form className="conn-form" onSubmit={save}>
-      <h2>{initial.id ? "編輯連線" : "新增連線"}</h2>
+      <h2>
+        {initial.id ? "編輯連線" : "新增連線"} <span className={`badge kind-${p.kind ?? "mysql"}`}>{KIND_LABEL[p.kind ?? "mysql"]}</span>
+        {!initial.id && !initial.kind && (
+          <button type="button" className="link small-text" onClick={() => setChoosing(true)}>
+            換類型
+          </button>
+        )}
+      </h2>
       <div className="tabs">
         {(["general", "ssl", "ssh"] as Tab[]).map((t) => (
           <button type="button" key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-            {t === "general" ? "一般" : t === "ssl" ? "SSL/TLS" : "SSH 通道"}
+            {t === "general" ? "一般" : t === "ssl" ? (redis ? "TLS" : "SSL/TLS") : "SSH 通道"}
           </button>
         ))}
       </div>
@@ -157,7 +232,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
         <div className="fields">
           <label>
             名稱
-            <input value={p.name} placeholder={`${p.user}@${p.host}`} onChange={(e) => set({ name: e.target.value })} />
+            <input value={p.name} placeholder={serverLabel(p)} onChange={(e) => set({ name: e.target.value })} />
           </label>
           <div className="row">
             <label className="grow">
@@ -174,14 +249,37 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
               />
             </label>
           </div>
+          {redis ? (
+            <label>
+              使用者名稱（選填）
+              <input value={p.user} placeholder="default" onChange={(e) => set({ user: e.target.value })} />
+              <span className="field-note">Redis 6 以上的 ACL 使用者；只設了 requirepass 的話留空，只填密碼。</span>
+            </label>
+          ) : (
           <label>
             使用者
             <input required value={p.user} onChange={(e) => set({ user: e.target.value })} />
           </label>
+          )}
           <label>
             密碼
             <input type="password" value={p.password ?? ""} onChange={(e) => set({ password: e.target.value })} />
+            <span className="field-note">存在系統鑰匙圈，不會寫進 app 的資料庫檔案。</span>
           </label>
+          {redis ? (
+            <label>
+              預設資料庫
+              <select value={p.redis_db ?? 0} onChange={(e) => set({ redis_db: Number(e.target.value) })}>
+                {Array.from({ length: 16 }, (_, i) => (
+                  <option key={i} value={i}>
+                    db{i}
+                  </option>
+                ))}
+              </select>
+              <span className="field-note">連線後先選這個資料庫（SELECT）。叢集模式只有 db0。</span>
+            </label>
+          ) : (
+          <>
           <div className="field-group db-field">
             <span>預設資料庫（選填）</span>
             <div className="input-with-button">
@@ -233,6 +331,8 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                 : "接上 MCP 的 AI 工具（例如 Claude）能用這個連線做什麼。查詢結果會傳給該 AI 工具；每次執行都會留在紀錄清單。"}
             </span>
           </label>
+          </>
+          )}
         </div>
       )}
 
@@ -242,7 +342,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             雲端服務
             <select value={p.ssl.cloud ?? ""} onChange={(e) => applyCloud((e.target.value || null) as Cloud | null)}>
               <option value="">自己架設 / 其他</option>
-              {CLOUDS.map((c) => (
+              {clouds.map((c) => (
                 <option key={c.value} value={c.value}>
                   {c.label}
                 </option>
@@ -251,13 +351,13 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
           </label>
           {suggestedCloud && (
             <p className="hint">
-              主機看起來是 {CLOUDS.find((c) => c.value === suggestedCloud)!.label}。
+              主機看起來是 {clouds.find((c) => c.value === suggestedCloud)!.label}。
               <button type="button" className="link" onClick={() => applyCloud(suggestedCloud)}>
                 套用建議設定
               </button>
             </p>
           )}
-          {p.ssl.cloud && <p className="hint">{CLOUDS.find((c) => c.value === p.ssl.cloud)?.hint}</p>}
+          {p.ssl.cloud && <p className="hint">{clouds.find((c) => c.value === p.ssl.cloud)?.hint}</p>}
           <label>
             模式
             <select value={p.ssl.mode} onChange={(e) => setSsl({ mode: e.target.value as SslMode })}>
@@ -324,7 +424,10 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
           </label>
           {p.ssh && (
             <>
-              <p className="hint">上方「主機」與「埠號」是從跳板機看出去的資料庫位址，例如 127.0.0.1:3306。</p>
+              <p className="hint">
+                上方「主機」與「埠號」是從跳板機看出去的{redis ? " Redis " : "資料庫"}位址，例如{" "}
+                {redis ? "127.0.0.1:6379 或 ElastiCache 的 endpoint" : "127.0.0.1:3306"}。使用 TLS 時會用這個主機名稱驗證憑證。
+              </p>
               <div className="row">
                 <label className="grow">
                   SSH 主機

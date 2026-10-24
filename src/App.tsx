@@ -12,6 +12,8 @@ import {
   type ConnectionProfile,
   type ExecutionRecord,
   type Finding,
+  type KeyName,
+  KIND_LABEL,
   type OpenedSession,
   quoteIdent,
   type Snippet,
@@ -23,6 +25,9 @@ import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
 import { RecordsPage } from "./components/RecordsPage";
+import { RedisEditor } from "./components/RedisEditor";
+import { RedisKeyTree } from "./components/RedisKeyTree";
+import { RedisPanel } from "./components/RedisPanel";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
@@ -74,8 +79,14 @@ export default function App() {
   const editor = useRef<EditorHandle | null>(null);
   // What ▶ would run; drives its label.
   const [runTarget, setRunTarget] = useState<RunTarget | null>(null);
-  const schema = useSchema(session?.session_id ?? null);
-  const tabs = useTabs(session?.connection_id ?? null, settings.record_by_default);
+  const isRedis = session?.kind === "redis";
+  // Redis: the editor's database (SELECT), the key in the value view, and
+  // which of the two the lower panel shows.
+  const [redisDb, setRedisDb] = useState(0);
+  const [openKey, setOpenKey] = useState<{ db: number; key: KeyName } | null>(null);
+  const [redisView, setRedisView] = useState<"result" | "key">("result");
+  const schema = useSchema(isRedis ? null : (session?.session_id ?? null));
+  const tabs = useTabs(session?.connection_id ?? null, settings.record_by_default, isRedis);
   const tab = tabs.active;
   // SQL to open in a new tab once a connection's tabs have loaded.
   const pendingSql = useRef<string | null>(null);
@@ -161,6 +172,9 @@ export default function App() {
       const opened = await api.openSession(c.id);
       setSession(opened);
       setCurrentDb(opened.current_database ?? null);
+      setRedisDb(opened.redis_db ?? 0);
+      setOpenKey(null);
+      setRedisView("result");
       // Refresh last-used ordering (and a first-time SSH host fingerprint).
       await reload();
       return true;
@@ -219,7 +233,8 @@ export default function App() {
 
   const confirmRisk = async (text: string) => {
     if (!settings.confirm_dangerous) return true;
-    const dangers = (await api.checkSql(text).catch(() => [] as Finding[])).filter((f) => f.level === "danger");
+    const found = isRedis ? api.redisCheck(text) : api.checkSql(text);
+    const dangers = (await found.catch(() => [] as Finding[])).filter((f) => f.level === "danger");
     if (dangers.length === 0) return true;
     return new Promise<boolean>((resolve) =>
       setRisk({
@@ -232,9 +247,28 @@ export default function App() {
     );
   };
 
+  /** Runs Redis command lines; none of the SQL extras (LIMIT, Explain…) apply. */
+  const runRedis = async (text: string, record: boolean) => {
+    if (!session || !tab) return;
+    const key = tab.key;
+    setRunning(true);
+    try {
+      const result = await api.redisExecute(session.session_id, text, record);
+      tabs.update(key, { redisOutcome: result });
+      setRedisDb(result.db);
+      setRedisView("result");
+      setNotice(result.reconnected ? { text: "連線曾中斷，已自動重新連線。", kind: "info" } : null);
+    } catch (e) {
+      setNotice({ text: describeError(e), kind: "error" });
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const run = async (text: string, record = tab?.recording ?? false, noLimit = false) => {
     if (!session || !tab || running || !text.trim()) return;
     if (!(await confirmRisk(text))) return;
+    if (isRedis) return runRedis(text, record);
     // Results go to the tab that ran, even if another one is shown by then.
     const key = tab.key;
     setRunning(true);
@@ -296,6 +330,18 @@ export default function App() {
       .trim()
       .replace(/^(explain|analyze)\s+/i, "");
     run(`EXPLAIN ${stmt}`, false);
+  };
+
+  /** Points the Redis command editor at database `db`. */
+  const selectRedisDb = async (db: number) => {
+    if (!session || running) return;
+    try {
+      const result = await api.redisExecute(session.session_id, `SELECT ${db}`, false);
+      if (result.error) throw result.error;
+      setRedisDb(result.db);
+    } catch (e) {
+      setNotice({ text: describeError(e), kind: "error" });
+    }
   };
 
   const switchDatabase = async (db: string) => {
@@ -389,7 +435,7 @@ export default function App() {
   const fileKeys = useRef({ save: saveToFile, open: openSqlFiles, tab });
   fileKeys.current = { save: saveToFile, open: openSqlFiles, tab };
   useEffect(() => {
-    if (!session) return;
+    if (!session || isRedis) return;
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
       const k = e.key.toLowerCase();
@@ -403,7 +449,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [session]);
+  }, [session, isRedis]);
 
   const askAi = (ask: AskAi) => {
     setAiRequest({ ...ask, nonce: Date.now() });
@@ -459,8 +505,11 @@ export default function App() {
   }
 
   const databaseNames = (schema.databases ?? []).map((d) => d.name);
-  const runLabel =
-    runTarget?.kind === "all"
+  const runLabel = isRedis
+    ? runTarget && runTarget.count > 1
+      ? { text: `執行 ${runTarget.count} 行`, hint: "依序執行選取的指令" }
+      : { text: "執行這一行", hint: "執行游標所在的那一行指令" }
+    : runTarget?.kind === "all"
       ? { text: `執行全部（${runTarget.count} 句）`, hint: "執行全部" }
       : runTarget && runTarget.count > 1
         ? { text: `執行多行（${runTarget.count} 句）`, hint: "執行選取的部分" }
@@ -476,7 +525,21 @@ export default function App() {
             <button className="small ghost" onClick={() => disconnect()} title="中斷連線並回到首頁">
               ← 所有連線
             </button>
+            <span className={`badge kind-${session.kind}`}>{KIND_LABEL[session.kind]}</span>
           </div>
+          {isRedis ? (
+            <RedisKeyTree
+              key={session.session_id}
+              sessionId={session.session_id}
+              currentDb={redisDb}
+              openKey={openKey}
+              onOpenKey={(db, key) => {
+                setOpenKey({ db, key });
+                setRedisView("key");
+              }}
+              onSelectDb={selectRedisDb}
+            />
+          ) : (
           <SchemaTree
             key={session.session_id}
             schema={schema}
@@ -486,6 +549,7 @@ export default function App() {
             onUseDatabase={switchDatabase}
             onOpenTable={openTable}
           />
+          )}
         </aside>
       )}
 
@@ -496,6 +560,18 @@ export default function App() {
             <span className="badge">{session.info.server_version}</span>
             {session.info.tls && <span className="badge good">TLS</span>}
             {active.ssh && <span className="badge good">SSH</span>}
+            {isRedis ? (
+              <label className="db-picker" title="指令列使用的資料庫（SELECT）。左側雙擊資料庫也可以切換。">
+                資料庫
+                <select value={redisDb} disabled={running} onChange={(e) => selectRedisDb(Number(e.target.value))}>
+                  {Array.from({ length: 16 }, (_, i) => (
+                    <option key={i} value={i}>
+                      db{i}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
             <label className="db-picker" title="目前資料庫（USE）。左側雙擊資料庫也可以切換。">
               資料庫
               <select value={currentDb ?? ""} onChange={(e) => e.target.value && switchDatabase(e.target.value)}>
@@ -508,7 +584,9 @@ export default function App() {
                 ))}
               </select>
             </label>
+            )}
             <span className="spacer" />
+            {!isRedis && (
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
@@ -516,6 +594,7 @@ export default function App() {
             >
               🖥 伺服器
             </button>
+            )}
             {view === "server" ? (
               <button className="primary" onClick={() => setView("main")}>
                 ← 回到編輯器
@@ -524,7 +603,7 @@ export default function App() {
               <>
                 <label
                   className={tab?.recording ? "record-toggle on" : "record-toggle"}
-                  title="打開後，這個分頁每次執行的 SQL 與統計都會存進「紀錄」（釘選的分頁預設打開）"
+                  title={`打開後，這個分頁每次執行的${isRedis ? "指令" : " SQL "}與統計都會存進「紀錄」（釘選的分頁預設打開）`}
                 >
                   <input
                     type="checkbox"
@@ -534,12 +613,16 @@ export default function App() {
                   📝 紀錄
                 </label>
                 <button onClick={() => setView("records")}>紀錄清單</button>
+                {!isRedis && (
                 <button onClick={() => (setSnippetDraft(null), setDialog("snippets"))} title="Snippet：常用 SQL 範本">
                   {"{ }"}
                 </button>
+                )}
                 <button onClick={() => (setSettingsTab(undefined), setDialog("settings"))} title="設定">
                   ⚙
                 </button>
+                {!isRedis && (
+                <>
                 <button
                   className={aiOpen ? "active" : undefined}
                   onClick={() => {
@@ -559,17 +642,19 @@ export default function App() {
                 >
                   Explain
                 </button>
+                </>
+                )}
                 {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
                   <button
                     disabled={running}
                     onClick={() => run(editor.current?.allText()?.text ?? "")}
-                    title="依序執行編輯器裡的每一句（⌘／Ctrl + Shift + Enter）"
+                    title={`依序執行編輯器裡的每一${isRedis ? "行指令" : "句"}（⌘／Ctrl + Shift + Enter）`}
                   >
-                    全部（{runTarget?.total} 句）
+                    全部（{runTarget?.total} {isRedis ? "行" : "句"}）
                   </button>
                 )}
                 {running && (
-                  <button className="danger" onClick={stop} title="停止執行中的查詢（⌘／Ctrl + .）">
+                  <button className="danger" onClick={stop} title={`停止執行中的${isRedis ? "指令" : "查詢"}（⌘／Ctrl + .）`}>
                     ■ 停止
                   </button>
                 )}
@@ -628,18 +713,26 @@ export default function App() {
                           label: t.recording ? "停止記錄這個分頁" : "記錄這個分頁的執行",
                           onClick: () => tabs.update(t.key, { recording: !t.recording }),
                         },
-                        { label: "複製分頁內的 SQL", disabled: !t.sql.trim(), onClick: () => copyText(t.sql) },
-                        "sep",
                         {
-                          label: t.filePath ? `儲存到 ${fileName(t.filePath)}` : "存成 .sql 檔…",
-                          hint: "⌘S",
-                          onClick: () => saveToFile(t),
+                          label: isRedis ? "複製分頁內的指令" : "複製分頁內的 SQL",
+                          disabled: !t.sql.trim(),
+                          onClick: () => copyText(t.sql),
                         },
-                        { label: "另存新檔…", hint: "⇧⌘S", onClick: () => saveToFile(t, true) },
-                        { label: "開啟 .sql 檔…", hint: "⌘O", onClick: openSqlFiles },
-                        ...(t.filePath
-                          ? [{ label: "複製檔案路徑", onClick: () => copyText(t.filePath ?? "") }]
-                          : []),
+                        ...(isRedis
+                          ? []
+                          : [
+                              "sep" as const,
+                              {
+                                label: t.filePath ? `儲存到 ${fileName(t.filePath)}` : "存成 .sql 檔…",
+                                hint: "⌘S",
+                                onClick: () => saveToFile(t),
+                              },
+                              { label: "另存新檔…", hint: "⇧⌘S", onClick: () => saveToFile(t, true) },
+                              { label: "開啟 .sql 檔…", hint: "⌘O", onClick: openSqlFiles },
+                              ...(t.filePath
+                                ? [{ label: "複製檔案路徑", onClick: () => copyText(t.filePath ?? "") }]
+                                : []),
+                            ]),
                         "sep",
                         { label: "新分頁", hint: "⌘T", onClick: () => tabs.add() },
                         { label: "關閉", onClick: () => tabs.close(t.key) },
@@ -662,7 +755,7 @@ export default function App() {
                     >
                       📌
                     </button>
-                    <span className="tab-title">{tabTitle(t.sql, `查詢 ${i + 1}`, t.filePath)}</span>
+                    <span className="tab-title">{tabTitle(t.sql, `${isRedis ? "指令" : "查詢"} ${i + 1}`, t.filePath, isRedis)}</span>
                     {t.filePath && t.savedSql != null && t.sql !== t.savedSql && (
                       <span className="tab-dirty" title="有修改還沒存檔（⌘S）">
                         •
@@ -689,7 +782,20 @@ export default function App() {
                   ＋
                 </button>
               </div>
-              {tabs.tabs.map((t) => (
+              {tabs.tabs.map((t) =>
+                isRedis ? (
+                  <RedisEditor
+                    key={`${session.session_id}:${t.key}:${t.seed}`}
+                    active={t.key === tab?.key}
+                    initialValue={t.sql}
+                    theme={editorTheme(settings.editor_theme, systemDark)}
+                    fontSize={settings.editor_font_size}
+                    handle={t.key === tab?.key ? editor : undefined}
+                    onRunTargetChange={setRunTarget}
+                    onChange={(value) => tabs.setSql(t.key, value)}
+                    onRun={run}
+                  />
+                ) : (
                 <SqlEditor
                   key={`${session.session_id}:${t.key}:${t.seed}`}
                   active={t.key === tab?.key}
@@ -713,14 +819,25 @@ export default function App() {
                   onChange={(value) => tabs.setSql(t.key, value)}
                   onRun={run}
                 />
-              ))}
+                ),
+              )}
             </div>
+            {isRedis ? (
+              <RedisPanel
+                sessionId={session.session_id}
+                outcome={tab?.redisOutcome ?? null}
+                openKey={openKey}
+                view={redisView}
+                onViewChange={setRedisView}
+              />
+            ) : (
             <ResultsPanel
               outcome={tab?.outcome ?? null}
               onRunWithoutLimit={(sql) => run(sql, undefined, true)}
               sessionId={session.session_id}
               onAskAi={askAi}
             />
+            )}
           </div>
         ) : (
           <Home
@@ -728,7 +845,7 @@ export default function App() {
             connecting={connecting}
             onConnect={connect}
             onEdit={setEditing}
-            onNew={() => setEditing(newProfile())}
+            onNew={() => setEditing({ ...newProfile(), kind: undefined })}
             onToggleFavorite={toggleFavorite}
             onDuplicate={(c) =>
               setEditing({

@@ -9,6 +9,7 @@ pub mod error;
 pub mod export;
 pub mod profile;
 pub mod records;
+pub mod redis;
 pub mod report;
 pub mod secrets;
 pub mod session;
@@ -18,11 +19,14 @@ pub mod store;
 pub mod tunnel;
 
 pub use error::{CoreError, Result};
-pub use profile::{ConnectionProfile, McpAccess, SshAuth, SshConfig, SslConfig, SslMode};
+pub use profile::{
+    ConnectionKind, ConnectionProfile, McpAccess, SshAuth, SshConfig, SslConfig, SslMode,
+};
 pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatement};
+pub use redis::RedisSession;
 pub use report::{ReportFormat, ReportOptions};
 pub use session::{
-    ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
+    AnySession, ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
     StatementResult, TableInfo, TextRows,
 };
 pub use settings::{AppSettings, PinnedTab, Snippet};
