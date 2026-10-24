@@ -1,0 +1,129 @@
+import { invoke } from "@tauri-apps/api/core";
+
+// Mirrors of the Rust types in crates/mydb-core. Keep in sync.
+
+export type SslMode = "disabled" | "required" | "verify_ca" | "verify_identity";
+
+export interface SslConfig {
+  mode: SslMode;
+  ca_path?: string | null;
+  cert_path?: string | null;
+  key_path?: string | null;
+}
+
+export type SshAuth =
+  | { method: "password"; password: string }
+  | { method: "key"; key_path: string; passphrase?: string | null };
+
+export interface SshConfig {
+  host: string;
+  port: number;
+  user: string;
+  auth: SshAuth;
+  known_host_fingerprint?: string | null;
+}
+
+export interface ConnectionProfile {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  password?: string | null;
+  database?: string | null;
+  ssl: SslConfig;
+  ssh?: SshConfig | null;
+}
+
+export interface SessionInfo {
+  server_version: string;
+  connection_id: number;
+  tls: boolean;
+  ssh_host_fingerprint?: string | null;
+}
+
+export interface OpenedSession {
+  session_id: string;
+  connection_id: string;
+  info: SessionInfo;
+}
+
+export interface ColumnInfo {
+  name: string;
+  table: string;
+  type_name: string;
+}
+
+export type Cell = string | number | null;
+
+export interface StatementResult {
+  sql: string;
+  duration_ms: number;
+  columns: ColumnInfo[];
+  rows: Cell[][];
+  total_rows: number;
+  truncated: boolean;
+  affected_rows: number;
+  last_insert_id?: number | null;
+  warnings: number;
+  info: string;
+}
+
+export type CoreError =
+  | { kind: "server"; code: number; state: string; message: string }
+  | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
+  | { kind: "driver" | "ssh" | "io" | "store" | "config"; message: string }
+  | { kind: "not_connected"; id: string };
+
+export interface ExecutionOutcome {
+  started_at: string;
+  duration_ms: number;
+  results: StatementResult[];
+  error?: CoreError | null;
+  failed_statement?: string | null;
+}
+
+export function newProfile(): ConnectionProfile {
+  return {
+    id: "",
+    name: "",
+    host: "127.0.0.1",
+    port: 3306,
+    user: "root",
+    password: "",
+    database: "",
+    ssl: { mode: "disabled" },
+    ssh: null,
+  };
+}
+
+export function describeError(e: unknown): string {
+  if (typeof e === "string") return e;
+  const err = e as CoreError;
+  switch (err?.kind) {
+    case "server":
+      return `錯誤 ${err.code} (${err.state})：${err.message}`;
+    case "host_key_mismatch":
+      return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
+    case "not_connected":
+      return "連線已關閉，請重新連線。";
+    case undefined:
+      return String(e);
+    default:
+      return err.message;
+  }
+}
+
+export const api = {
+  listConnections: () => invoke<ConnectionProfile[]>("list_connections"),
+  saveConnection: (profile: ConnectionProfile) =>
+    invoke<ConnectionProfile>("save_connection", { profile }),
+  deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
+  testConnection: (profile: ConnectionProfile) =>
+    invoke<SessionInfo>("test_connection", { profile }),
+  openSession: (connectionId: string) =>
+    invoke<OpenedSession>("open_session", { connectionId }),
+  closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
+  execute: (sessionId: string, sql: string, maxRows?: number) =>
+    invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows }),
+};

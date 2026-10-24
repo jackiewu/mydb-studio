@@ -1,0 +1,22 @@
+[package]
+name = "mydb-studio"
+version = "0.1.0"
+description = "MySQL / MariaDB client with execution records, reports and an error advisor"
+authors = ["jackiewu"]
+edition = "2024"
+
+[lib]
+# The `_lib` suffix avoids a lib/bin name clash on Windows (rust-lang/cargo#8519).
+name = "mydb_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mydb-core = { path = "../crates/mydb-core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
