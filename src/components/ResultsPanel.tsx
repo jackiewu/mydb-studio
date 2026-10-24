@@ -40,6 +40,8 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
   }
 
   const current = outcome.results[tab];
+  // Danger was already confirmed before running; show what is still useful.
+  const notes = (outcome.findings ?? []).filter((f) => f.level !== "danger");
   const plan = current && isExplain(current) ? readPlan(current) : null;
   return (
     <div className="results">
@@ -66,7 +68,36 @@ export function ResultsPanel({ outcome }: { outcome: ExecutionOutcome | null }) 
         <div className="error-box">
           <strong>{describeError(outcome.error)}</strong>
           {outcome.failed_statement && <pre>{outcome.failed_statement}</pre>}
+          {outcome.advice && (
+            <div className="advice">
+              <div className="advice-title">💡 {outcome.advice.title}</div>
+              <div>{outcome.advice.explanation}</div>
+              <ul>
+                {outcome.advice.fixes.map((f, i) => (
+                  <li key={i}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
+      )}
+
+      {notes.length > 0 && (
+        <details className="findings-box" open={notes.some((f) => f.level !== "info")}>
+          <summary>
+            💡 {notes.length} 個建議
+            {notes.some((f) => f.level === "warn") && <span className="warn">（可能影響效能）</span>}
+          </summary>
+          <ul className="findings">
+            {notes.map((f, i) => (
+              <li key={i} className={f.level}>
+                {outcome.results.length > 1 && <code>#{f.statement + 1} {f.sql}</code>}
+                <div>{f.message}</div>
+                <div className="suggestion">建議：{f.suggestion}</div>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {current && (

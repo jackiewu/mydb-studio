@@ -2,6 +2,7 @@
 //! the local app database. Kept free of any UI code so the desktop app and a
 //! future MCP server can share it.
 
+pub mod advisor;
 pub mod error;
 pub mod profile;
 pub mod records;

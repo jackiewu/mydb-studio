@@ -474,3 +474,21 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .context-menu button:disabled { opacity: 0.45; background: none; color: var(--text); cursor: default; }
 .context-menu button.danger-item { color: var(--bad); }
 .context-menu button.danger-item:hover { background: var(--bad); color: #fff; }
+
+/* Advisor */
+.error-box .advice { margin-top: 8px; color: var(--text); font-size: 13px; }
+.error-box .advice-title { font-weight: 600; margin-bottom: 2px; }
+.error-box .advice ul { margin: 4px 0 0; padding-left: 20px; }
+.findings-box { margin: 6px 12px; font-size: 13px; }
+.findings-box summary { cursor: pointer; color: var(--muted); }
+.findings-box summary .warn { color: var(--warn); }
+.findings { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.findings li { padding: 6px 10px; border-left: 3px solid var(--border); background: var(--code-bg); border-radius: 4px; }
+.findings li.danger { border-color: var(--bad); }
+.findings li.warn { border-color: var(--warn); }
+.findings li.info { border-color: var(--accent); }
+.findings code { display: block; font-size: 12px; margin-bottom: 2px; color: var(--muted); white-space: pre-wrap; }
+.findings .suggestion { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.risk-dialog { background: var(--panel); border-radius: 10px; padding: 20px 24px; width: min(640px, 92vw); max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); }
+.risk-dialog h2 { margin: 0 0 6px; font-size: 18px; }
+.risk-dialog .actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }

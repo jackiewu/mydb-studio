@@ -68,6 +68,14 @@ export function SettingsDialog({ settings, onChange, onClose, onOpenSnippets }: 
         <label className="check">
           <input
             type="checkbox"
+            checked={settings.confirm_dangerous}
+            onChange={(e) => set({ confirm_dangerous: e.target.checked })}
+          />
+          執行可能毀損資料的 SQL 前先確認（沒有 WHERE 的 UPDATE／DELETE、DROP、TRUNCATE…）
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
             checked={settings.record_by_default}
             onChange={(e) => set({ record_by_default: e.target.checked })}
           />

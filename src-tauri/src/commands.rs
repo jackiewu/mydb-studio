@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
     AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
@@ -143,6 +144,16 @@ pub struct ExecuteResponse {
     record_id: Option<i64>,
     /// The database in use after the run (a `USE` may have changed it).
     current_database: Option<String>,
+    /// What the error means and how to fix it, when known.
+    advice: Option<Advice>,
+    /// Pre-run check results for the SQL that ran.
+    findings: Vec<Finding>,
+}
+
+/// Checks SQL before it runs: risky statements and slow patterns.
+#[tauri::command]
+pub fn check_sql(sql: String) -> Vec<Finding> {
+    advisor::check_sql(&sql)
 }
 
 #[tauri::command]
@@ -174,7 +185,10 @@ pub async fn execute(
     } else {
         None
     };
+    let advice = outcome.error.as_ref().and_then(advisor::error_advice);
     Ok(ExecuteResponse {
+        advice,
+        findings: advisor::check_sql(&sql),
         outcome,
         record_id,
         current_database: session.current_database(),

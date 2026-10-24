@@ -89,6 +89,27 @@ export interface ExecutionOutcome {
   record_id?: number | null;
   /** The database in use after the run (a USE may have changed it). */
   current_database?: string | null;
+  /** What the error means and how to fix it, when known. */
+  advice?: Advice | null;
+  /** Pre-run check results for the SQL that ran. */
+  findings?: Finding[];
+}
+
+export interface Advice {
+  title: string;
+  explanation: string;
+  fixes: string[];
+}
+
+export interface Finding {
+  /** Index of the statement within the SQL. */
+  statement: number;
+  /** The statement's first line. */
+  sql: string;
+  level: "danger" | "warn" | "info";
+  rule: string;
+  message: string;
+  suggestion: string;
 }
 
 export interface RecordedStatement {
@@ -176,6 +197,8 @@ export interface AppSettings {
   record_by_default: boolean;
   show_system_databases: boolean;
   schema_autocomplete: boolean;
+  /** Ask before running statements that can destroy data. */
+  confirm_dangerous: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -185,6 +208,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   record_by_default: false,
   show_system_databases: false,
   schema_autocomplete: true,
+  confirm_dangerous: true,
 };
 
 export interface Snippet {
@@ -251,6 +275,7 @@ export const api = {
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, record }),
+  checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
     invoke<TableInfo[]>("list_tables", { sessionId, database }),

@@ -7,6 +7,7 @@ import {
   type AppSettings,
   type ConnectionProfile,
   type ExecutionRecord,
+  type Finding,
   type OpenedSession,
   quoteIdent,
   type Snippet,
@@ -18,6 +19,7 @@ import { Home } from "./components/Home";
 import { RecordsPage } from "./components/RecordsPage";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel } from "./components/ResultsPanel";
+import { RiskDialog } from "./components/RiskDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
@@ -147,8 +149,27 @@ export default function App() {
     setSession(null);
   };
 
+  // Risky statements waiting for the user's go-ahead.
+  const [risk, setRisk] = useState<{ findings: Finding[]; answer: (run: boolean) => void } | null>(null);
+
+  const confirmRisk = async (text: string) => {
+    if (!settings.confirm_dangerous) return true;
+    const dangers = (await api.checkSql(text).catch(() => [] as Finding[])).filter((f) => f.level === "danger");
+    if (dangers.length === 0) return true;
+    return new Promise<boolean>((resolve) =>
+      setRisk({
+        findings: dangers,
+        answer: (ok) => {
+          setRisk(null);
+          resolve(ok);
+        },
+      }),
+    );
+  };
+
   const run = async (text: string, record = tab?.recording ?? false) => {
     if (!session || !tab || running || !text.trim()) return;
+    if (!(await confirmRisk(text))) return;
     // Results go to the tab that ran, even if another one is shown by then.
     const key = tab.key;
     setRunning(true);
@@ -459,6 +480,7 @@ export default function App() {
       </main>
 
       {dialogs}
+      {risk && <RiskDialog findings={risk.findings} connectionName={active?.name ?? ""} onAnswer={risk.answer} />}
       {editing && (
         <div className="modal-backdrop">
           <ConnectionForm

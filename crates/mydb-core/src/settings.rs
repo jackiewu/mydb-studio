@@ -19,6 +19,8 @@ pub struct AppSettings {
     pub show_system_databases: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
+    /// Ask before running statements that can destroy data.
+    pub confirm_dangerous: bool,
 }
 
 impl Default for AppSettings {
@@ -30,6 +32,7 @@ impl Default for AppSettings {
             record_by_default: false,
             show_system_databases: false,
             schema_autocomplete: true,
+            confirm_dangerous: true,
         }
     }
 }
