@@ -3,6 +3,7 @@
 //! future MCP server can share it.
 
 pub mod advisor;
+pub mod ai;
 pub mod error;
 pub mod profile;
 pub mod records;

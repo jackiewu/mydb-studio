@@ -23,6 +23,19 @@ pub struct AppSettings {
     pub confirm_dangerous: bool,
     /// LIMIT added to queries that have none; 0 turns it off.
     pub auto_limit: u64,
+    /// AI suggestions from a local model (off until set up).
+    pub ai_enabled: bool,
+    /// `llama-server` to use; empty finds it on PATH or in Homebrew.
+    pub ai_llama_server: String,
+    /// The `.gguf` model file the app starts when AI is first used.
+    pub ai_model_path: String,
+    /// Use an already running OpenAI-compatible server instead of starting one.
+    pub ai_use_external: bool,
+    pub ai_server_url: String,
+    /// Stop the model after this many idle minutes.
+    pub ai_idle_minutes: u32,
+    /// CPU threads the model may use; 0 picks half of them.
+    pub ai_threads: u32,
 }
 
 impl Default for AppSettings {
@@ -36,6 +49,13 @@ impl Default for AppSettings {
             schema_autocomplete: true,
             confirm_dangerous: true,
             auto_limit: 1000,
+            ai_enabled: false,
+            ai_llama_server: String::new(),
+            ai_model_path: String::new(),
+            ai_use_external: false,
+            ai_server_url: "http://127.0.0.1:39282".into(),
+            ai_idle_minutes: 10,
+            ai_threads: 0,
         }
     }
 }

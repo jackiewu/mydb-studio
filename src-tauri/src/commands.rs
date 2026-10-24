@@ -150,6 +150,24 @@ pub struct ExecuteResponse {
     findings: Vec<Finding>,
 }
 
+/// Whether llama.cpp and a model are available for AI suggestions.
+#[tauri::command]
+pub fn ai_status(app: AppHandle, state: State<'_, AppState>) -> Result<mydb_core::ai::AiStatus> {
+    let settings = state.store.lock().unwrap().get_settings()?;
+    let models = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| CoreError::Config {
+            message: e.to_string(),
+        })?
+        .join("models");
+    Ok(mydb_core::ai::status(
+        &settings.ai_llama_server,
+        &settings.ai_model_path,
+        &models,
+    ))
+}
+
 /// Checks SQL before it runs: risky statements and slow patterns.
 #[tauri::command]
 pub fn check_sql(sql: String) -> Vec<Finding> {

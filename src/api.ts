@@ -203,6 +203,32 @@ export interface AppSettings {
   confirm_dangerous: boolean;
   /** LIMIT added to queries that have none; 0 turns it off. */
   auto_limit: number;
+  ai_enabled: boolean;
+  /** Empty finds llama-server on PATH or in Homebrew. */
+  ai_llama_server: string;
+  ai_model_path: string;
+  /** Use an already running OpenAI-compatible server instead of starting one. */
+  ai_use_external: boolean;
+  ai_server_url: string;
+  ai_idle_minutes: number;
+  /** 0 picks half the CPU threads. */
+  ai_threads: number;
+}
+
+export interface ModelFile {
+  path: string;
+  name: string;
+  size_bytes: number;
+  /** Instruct/chat models follow questions; base models don't. */
+  instruct: boolean;
+}
+
+export interface AiStatus {
+  llama_server: string | null;
+  model: ModelFile | null;
+  found_models: ModelFile[];
+  models_dir: string;
+  cpu_threads: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -214,6 +240,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   schema_autocomplete: true,
   confirm_dangerous: true,
   auto_limit: 1000,
+  ai_enabled: false,
+  ai_llama_server: "",
+  ai_model_path: "",
+  ai_use_external: false,
+  ai_server_url: "http://127.0.0.1:39282",
+  ai_idle_minutes: 10,
+  ai_threads: 0,
 };
 
 export interface Snippet {
@@ -280,6 +313,7 @@ export const api = {
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
+  aiStatus: () => invoke<AiStatus>("ai_status"),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>

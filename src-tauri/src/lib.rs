@@ -56,6 +56,7 @@ pub fn run() {
             commands::save_text_file,
             commands::print_report,
             commands::check_sql,
+            commands::ai_status,
             commands::use_database,
             commands::list_all_tables,
             commands::list_columns,
