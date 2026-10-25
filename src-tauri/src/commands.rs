@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use mydb_core::report::{self, ReportOptions};
 use mydb_core::{
-    ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Result,
-    Session, SessionInfo, Store, TableInfo,
+    ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome,
+    ExecutionRecord, RecordContext, RecordFilter, Result, Session, SessionInfo, Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::State;
@@ -127,17 +128,88 @@ pub async fn close_session(state: State<'_, AppState>, session_id: String) -> Re
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct ExecuteResponse {
+    #[serde(flatten)]
+    outcome: ExecutionOutcome,
+    /// Id of the saved record when recording was on.
+    record_id: Option<i64>,
+}
+
 #[tauri::command]
 pub async fn execute(
     state: State<'_, AppState>,
     session_id: String,
     sql: String,
     max_rows: Option<usize>,
-) -> Result<ExecutionOutcome> {
+    record: Option<bool>,
+) -> Result<ExecuteResponse> {
     let session = state.session(&session_id).await?;
-    Ok(session
+    let outcome = session
         .execute(&sql, max_rows.unwrap_or(DEFAULT_MAX_ROWS))
-        .await)
+        .await;
+    let record_id = if record.unwrap_or(false) {
+        let p = session.profile();
+        let rec = ExecutionRecord::from_outcome(
+            RecordContext {
+                connection_id: &p.id,
+                connection_name: &p.name,
+                server: format!("{}@{}:{}", p.user, p.host, p.port),
+                server_version: &session.info().server_version,
+                database: session.current_database(),
+            },
+            &sql,
+            &outcome,
+        );
+        Some(state.store.lock().unwrap().insert_record(&rec)?)
+    } else {
+        None
+    };
+    Ok(ExecuteResponse { outcome, record_id })
+}
+
+#[tauri::command]
+pub fn list_records(
+    state: State<'_, AppState>,
+    filter: RecordFilter,
+) -> Result<Vec<ExecutionRecord>> {
+    state.store.lock().unwrap().list_records(&filter)
+}
+
+#[tauri::command]
+pub fn get_record(state: State<'_, AppState>, id: i64) -> Result<Option<ExecutionRecord>> {
+    state.store.lock().unwrap().get_record(id)
+}
+
+#[tauri::command]
+pub fn set_record_note(state: State<'_, AppState>, id: i64, note: String) -> Result<()> {
+    state.store.lock().unwrap().set_record_note(id, &note)
+}
+
+#[tauri::command]
+pub fn delete_records(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
+    state.store.lock().unwrap().delete_records(&ids)
+}
+
+#[tauri::command]
+pub fn generate_report(
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+    options: ReportOptions,
+) -> Result<String> {
+    let records = state.store.lock().unwrap().get_records(&ids)?;
+    Ok(report::render(
+        &records,
+        &options,
+        &chrono::Utc::now().to_rfc3339(),
+    ))
+}
+
+/// Writes a generated report to the path the user picked in the save dialog.
+#[tauri::command]
+pub fn save_text_file(path: String, contents: String) -> Result<()> {
+    std::fs::write(&path, contents)?;
+    Ok(())
 }
 
 #[tauri::command]

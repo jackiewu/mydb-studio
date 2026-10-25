@@ -1,4 +1,4 @@
-//! Local app database (SQLite): saved connections now, execution records next.
+//! Local app database (SQLite): saved connections and execution records.
 
 use std::path::Path;
 
@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
+use crate::records::{ExecutionRecord, RecordFilter};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
 const MIGRATIONS: &[&str] = &[
@@ -19,7 +20,58 @@ const MIGRATIONS: &[&str] = &[
     );",
     // 2: recently used ordering
     "ALTER TABLE connections ADD COLUMN last_used_at TEXT;",
+    // 3: execution records
+    "CREATE TABLE executions (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id    TEXT,
+        connection_name  TEXT NOT NULL,
+        server           TEXT NOT NULL,
+        server_version   TEXT NOT NULL,
+        database         TEXT,
+        started_at       TEXT NOT NULL,
+        duration_ms      REAL NOT NULL,
+        sql              TEXT NOT NULL,
+        statements       TEXT NOT NULL,
+        statement_count  INTEGER NOT NULL,
+        affected_rows    INTEGER NOT NULL,
+        returned_rows    INTEGER NOT NULL,
+        error_code       INTEGER,
+        error_message    TEXT,
+        failed_statement TEXT,
+        note             TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX executions_started_at ON executions (started_at);
+    CREATE INDEX executions_connection ON executions (connection_id, started_at);",
 ];
+
+const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
+    started_at, duration_ms, sql, statements, statement_count, affected_rows, returned_rows,
+    error_code, error_message, failed_statement, note";
+
+fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, String)> {
+    Ok((
+        ExecutionRecord {
+            id: r.get(0)?,
+            connection_id: r.get(1)?,
+            connection_name: r.get(2)?,
+            server: r.get(3)?,
+            server_version: r.get(4)?,
+            database: r.get(5)?,
+            started_at: r.get(6)?,
+            duration_ms: r.get(7)?,
+            sql: r.get(8)?,
+            statements: Vec::new(),
+            statement_count: r.get(10)?,
+            affected_rows: r.get::<_, i64>(11)? as u64,
+            returned_rows: r.get::<_, i64>(12)? as u64,
+            error_code: r.get(13)?,
+            error_message: r.get(14)?,
+            failed_statement: r.get(15)?,
+            note: r.get(16)?,
+        },
+        r.get(9)?,
+    ))
+}
 
 pub struct Store {
     db: Connection,
@@ -128,6 +180,127 @@ impl Store {
         Ok(())
     }
 
+    /// Saves a record and returns its id. The record's own `id` is ignored.
+    pub fn insert_record(&self, rec: &ExecutionRecord) -> Result<i64> {
+        self.db.execute(
+            "INSERT INTO executions (connection_id, connection_name, server, server_version,
+                database, started_at, duration_ms, sql, statements, statement_count,
+                affected_rows, returned_rows, error_code, error_message, failed_statement, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                rec.connection_id,
+                rec.connection_name,
+                rec.server,
+                rec.server_version,
+                rec.database,
+                rec.started_at,
+                rec.duration_ms,
+                rec.sql,
+                serde_json::to_string(&rec.statements)?,
+                rec.statement_count,
+                rec.affected_rows as i64,
+                rec.returned_rows as i64,
+                rec.error_code,
+                rec.error_message,
+                rec.failed_statement,
+                rec.note,
+            ],
+        )?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// Records matching `filter`, newest first. `statements` is left empty;
+    /// use `get_record` or `get_records` for the full record.
+    pub fn list_records(&self, filter: &RecordFilter) -> Result<Vec<ExecutionRecord>> {
+        let mut sql = format!("SELECT {RECORD_COLUMNS} FROM executions WHERE 1 = 1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let non_empty = |v: &Option<String>| v.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+        if let Some(id) = non_empty(&filter.connection_id) {
+            args.push(Box::new(id));
+            sql += &format!(" AND connection_id = ?{}", args.len());
+        }
+        if let Some(text) = non_empty(&filter.text) {
+            args.push(Box::new(format!("%{}%", text.trim())));
+            let n = args.len();
+            sql += &format!(
+                " AND (sql LIKE ?{n} OR note LIKE ?{n} OR IFNULL(error_message, '') LIKE ?{n})"
+            );
+        }
+        if let Some(from) = non_empty(&filter.from) {
+            args.push(Box::new(from));
+            sql += &format!(" AND started_at >= ?{}", args.len());
+        }
+        if let Some(to) = non_empty(&filter.to) {
+            args.push(Box::new(to));
+            sql += &format!(" AND started_at < ?{}", args.len());
+        }
+        if filter.only_errors {
+            sql += " AND error_message IS NOT NULL";
+        }
+        sql += &format!(
+            " ORDER BY started_at DESC, id DESC LIMIT {} OFFSET {}",
+            filter.limit.unwrap_or(200),
+            filter.offset.unwrap_or(0)
+        );
+        let mut stmt = self.db.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            record_from_row,
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.0);
+        }
+        Ok(out)
+    }
+
+    pub fn get_record(&self, id: i64) -> Result<Option<ExecutionRecord>> {
+        let row = self
+            .db
+            .query_row(
+                &format!("SELECT {RECORD_COLUMNS} FROM executions WHERE id = ?1"),
+                [id],
+                record_from_row,
+            )
+            .optional()?;
+        Ok(match row {
+            Some((mut rec, statements)) => {
+                rec.statements = serde_json::from_str(&statements)?;
+                Some(rec)
+            }
+            None => None,
+        })
+    }
+
+    /// Full records for `ids`, oldest first (report order).
+    pub fn get_records(&self, ids: &[i64]) -> Result<Vec<ExecutionRecord>> {
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(rec) = self.get_record(*id)? {
+                out.push(rec);
+            }
+        }
+        out.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
+    pub fn set_record_note(&self, id: i64, note: &str) -> Result<()> {
+        self.db.execute(
+            "UPDATE executions SET note = ?2 WHERE id = ?1",
+            params![id, note],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_records(&self, ids: &[i64]) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM executions WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn delete_connection(&self, id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
@@ -190,6 +363,144 @@ mod tests {
         b2.port = 3307;
         store.save_connection(&b2).unwrap();
         assert_eq!(store.list_connections().unwrap()[1].name, "b");
+    }
+
+    fn record(name: &str, started_at: &str, sql: &str, error: Option<&str>) -> ExecutionRecord {
+        ExecutionRecord {
+            id: 0,
+            connection_id: Some(name.into()),
+            connection_name: name.into(),
+            server: "u@h:3306".into(),
+            server_version: "11.4".into(),
+            database: None,
+            started_at: started_at.into(),
+            duration_ms: 1.0,
+            sql: sql.into(),
+            statements: vec![crate::RecordedStatement {
+                sql: sql.into(),
+                duration_ms: 1.0,
+                affected_rows: 3,
+                returned_rows: None,
+                warnings: 0,
+                info: String::new(),
+                columns: vec![],
+                preview: vec![],
+            }],
+            statement_count: 1,
+            affected_rows: 3,
+            returned_rows: 0,
+            error_code: error.map(|_| 1146),
+            error_message: error.map(String::from),
+            failed_statement: None,
+            note: String::new(),
+        }
+    }
+
+    #[test]
+    fn records_round_trip_and_filter() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store
+            .insert_record(&record(
+                "prod",
+                "2026-10-01T10:00:00+00:00",
+                "UPDATE t SET x = 1",
+                None,
+            ))
+            .unwrap();
+        let b = store
+            .insert_record(&record(
+                "prod",
+                "2026-10-20T10:00:00+00:00",
+                "SELECT * FROM nope",
+                Some("no table"),
+            ))
+            .unwrap();
+        let c = store
+            .insert_record(&record(
+                "dev",
+                "2026-10-21T10:00:00+00:00",
+                "DELETE FROM t",
+                None,
+            ))
+            .unwrap();
+
+        let all = store.list_records(&RecordFilter::default()).unwrap();
+        assert_eq!(all.iter().map(|r| r.id).collect::<Vec<_>>(), [c, b, a]);
+        assert!(all[0].statements.is_empty(), "list leaves statements out");
+
+        let ids = |f: RecordFilter| -> Vec<i64> {
+            store
+                .list_records(&f)
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(
+            ids(RecordFilter {
+                connection_id: Some("prod".into()),
+                ..Default::default()
+            }),
+            [b, a]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                text: Some("update".into()),
+                ..Default::default()
+            }),
+            [a]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                text: Some("no table".into()),
+                ..Default::default()
+            }),
+            [b]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                only_errors: true,
+                ..Default::default()
+            }),
+            [b]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                from: Some("2026-10-15".into()),
+                to: Some("2026-10-21".into()),
+                ..Default::default()
+            }),
+            [b]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            }),
+            [b]
+        );
+
+        let full = store.get_record(a).unwrap().unwrap();
+        assert_eq!(full.statements.len(), 1);
+        assert_eq!(full.statements[0].affected_rows, 3);
+
+        store.set_record_note(a, "月底結帳").unwrap();
+        assert_eq!(store.get_record(a).unwrap().unwrap().note, "月底結帳");
+        assert_eq!(
+            ids(RecordFilter {
+                text: Some("結帳".into()),
+                ..Default::default()
+            }),
+            [a]
+        );
+
+        // Report order is oldest first.
+        let picked = store.get_records(&[c, a]).unwrap();
+        assert_eq!(picked.iter().map(|r| r.id).collect::<Vec<_>>(), [a, c]);
+
+        store.delete_records(&[a, c]).unwrap();
+        assert_eq!(ids(RecordFilter::default()), [b]);
     }
 
     #[test]

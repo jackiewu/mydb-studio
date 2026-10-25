@@ -11,6 +11,7 @@ pub use commands::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -32,6 +33,12 @@ pub fn run() {
             commands::execute,
             commands::list_databases,
             commands::list_tables,
+            commands::list_records,
+            commands::get_record,
+            commands::set_record_note,
+            commands::delete_records,
+            commands::generate_report,
+            commands::save_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

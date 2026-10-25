@@ -291,3 +291,43 @@ async fn lists_databases_and_tables() {
         .execute("DROP VIEW demo.mydb_list_v; DROP TABLE demo.mydb_list_a", 1)
         .await;
 }
+
+#[tokio::test]
+async fn execution_becomes_a_record() {
+    use mydb_core::{ExecutionRecord, RecordContext, RecordFilter, Store};
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    let sql = "SELECT 1 AS a UNION SELECT 2; SELECT * FROM no_such_db.t";
+    let out = session.execute(sql, 10).await;
+    let rec = ExecutionRecord::from_outcome(
+        RecordContext {
+            connection_id: &profile.id,
+            connection_name: &profile.name,
+            server: format!("{}@{}:{}", profile.user, profile.host, profile.port),
+            server_version: &session.info().server_version,
+            database: session.current_database(),
+        },
+        sql,
+        &out,
+    );
+    assert_eq!(rec.statement_count, 2);
+    assert_eq!(rec.returned_rows, 2);
+    assert!(rec.error_code.is_some());
+    assert_eq!(rec.statements[0].columns, ["a"]);
+    assert_eq!(rec.statements[0].preview.len(), 2);
+
+    let store = Store::open_in_memory().unwrap();
+    let id = store.insert_record(&rec).unwrap();
+    let back = store.get_record(id).unwrap().unwrap();
+    assert_eq!(back.statements, rec.statements);
+    assert_eq!(
+        store
+            .list_records(&RecordFilter {
+                only_errors: true,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+        1
+    );
+}

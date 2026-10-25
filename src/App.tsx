@@ -5,11 +5,13 @@ import {
   newProfile,
   type ConnectionProfile,
   type ExecutionOutcome,
+  type ExecutionRecord,
   type OpenedSession,
   quoteIdent,
 } from "./api";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
+import { RecordsPage } from "./components/RecordsPage";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SqlEditor } from "./components/SqlEditor";
@@ -24,6 +26,11 @@ export default function App() {
   const [sql, setSql] = useState("SELECT VERSION();");
   const [running, setRunning] = useState(false);
   const [outcome, setOutcome] = useState<ExecutionOutcome | null>(null);
+  const [view, setView] = useState<"main" | "records">("main");
+  // Off by default: a run is stored only when the user asks for it.
+  const [recording, setRecording] = useState(false);
+  // Bumped to reseed the (uncontrolled) editor with `sql`.
+  const [editorSeed, setEditorSeed] = useState(0);
 
   const reload = useCallback(async () => {
     setConnections(await api.listConnections());
@@ -40,14 +47,25 @@ export default function App() {
       if (session) await api.closeSession(session.session_id);
       setSession(await api.openSession(c.id));
       setOutcome(null);
+      setRecording(false);
       // Refresh last-used ordering (and a first-time SSH host fingerprint).
       await reload();
+      return true;
     } catch (e) {
       setSession(null);
       setNotice({ text: describeError(e), kind: "error" });
+      return false;
     } finally {
       setConnecting(null);
     }
+  };
+
+  const openRecordInEditor = async (rec: ExecutionRecord) => {
+    setView("main");
+    const target = connections.find((c) => c.id === rec.connection_id);
+    if (target && session?.connection_id !== target.id && !(await connect(target))) return;
+    setSql(rec.sql);
+    setEditorSeed((n) => n + 1);
   };
 
   const disconnect = async () => {
@@ -61,7 +79,7 @@ export default function App() {
     if (!session || running || !text.trim()) return;
     setRunning(true);
     try {
-      const result = await api.execute(session.session_id, text);
+      const result = await api.execute(session.session_id, text, recording);
       setOutcome(result);
       setNotice(
         result.reconnected
@@ -89,6 +107,14 @@ export default function App() {
   const active = connections.find((c) => c.id === session?.connection_id);
   const isMaria = !!session?.info.server_version.toLowerCase().includes("mariadb");
 
+  if (view === "records") {
+    return (
+      <div className="app">
+        <RecordsPage connections={connections} onBack={() => setView("main")} onOpenInEditor={openRecordInEditor} />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       {session && active && (
@@ -110,6 +136,11 @@ export default function App() {
             {session.info.tls && <span className="badge good">TLS</span>}
             {active.ssh && <span className="badge good">SSH</span>}
             <span className="spacer" />
+            <label className={recording ? "record-toggle on" : "record-toggle"} title="打開後，每次執行的 SQL 與統計都會存進「紀錄」">
+              <input type="checkbox" checked={recording} onChange={(e) => setRecording(e.target.checked)} />
+              📝 紀錄
+            </label>
+            <button onClick={() => setView("records")}>紀錄清單</button>
             <button className="primary" disabled={running} onClick={() => run(sql)}>
               {running ? "執行中…" : "▶ 執行"}
             </button>
@@ -125,7 +156,7 @@ export default function App() {
 
         {session ? (
           <div className="split">
-            <SqlEditor key={session.session_id} initialValue={sql} mariadb={isMaria} onChange={setSql} onRun={run} />
+            <SqlEditor key={`${session.session_id}:${editorSeed}`} initialValue={sql} mariadb={isMaria} onChange={setSql} onRun={run} />
             <ResultsPanel outcome={outcome} />
           </div>
         ) : (
@@ -136,6 +167,7 @@ export default function App() {
             onEdit={setEditing}
             onNew={() => setEditing(newProfile())}
             onToggleFavorite={toggleFavorite}
+            onOpenRecords={() => setView("records")}
           />
         )}
       </main>
