@@ -779,10 +779,12 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
 .status-bar .bad { color: var(--bad); }
 .status-conn { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex-shrink: 0; }
-.status-problem { display: inline-flex; align-items: center; border: none; background: none; padding: 0 4px; height: 20px; font-size: 14px; line-height: 1; cursor: pointer; }
-.status-problem.error { color: var(--bad); }
-.status-problem.notice { color: var(--muted); }
-.status-lock { border: none; background: none; padding: 0 4px; height: 20px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; }
+.status-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 20px; padding: 0;
+  border: none; border-radius: 4px; background: none; color: var(--muted); cursor: pointer;
+}
+.status-icon:hover { background: var(--border); color: var(--text); }
+.status-icon.bad { color: var(--bad); }
 
 /* App lock */
 .lock-screen {

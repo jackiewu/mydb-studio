@@ -20,6 +20,26 @@ interface Props {
   onLock?: () => void;
 }
 
+/** Line icons, so they match each other and the text color (an emoji lock is colored on macOS). */
+function LockIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <rect x="3" y="7" width="10" height="7.5" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </svg>
+  );
+}
+
+function WarnIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path d="M8 1.8 15 14H1z" strokeLinejoin="round" />
+      <path d="M8 6.5v3.5" strokeLinecap="round" />
+      <circle cx="8" cy="12" r="0.4" fill="currentColor" />
+    </svg>
+  );
+}
+
 function ms(n: number) {
   return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(2)} 秒`;
 }
@@ -105,17 +125,17 @@ export function StatusBar({
         </span>
       )}
       {onLock && (
-        <button className="status-lock" onClick={onLock} title="立即鎖定（⌘⇧L）">
-          🔒
+        <button className="status-icon" onClick={onLock} title="立即鎖定（⌘⇧L）" aria-label="立即鎖定">
+          <LockIcon />
         </button>
       )}
       {problem && (
         <button
-          className={`status-problem ${problem.severity}`}
+          className={`status-icon ${problem.severity === "error" ? "bad" : ""}`}
           onClick={onOpenProblem}
           title={`${problem.summary}按一下查看或回報。`}
         >
-          ⚠
+          <WarnIcon />
         </button>
       )}
     </footer>
