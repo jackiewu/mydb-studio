@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use mydb_core::{AppSettings, CoreError, Result};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::AppState;
 
@@ -116,12 +116,21 @@ pub fn lock_status(state: State<'_, AppState>) -> LockStatus {
     }
 }
 
+/// Locks, closes windows the lock screen doesn't cover (a printed report),
+/// and tells the main window.
+fn lock_now(app: &AppHandle, state: &AppState) {
+    state.lock.set_locked(true);
+    if let Some(w) = app.get_webview_window(crate::commands::PRINT_WINDOW) {
+        let _ = w.close();
+    }
+    let _ = app.emit("app-locked", ());
+}
+
 #[tauri::command]
 pub fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     let enabled = state.store.lock().unwrap().get_settings()?.lock_enabled();
     if enabled {
-        state.lock.set_locked(true);
-        let _ = app.emit("app-locked", ());
+        lock_now(&app, &state);
     }
     Ok(())
 }
@@ -153,7 +162,7 @@ pub fn owner_verified(state: State<'_, AppState>) -> bool {
 pub fn watch_screen_lock(app: &AppHandle) {
     let app = app.clone();
     mydb_sysauth::watch_screen_lock(move || {
-        let state = tauri::Manager::state::<AppState>(&app);
+        let state = app.state::<AppState>();
         let lock = state
             .store
             .lock()
@@ -161,8 +170,7 @@ pub fn watch_screen_lock(app: &AppHandle) {
             .get_settings()
             .is_ok_and(|s| s.lock_enabled() && s.lock_on_sleep);
         if lock {
-            state.lock.set_locked(true);
-            let _ = app.emit("app-locked", ());
+            lock_now(&app, &state);
         }
     });
 }

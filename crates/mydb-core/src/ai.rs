@@ -618,6 +618,9 @@ impl AiRuntime {
                 .map_err(|e| config_err(format!("讀取 AI 回應失敗：{e}")))?;
             let Some(chunk) = chunk else { break };
             pending.extend_from_slice(&chunk);
+            if pending.len() > MAX_BODY {
+                return Err(config_err("AI 回應的一行太長。"));
+            }
             while let Some(nl) = pending.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=nl).collect();
                 let line = String::from_utf8_lossy(&line);
@@ -680,9 +683,20 @@ fn parse_url(url: &str) -> std::io::Result<Target> {
     })
 }
 
-/// Largest chunk and whole body accepted from the local model server.
+/// Largest chunk, whole body and header line accepted from the local model
+/// server.
 const MAX_CHUNK: usize = 1 << 20;
 const MAX_BODY: usize = 32 << 20;
+const MAX_LINE: u64 = 16 << 10;
+
+/// Reads one line of at most [`MAX_LINE`] bytes; a longer one is an error.
+async fn read_line(reader: &mut BufReader<TcpStream>, line: &mut String) -> std::io::Result<usize> {
+    let n = (&mut *reader).take(MAX_LINE).read_line(line).await?;
+    if n as u64 == MAX_LINE && !line.ends_with('\n') {
+        return Err(std::io::Error::other("回應的標頭太長"));
+    }
+    Ok(n)
+}
 
 struct HttpResponse {
     status: u16,
@@ -722,7 +736,7 @@ impl HttpResponse {
         s.flush().await?;
 
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        read_line(&mut reader, &mut line).await?;
         let status = line
             .split_whitespace()
             .nth(1)
@@ -731,7 +745,7 @@ impl HttpResponse {
         let (mut chunked, mut event_stream) = (false, false);
         loop {
             line.clear();
-            if reader.read_line(&mut line).await? == 0 || line.trim().is_empty() {
+            if read_line(&mut reader, &mut line).await? == 0 || line.trim().is_empty() {
                 break;
             }
             let lower = line.to_ascii_lowercase();
@@ -767,7 +781,7 @@ impl HttpResponse {
             return Ok(Some(buf));
         }
         let mut line = String::new();
-        self.reader.read_line(&mut line).await?;
+        read_line(&mut self.reader, &mut line).await?;
         let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or(""), 16)
             .map_err(|_| std::io::Error::other("分塊格式不正確"))?;
         if size == 0 {
@@ -781,7 +795,7 @@ impl HttpResponse {
         let mut buf = vec![0; size];
         self.reader.read_exact(&mut buf).await?;
         line.clear();
-        self.reader.read_line(&mut line).await?;
+        read_line(&mut self.reader, &mut line).await?;
         Ok(Some(buf))
     }
 

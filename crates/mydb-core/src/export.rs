@@ -76,7 +76,10 @@ impl<W: Write> RowWriter<W> {
         let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
         match self.options.format {
             ExportFormat::Tsv if self.options.header => {
-                let cells: Vec<String> = names.iter().map(|n| defuse_formula(n)).collect();
+                let cells: Vec<String> = names
+                    .iter()
+                    .map(|n| tsv_cell(&Value::String(n.to_string())))
+                    .collect();
                 write!(self.out, "{}", cells.join("\t"))
             }
             ExportFormat::Csv if self.options.header => {

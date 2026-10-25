@@ -2774,6 +2774,7 @@ name = "mydb-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "mysql_async",
  "redis",
  "rusqlite",
@@ -2789,7 +2790,6 @@ dependencies = [
 name = "mydb-mcp"
 version = "0.1.0"
 dependencies = [
- "libc",
  "mydb-core",
  "serde",
  "serde_json",

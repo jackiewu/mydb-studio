@@ -24,7 +24,11 @@ fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
     let unclean_exit = flag.exists();
     let panic = std::fs::read_to_string(&log).ok();
     let _ = std::fs::remove_file(&log);
-    let _ = std::fs::write(&flag, std::process::id().to_string());
+    // Held for the whole run: the MCP server checks it to tell whether the
+    // app is running, and the OS lets go when the process ends.
+    if let Ok(held) = mydb_core::running::hold(&flag) {
+        std::mem::forget(held);
+    }
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -53,14 +57,17 @@ pub fn run() {
             let mut store = Store::open(dir.join("mydb-studio.db"))?;
             if let Some(vault) = keychain::vault() {
                 store.use_vault(vault)?;
+                store.trust_unbound_secrets();
             }
-            let crash = crash_watch(&dir);
-            let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
-            ai.stop_leftover();
+            // Locked before the running flag says the app runs, so the MCP
+            // server never sees a running, unlocked app that should be locked.
             let lock = lock::LockState::new(
                 dir.join(mydb_core::LOCK_FLAG),
                 &store.get_settings().unwrap_or_default(),
             );
+            let crash = crash_watch(&dir);
+            let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
+            ai.stop_leftover();
             app.manage(AppState {
                 store: Mutex::new(store),
                 sessions: tokio::sync::RwLock::new(HashMap::new()),

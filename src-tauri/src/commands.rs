@@ -99,6 +99,7 @@ pub fn save_connection(
     state: State<'_, AppState>,
     mut profile: ConnectionProfile,
 ) -> Result<ConnectionProfile> {
+    state.lock.ensure_unlocked()?;
     if profile.id.is_empty() {
         profile.id = uuid_v4();
     }
@@ -108,11 +109,13 @@ pub fn save_connection(
 
 #[tauri::command]
 pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().set_favorite(&id, favorite)
 }
 
 #[tauri::command]
 pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_connection(&id)
 }
 
@@ -341,11 +344,13 @@ pub fn get_record(state: State<'_, AppState>, id: i64) -> Result<Option<Executio
 
 #[tauri::command]
 pub fn set_record_note(state: State<'_, AppState>, id: i64, note: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().set_record_note(id, &note)
 }
 
 #[tauri::command]
 pub fn delete_records(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_records(&ids)
 }
 
@@ -373,6 +378,7 @@ pub fn generate_report(
 /// every platform offers saving as PDF.
 #[tauri::command]
 pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     *state.print_html.lock().unwrap() = html;
     let failed = |e: tauri::Error| CoreError::Config {
         message: format!("無法開啟列印視窗：{e}"),
@@ -409,7 +415,8 @@ const PRINT_URL: &str = "mydbreport://localhost/";
 
 /// Writes a generated report to the path the user picked in the save dialog.
 #[tauri::command]
-pub fn save_text_file(path: String, contents: String) -> Result<()> {
+pub fn save_text_file(state: State<'_, AppState>, path: String, contents: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     std::fs::write(&path, contents)?;
     Ok(())
 }
@@ -516,7 +523,8 @@ pub fn open_bug_report(title: String, body: String) -> Result<()> {
 
 /// Reads a text file the user picked in the open dialog.
 #[tauri::command]
-pub fn read_text_file(path: String) -> Result<String> {
+pub fn read_text_file(state: State<'_, AppState>, path: String) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let bytes = std::fs::read(&path)?;
     if bytes.len() > 20 * 1024 * 1024 {
         return Err(CoreError::Config {
@@ -560,6 +568,7 @@ pub async fn ai_context(
     error: Option<String>,
     explain: Option<String>,
 ) -> Result<AiContext> {
+    state.lock.ensure_unlocked()?;
     let mut ctx = AiContext {
         sql: sql.clone(),
         error,
@@ -696,21 +705,25 @@ pub fn ai_cancel(state: State<'_, AppState>) {
 
 #[tauri::command]
 pub fn save_ai_chat(state: State<'_, AppState>, chat: AiChat) -> Result<i64> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().save_ai_chat(&chat)
 }
 
 #[tauri::command]
 pub fn list_ai_chats(state: State<'_, AppState>) -> Result<Vec<AiChatSummary>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_ai_chats(300)
 }
 
 #[tauri::command]
 pub fn get_ai_chat(state: State<'_, AppState>, id: i64) -> Result<Option<AiChat>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().get_ai_chat(id)
 }
 
 #[tauri::command]
 pub fn delete_ai_chat(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_ai_chat(id)
 }
 
@@ -719,6 +732,7 @@ pub async fn list_databases(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<DatabaseInfo>> {
+    state.lock.ensure_unlocked()?;
     state.session(&session_id).await?.list_databases().await
 }
 
@@ -728,6 +742,7 @@ pub async fn list_tables(
     session_id: String,
     database: String,
 ) -> Result<Vec<TableInfo>> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -741,6 +756,7 @@ pub async fn use_database(
     session_id: String,
     database: String,
 ) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -754,6 +770,7 @@ pub async fn list_all_tables(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
+    state.lock.ensure_unlocked()?;
     state.session(&session_id).await?.list_all_tables().await
 }
 
@@ -763,6 +780,7 @@ pub async fn list_columns(
     session_id: String,
     database: String,
 ) -> Result<Vec<ColumnDef>> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -804,6 +822,7 @@ pub fn list_pinned_tabs(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<PinnedTab>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_pinned_tabs(&connection_id)
 }
 
@@ -842,6 +861,7 @@ pub async fn server_overview(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<admin::ServerOverview> {
+    state.lock.ensure_unlocked()?;
     admin::overview(&*state.session(&session_id).await?).await
 }
 
@@ -850,6 +870,7 @@ pub async fn server_processes(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<admin::ProcessInfo>> {
+    state.lock.ensure_unlocked()?;
     admin::processes(&*state.session(&session_id).await?).await
 }
 
@@ -929,6 +950,7 @@ pub async fn redis_server_overview(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<RedisOverview> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.server_overview().await
 }
 
@@ -937,6 +959,7 @@ pub async fn redis_clients(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ClientInfo>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.clients().await
 }
 
@@ -945,6 +968,7 @@ pub async fn redis_slowlog(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<SlowEntry>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.slowlog().await
 }
 
@@ -953,6 +977,7 @@ pub async fn redis_command_stats(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<CommandStat>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.command_stats().await
 }
 
@@ -962,6 +987,7 @@ pub async fn redis_config(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.config().await
 }
 
@@ -973,6 +999,7 @@ pub async fn redis_kill_client(
     session_id: String,
     id: u64,
 ) -> Result<bool> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.kill_client(id).await
 }
 
@@ -981,6 +1008,7 @@ pub async fn redis_databases(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<DbInfo>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.databases().await
 }
 
@@ -1008,6 +1036,7 @@ pub async fn redis_key_info(
     db: u8,
     key: KeyName,
 ) -> Result<KeyInfo> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.key_info(db, &key).await
 }
 

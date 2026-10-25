@@ -72,10 +72,10 @@ impl Server {
     }
 
     /// Whether to refuse every tool because of the app lock. While the app
-    /// runs, it says (with [`mydb_core::LOCK_FLAG`]). When it doesn't, the
-    /// settings do: locked if the app asks to be unlocked on start. A crash
-    /// or force quit can't leave it unlocked, since a dead app's running
-    /// flag counts as not running. Unreadable settings count as locked.
+    /// runs (holds [`mydb_core::RUNNING_FLAG`]), it says, with
+    /// [`mydb_core::LOCK_FLAG`]. When it doesn't, the settings do: locked if
+    /// the app asks to be unlocked on start. So a crash or force quit can't
+    /// leave it open. Unreadable settings count as locked.
     fn locked(&self) -> bool {
         let Some(dir) = &self.lock_dir else {
             return false;
@@ -86,12 +86,10 @@ impl Server {
         if !settings.lock_enabled() {
             return false;
         }
-        let app_pid = std::fs::read_to_string(dir.join(mydb_core::RUNNING_FLAG))
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok());
-        match app_pid {
-            Some(pid) if process_alive(pid) => dir.join(mydb_core::LOCK_FLAG).exists(),
-            _ => settings.lock_on_start,
+        if mydb_core::running::is_held(&dir.join(mydb_core::RUNNING_FLAG)) {
+            dir.join(mydb_core::LOCK_FLAG).exists()
+        } else {
+            settings.lock_on_start
         }
     }
 
@@ -587,22 +585,6 @@ pub async fn serve_stdio(store: Store, lock_dir: Option<PathBuf>) -> std::io::Re
     server.serve(stdin, tokio::io::stdout()).await
 }
 
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // Signal 0 only checks; EPERM means it exists but isn't ours.
-    pid > 0
-        && (unsafe { libc::kill(pid, 0) } == 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
-}
-
-#[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -748,16 +730,16 @@ mod tests {
         let running = dir.join(mydb_core::RUNNING_FLAG);
         let lock = dir.join(mydb_core::LOCK_FLAG);
 
-        // The app runs (this process stands in): its lock flag decides.
-        std::fs::write(&running, std::process::id().to_string()).unwrap();
+        // The app runs (holding the running flag): its lock flag decides.
+        let app = mydb_core::running::hold(&running).unwrap();
         std::fs::write(&lock, "").unwrap();
         assert!(refused(&ask(&s, list.clone()).await));
         std::fs::remove_file(&lock).unwrap();
         assert!(!refused(&ask(&s, list.clone()).await));
 
-        // The app crashed while unlocked: no lock flag, but it isn't
-        // running, so lock on start applies.
-        std::fs::write(&running, "999999999").unwrap();
+        // The app crashed while unlocked: no lock flag, and a running flag
+        // nobody holds, so lock on start applies.
+        drop(app);
         assert!(refused(&ask(&s, list.clone()).await));
         std::fs::remove_file(&running).unwrap();
         assert!(refused(&ask(&s, list.clone()).await));

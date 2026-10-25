@@ -11,6 +11,7 @@ pub mod profile;
 pub mod records;
 pub mod redis;
 pub mod report;
+pub mod running;
 pub mod secrets;
 pub mod session;
 pub mod settings;

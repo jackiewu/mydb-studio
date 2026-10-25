@@ -145,6 +145,9 @@ pub struct Store {
     db: Connection,
     /// Where passwords go instead of `db`, when set.
     secrets: Option<std::cell::RefCell<Secrets>>,
+    /// Whether secrets saved before they knew their destination may be
+    /// used (and then bound); see [`Store::trust_unbound_secrets`].
+    unbound_ok: bool,
 }
 
 impl Store {
@@ -162,7 +165,11 @@ impl Store {
         // Overwrite deleted content, so a replaced profile (or anything
         // else removed) doesn't linger in free pages.
         db.pragma_update(None, "secure_delete", "ON")?;
-        let mut store = Self { db, secrets: None };
+        let mut store = Self {
+            db,
+            secrets: None,
+            unbound_ok: false,
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -205,6 +212,14 @@ impl Store {
         Ok(())
     }
 
+    /// Lets secrets saved before they knew their destination be used, binding
+    /// them to the profile on first use. Only the app does this, where the
+    /// owner sees which server a connection points at; the MCP server
+    /// leaves them alone, so a changed database can't claim them.
+    pub fn trust_unbound_secrets(&mut self) {
+        self.unbound_ok = true;
+    }
+
     /// `profile` with its passwords from the vault, if they were saved for
     /// the servers it points at.
     fn with_secrets(&self, mut profile: ConnectionProfile) -> ConnectionProfile {
@@ -215,7 +230,7 @@ impl Store {
         let Some(found) = s.get(&profile.id) else {
             return profile;
         };
-        if !found.fits(&profile) {
+        if !found.fits(&profile, self.unbound_ok) {
             return profile;
         }
         if found.destination.is_none() {
@@ -457,7 +472,7 @@ impl Store {
         self.db
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
         if let Some(s) = &self.secrets {
-            s.borrow_mut().put(id, Default::default());
+            s.borrow_mut().remove(id);
         }
         Ok(())
     }
@@ -989,6 +1004,7 @@ mod tests {
         store.use_vault(Box::new(vault.clone())).unwrap();
         let mut p = ConnectionProfile::new("prod", "db.example", "app");
         p.password = Some("s3cret".into());
+        p.ssl.mode = crate::profile::SslMode::Required;
         store.save_connection(&p).unwrap();
 
         // The database is changed behind the app's back to point elsewhere.
@@ -1004,15 +1020,47 @@ mod tests {
             .unwrap();
         assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
 
-        // Secrets saved before they knew their destination still work, and
-        // get bound on first use.
+        // Turning TLS off or clearing the SSH pin counts as elsewhere too.
+        let mut weaker = p.clone();
+        weaker.ssl.mode = crate::profile::SslMode::Disabled;
+        weaker.password = None;
+        store
+            .db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&weaker).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+        // Saving that profile (it has no password) keeps the real one.
+        store.save_connection(&weaker).unwrap();
+        assert!(
+            vault
+                .0
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap()
+                .contains("s3cret")
+        );
+
+        // Secrets saved before they knew their destination: the MCP server
+        // leaves them alone; the app uses them and binds them.
         *vault.0.lock().unwrap() = Some(format!(r#"{{"{}":{{"password":"old"}}}}"#, p.id));
-        let mut fresh = Store::open_in_memory().unwrap();
-        fresh.save_connection(&planted).unwrap();
-        fresh.use_vault(Box::new(vault.clone())).unwrap();
+        let mut mcp = Store::open_in_memory().unwrap();
+        mcp.save_connection(&planted).unwrap();
+        mcp.use_vault(Box::new(vault.clone())).unwrap();
+        assert_eq!(mcp.get_connection(&p.id).unwrap().unwrap().password, None);
+        let mut app = Store::open_in_memory().unwrap();
+        app.save_connection(&ConnectionProfile {
+            password: None,
+            ..p.clone()
+        })
+        .unwrap();
+        app.use_vault(Box::new(vault.clone())).unwrap();
+        app.trust_unbound_secrets();
         assert_eq!(
-            fresh
-                .get_connection(&p.id)
+            app.get_connection(&p.id)
                 .unwrap()
                 .unwrap()
                 .password
@@ -1026,7 +1074,7 @@ mod tests {
                 .unwrap()
                 .as_deref()
                 .unwrap()
-                .contains("attacker.example")
+                .contains("db.example")
         );
     }
 
