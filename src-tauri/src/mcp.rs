@@ -57,7 +57,10 @@ pub fn main() -> i32 {
             return 1;
         }
     };
-    match runtime.block_on(mydb_mcp::serve_stdio(store)) {
+    match runtime.block_on(mydb_mcp::serve_stdio(
+        store,
+        Some(dir.join(mydb_core::LOCK_FLAG)),
+    )) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("mydb-studio --mcp: {e}");

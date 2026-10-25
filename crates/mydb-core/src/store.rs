@@ -229,7 +229,8 @@ impl Store {
     }
 
     /// Saved connections: favorites first, then most recently used, then by
-    /// name.
+    /// name. Without their passwords, so listing doesn't read the keychain
+    /// (and ask for it on macOS); [`Store::get_connection`] has them.
     pub fn list_connections(&self) -> Result<Vec<ConnectionProfile>> {
         let mut stmt = self
             .db
@@ -242,7 +243,7 @@ impl Store {
             let (json, last_used_at) = row?;
             let mut profile: ConnectionProfile = serde_json::from_str(&json)?;
             profile.last_used_at = last_used_at;
-            out.push(self.with_secrets(profile));
+            out.push(profile);
         }
         out.sort_by(|a, b| {
             b.favorite
@@ -995,12 +996,10 @@ mod tests {
         let kept = vault.0.lock().unwrap().clone().unwrap();
         assert!(kept.contains("s3cret") && kept.contains("sshpw"));
 
-        // Reading fills them back in, so a copy carries them too.
+        // Reading one fills them back in, so a copy carries them too; the
+        // list leaves them out.
         assert_eq!(store.get_connection(&p.id).unwrap().unwrap(), p);
-        assert_eq!(
-            store.list_connections().unwrap()[0].password.as_deref(),
-            Some("s3cret")
-        );
+        assert_eq!(store.list_connections().unwrap()[0].password, None);
         let copy = ConnectionProfile {
             id: "copy".into(),
             ..store.get_connection(&p.id).unwrap().unwrap()

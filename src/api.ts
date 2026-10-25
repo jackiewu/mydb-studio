@@ -228,6 +228,13 @@ export interface AppSettings {
   connect_on_double_click: boolean;
   /** Open the problem report at startup after a crash; off, only the status bar shows ⚠. */
   report_crash_on_start: boolean;
+  /** App lock: "off" or "system" (Touch ID / the login password). */
+  lock_mode: string;
+  /** Lock after this many idle minutes; 0 never. */
+  lock_idle_minutes: number;
+  lock_on_sleep: boolean;
+  lock_on_start: boolean;
+  lock_disconnect: boolean;
   schema_autocomplete: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
@@ -377,6 +384,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   show_system_databases: false,
   connect_on_double_click: true,
   report_crash_on_start: false,
+  lock_mode: "off",
+  lock_idle_minutes: 15,
+  lock_on_sleep: true,
+  lock_on_start: true,
+  lock_disconnect: false,
   schema_autocomplete: true,
   confirm_dangerous: true,
   auto_limit: 1000,
@@ -634,7 +646,9 @@ export function describeError(e: unknown): string {
 }
 
 export const api = {
+  /** Without passwords; {@link api.getConnection} has them. */
   listConnections: () => invoke<ConnectionProfile[]>("list_connections"),
+  getConnection: (id: string) => invoke<ConnectionProfile>("get_connection", { id }),
   saveConnection: (profile: ConnectionProfile) =>
     invoke<ConnectionProfile>("save_connection", { profile }),
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
@@ -650,6 +664,11 @@ export const api = {
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),
   aiRunning: () => invoke<boolean>("ai_running"),
+  lockStatus: () => invoke<{ locked: boolean; available: boolean }>("lock_status"),
+  lockApp: () => invoke<void>("lock_app"),
+  unlockApp: () => invoke<void>("unlock_app"),
+  verifyOwner: (reason: string) => invoke<void>("verify_owner", { reason }),
+  ownerVerified: () => invoke<boolean>("owner_verified"),
   aiContext: (sessionId: string | null, sql: string, error: string | null, explain: string | null) =>
     invoke<AiContext>("ai_context", { sessionId, sql, error, explain }),
   aiChat: (context: AiContext, messages: ChatMessage[], onEvent: (e: AiEvent) => void) => {
@@ -725,7 +744,8 @@ export const api = {
   redisExecute: (sessionId: string, text: string, record: boolean) =>
     invoke<RedisOutcome>("redis_execute", { sessionId, text, record }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
-  takeCrashInfo: () => invoke<CrashInfo | null>("take_crash_info"),
+  crashInfo: () => invoke<CrashInfo | null>("crash_info"),
+  clearCrashInfo: () => invoke<void>("clear_crash_info"),
   bugReportBody: (what: string, details: string) => invoke<string>("bug_report_body", { what, details }),
   openBugReport: (title: string, body: string) => invoke<void>("open_bug_report", { title, body }),
 };
