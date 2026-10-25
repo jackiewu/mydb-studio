@@ -95,6 +95,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
+            commands::server_overview,
+            commands::server_processes,
+            commands::server_users,
+            commands::user_grants,
+            commands::admin_plan,
+            commands::admin_apply,
             commands::save_connection,
             commands::delete_connection,
             commands::set_favorite,

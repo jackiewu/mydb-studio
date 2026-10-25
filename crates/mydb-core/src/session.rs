@@ -105,6 +105,13 @@ pub struct TableInfo {
     pub comment: String,
 }
 
+/// Column names and rows of a small query, every cell as text.
+#[derive(Debug, Clone, Serialize)]
+pub struct TextRows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
 /// A column, as needed for autocomplete and table details.
 #[derive(Debug, Clone, Serialize)]
 pub struct ColumnDef {
@@ -344,6 +351,48 @@ impl Session {
                 },
             )
             .collect())
+    }
+
+    /// Runs one statement and returns its column names and rows as text.
+    /// Meant for SHOW statements and small admin queries, not user SQL.
+    pub async fn query_text(&self, sql: &str) -> Result<TextRows> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let mut result = conn.query_iter(sql).await?;
+        let columns = result
+            .columns_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+        let rows = result
+            .map(|row: Row| {
+                row.unwrap()
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::NULL => None,
+                        Value::Bytes(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+                        other => Some(other.as_sql(true).trim_matches('\'').to_string()),
+                    })
+                    .collect()
+            })
+            .await?;
+        Ok(TextRows { columns, rows })
+    }
+
+    /// Runs `statements` in order, stopping at the first error. Returns how
+    /// many succeeded along with that error. Nothing is recorded.
+    pub async fn run_each(&self, statements: &[String]) -> (usize, Option<CoreError>) {
+        let mut guard = self.link.lock().await;
+        let conn = match self.live(&mut guard).await {
+            Ok((conn, _)) => conn,
+            Err(e) => return (0, Some(e)),
+        };
+        for (i, sql) in statements.iter().enumerate() {
+            if let Err(e) = conn.query_drop(sql.as_str()).await {
+                return (i, Some(e.into()));
+            }
+        }
+        (statements.len(), None)
     }
 
     pub async fn close(self) -> Result<()> {

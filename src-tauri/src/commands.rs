@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
@@ -754,4 +755,61 @@ pub fn delete_draft_tabs(state: State<'_, AppState>, connection_id: String) -> R
 
 fn uuid_v4() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[tauri::command]
+pub async fn server_overview(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<admin::ServerOverview> {
+    admin::overview(&*state.session(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn server_processes(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<admin::ProcessInfo>> {
+    admin::processes(&*state.session(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn server_users(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<admin::UserAccount>> {
+    admin::users(&*state.session(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn user_grants(
+    state: State<'_, AppState>,
+    session_id: String,
+    user: String,
+    host: String,
+) -> Result<Vec<admin::Grant>> {
+    admin::grants(&*state.session(&session_id).await?, &user, &host).await
+}
+
+/// The statements `change` would run, passwords masked, for the user to
+/// confirm.
+#[tauri::command]
+pub async fn admin_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: admin::AdminChange,
+) -> Result<Vec<String>> {
+    let session = state.session(&session_id).await?;
+    admin::plan(&change, admin::dialect(&session).await?, true)
+}
+
+/// Runs `change`. Admin statements are not recorded, so passwords never
+/// reach the history.
+#[tauri::command]
+pub async fn admin_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: admin::AdminChange,
+) -> Result<Vec<String>> {
+    admin::apply(&*state.session(&session_id).await?, &change).await
 }

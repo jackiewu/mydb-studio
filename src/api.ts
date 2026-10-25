@@ -280,6 +280,61 @@ export interface AiStatus {
   cpu_threads: number;
 }
 
+export interface ServerOverview {
+  version: string;
+  current_user: string;
+  status: Record<string, string>;
+  variables: Record<string, string>;
+}
+
+export interface ProcessInfo {
+  id: number;
+  user: string;
+  host: string;
+  db: string | null;
+  command: string;
+  time: number;
+  state: string | null;
+  info: string | null;
+}
+
+export interface UserAccount {
+  user: string;
+  host: string;
+  plugin: string;
+  locked: boolean;
+}
+
+/** `*.*` when both are null, `db.*` or `db.table`. */
+export interface GrantTarget {
+  database: string | null;
+  table: string | null;
+}
+
+export interface Grant {
+  privileges: string[];
+  target: GrantTarget | null;
+  grant_option: boolean;
+  text: string;
+  editable: boolean;
+}
+
+export interface PrivilegeEdit {
+  target: GrantTarget;
+  before: string[];
+  before_grant_option: boolean;
+  after: string[];
+  after_grant_option: boolean;
+}
+
+export type AdminChange =
+  | { kind: "create_user"; user: string; host: string; password: string; privileges: PrivilegeEdit[] }
+  | { kind: "set_password"; user: string; host: string; password: string }
+  | { kind: "set_locked"; user: string; host: string; locked: boolean }
+  | { kind: "drop_user"; user: string; host: string }
+  | { kind: "privileges"; user: string; host: string; edits: PrivilegeEdit[] }
+  | { kind: "kill"; id: number; query_only: boolean };
+
 export const DEFAULT_SETTINGS: AppSettings = {
   editor_theme: "auto",
   editor_font_size: 13,
@@ -403,6 +458,14 @@ export const api = {
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
   deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
+  serverOverview: (sessionId: string) => invoke<ServerOverview>("server_overview", { sessionId }),
+  serverProcesses: (sessionId: string) => invoke<ProcessInfo[]>("server_processes", { sessionId }),
+  serverUsers: (sessionId: string) => invoke<UserAccount[]>("server_users", { sessionId }),
+  userGrants: (sessionId: string, user: string, host: string) =>
+    invoke<Grant[]>("user_grants", { sessionId, user, host }),
+  /** The statements a change would run, passwords masked. */
+  adminPlan: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_plan", { sessionId, change }),
+  adminApply: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_apply", { sessionId, change }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
     invoke<TableInfo[]>("list_tables", { sessionId, database }),
