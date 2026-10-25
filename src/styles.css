@@ -536,7 +536,7 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .setup-step.ok .setup-mark { color: var(--good); }
 .setup-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .command { display: flex; gap: 8px; align-items: center; width: 100%; }
-.command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 5px 8px; background: var(--code-bg); border-radius: 4px; font-size: 11px; }
+.command code { flex: 1; min-width: 0; overflow-x: auto; white-space: pre; padding: 5px 8px; background: var(--code-bg); border-radius: 4px; font-size: 11px; }
 .model-option { width: 100%; display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
 .found-models { width: 100%; display: flex; flex-direction: column; gap: 4px; }
 .found-model { display: flex; gap: 10px; align-items: center; text-align: left; font-size: 12px; }
@@ -699,3 +699,9 @@ button.ai-ask { margin-left: 8px; }
 .host-chips button.active { border-color: var(--accent); color: var(--accent); }
 .cancelled-box { margin: 8px 12px; padding: 8px 12px; border-left: 3px solid var(--warn); background: var(--code-bg); color: var(--warn); }
 .cancelled-box pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 12px; color: var(--text); }
+.mcp-intro { margin-bottom: 4px; line-height: 1.6; }
+.mcp-connections { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.mcp-connections li { display: flex; justify-content: space-between; padding: 4px 8px; background: var(--code-bg); border-radius: 4px; font-size: 13px; }
+.mcp-access.read_only { color: var(--good); }
+.mcp-access.read_write { color: var(--warn); font-weight: 600; }
+.mcp-access.off { color: var(--muted); }

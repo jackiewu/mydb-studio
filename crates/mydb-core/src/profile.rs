@@ -25,6 +25,22 @@ pub struct ConnectionProfile {
     /// store; ignored when saving.
     #[serde(default)]
     pub last_used_at: Option<String>,
+    /// What AI tools may do with this connection through the MCP server.
+    #[serde(default)]
+    pub mcp: McpAccess,
+}
+
+/// How far the MCP server lets AI tools use a connection.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAccess {
+    /// Not listed to AI tools at all.
+    Off,
+    /// Queries that only read (SELECT, SHOW, EXPLAIN …).
+    #[default]
+    ReadOnly,
+    /// Any statement, including changes to data and schema.
+    ReadWrite,
 }
 
 impl ConnectionProfile {
@@ -41,6 +57,7 @@ impl ConnectionProfile {
             ssh: None,
             favorite: false,
             last_used_at: None,
+            mcp: McpAccess::default(),
         }
     }
 }

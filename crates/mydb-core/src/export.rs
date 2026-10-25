@@ -312,7 +312,7 @@ fn sql_value(v: &Value, col: &ColumnInfo) -> String {
 
 /// Integers and floats as JSON numbers; DECIMAL stays a string to keep its
 /// exact digits.
-fn json_value(v: &Value, col: &ColumnInfo) -> Value {
+pub fn json_value(v: &Value, col: &ColumnInfo) -> Value {
     const SAFE: i64 = (1 << 53) - 1;
     let Value::String(s) = v else {
         return v.clone();

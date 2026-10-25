@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, describeError, type ConnectionProfile, type SslConfig, type SshAuth, type SslMode } from "../api";
+import { api, describeError, type ConnectionProfile, type McpAccess, type SslConfig, type SshAuth, type SslMode } from "../api";
 
 interface Props {
   initial: ConnectionProfile;
@@ -220,6 +220,19 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
               <span className="field-note">伺服器上有 {dbList.names.length} 個資料庫，點輸入框就能選。</span>
             )}
           </div>
+          <label>
+            AI 工具（MCP）
+            <select value={p.mcp ?? "read_only"} onChange={(e) => set({ mcp: e.target.value as McpAccess })}>
+              <option value="read_only">唯讀：只能查詢（SELECT、SHOW、EXPLAIN）</option>
+              <option value="read_write">可寫入：可以新增、修改、刪除資料和改結構</option>
+              <option value="off">關閉：AI 工具看不到這個連線</option>
+            </select>
+            <span className="field-note">
+              {p.mcp === "read_write"
+                ? "⚠️ 接上 MCP 的 AI 工具（例如 Claude）可以直接修改這個資料庫。每次執行都會留在紀錄清單。"
+                : "接上 MCP 的 AI 工具（例如 Claude）能用這個連線做什麼。查詢結果會傳給該 AI 工具；每次執行都會留在紀錄清單。"}
+            </span>
+          </label>
         </div>
       )}
 

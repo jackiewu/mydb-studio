@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type AiStatus, type AppSettings, type ModelFile } from "../api";
+import { api, type AiStatus, type AppSettings, type ConnectionProfile, type McpSetup, type ModelFile } from "../api";
 import { copyText } from "../copy";
 import { EDITOR_THEMES } from "../editor/themes";
 
@@ -16,12 +16,13 @@ interface Props {
   onReportBug?: () => void;
 }
 
-export type Tab = "editor" | "run" | "ai" | "system";
+export type Tab = "editor" | "run" | "ai" | "mcp" | "system";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "editor", label: "編輯器", icon: "✎" },
   { id: "run", label: "執行與安全", icon: "▶" },
   { id: "ai", label: "AI 建議", icon: "✨" },
+  { id: "mcp", label: "AI 工具（MCP）", icon: "⇄" },
   { id: "system", label: "系統", icon: "⚙" },
 ];
 
@@ -84,6 +85,50 @@ function Step({ ok, title, children }: { ok: boolean; title: string; children: R
         {children}
       </div>
     </div>
+  );
+}
+
+const ACCESS_LABEL = { off: "關閉", read_only: "唯讀", read_write: "可寫入" } as const;
+
+/** How to connect Claude and other AI tools, and what each connection allows. */
+function McpSection() {
+  const [setup, setSetup] = useState<McpSetup | null>(null);
+  const [connections, setConnections] = useState<ConnectionProfile[]>([]);
+  useEffect(() => {
+    api.mcpSetup().then(setSetup, () => {});
+    api.listConnections().then(setConnections, () => {});
+  }, []);
+
+  return (
+    <>
+      <div className="set-caption mcp-intro">
+        MCP 讓 Claude Desktop、Claude Code 等 AI 工具透過 MyDB Studio 存好的連線查詢資料庫：列出資料庫和資料表、看表結構、執行
+        SQL、看 EXPLAIN。AI 工具會直接執行本程式，不需要開著 app。
+        <strong> 查詢結果會傳給該 AI 工具</strong>，所以每個連線可以設定開放到什麼程度，每次執行也都會記在「紀錄清單」。
+      </div>
+
+      <div className="set-subhead">Claude Code</div>
+      <div className="set-caption">在終端機執行一次：</div>
+      {setup && <Command text={setup.claude_code} />}
+
+      <div className="set-subhead">Claude Desktop</div>
+      <div className="set-caption">
+        Claude Desktop → Settings → Developer → Edit Config，把下面的 mydb-studio 加進 <code>mcpServers</code>
+        ，存檔後重開 Claude Desktop。
+      </div>
+      {setup && <Command text={setup.config_json} />}
+
+      <div className="set-subhead">各連線的權限</div>
+      <div className="set-caption">預設是唯讀。要更改請到連線的「編輯 → 一般 → AI 工具（MCP）」。</div>
+      <ul className="mcp-connections">
+        {connections.map((c) => (
+          <li key={c.id}>
+            <span>{c.name || `${c.user}@${c.host}`}</span>
+            <span className={`mcp-access ${c.mcp ?? "read_only"}`}>{ACCESS_LABEL[c.mcp ?? "read_only"]}</span>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -386,6 +431,8 @@ export function SettingsDialog({
         )}
 
         {tab === "ai" && <AiSection settings={settings} set={set} />}
+
+        {tab === "mcp" && <McpSection />}
 
         {tab === "system" && (
           <>
