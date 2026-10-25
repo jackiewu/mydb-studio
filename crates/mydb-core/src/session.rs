@@ -184,6 +184,37 @@ impl Session {
         Ok((&mut link.as_mut().unwrap().conn, !alive))
     }
 
+    /// Round trip of a `COM_PING`, for the status bar. `None` while a
+    /// statement holds the connection; never reconnects, so session state
+    /// is left alone until the next real run.
+    pub async fn ping(&self) -> Result<Option<f64>> {
+        if self.busy.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let Ok(mut guard) = self.link.try_lock() else {
+            return Ok(None);
+        };
+        let Some(l) = guard.as_mut() else {
+            return Err(CoreError::Connection {
+                message: "連線已中斷".into(),
+            });
+        };
+        let timer = Instant::now();
+        l.conn.ping().await?;
+        Ok(Some(timer.elapsed().as_secs_f64() * 1000.0))
+    }
+
+    /// `@@wait_timeout`: seconds the server keeps this connection while it
+    /// is idle. Needs no privileges.
+    pub async fn wait_timeout(&self) -> Result<Option<u64>> {
+        let rows = self.query_text("SELECT @@wait_timeout").await?;
+        Ok(rows
+            .rows
+            .first()
+            .and_then(|r| r.first().cloned().flatten())
+            .and_then(|v| v.parse().ok()))
+    }
+
     /// Runs `sql` (one or more statements) and collects every result set,
     /// keeping at most `max_rows` rows of each.
     pub async fn execute(&self, sql: &str, max_rows: usize) -> ExecutionOutcome {
@@ -507,6 +538,14 @@ impl AnySession {
         match self {
             AnySession::Mysql(s) => s.info(),
             AnySession::Redis(s) => s.info(),
+        }
+    }
+
+    /// Round trip to the server in milliseconds; `None` while busy.
+    pub async fn ping(&self) -> Result<Option<f64>> {
+        match self {
+            AnySession::Mysql(s) => s.ping().await,
+            AnySession::Redis(s) => s.ping().await,
         }
     }
 

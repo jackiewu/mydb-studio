@@ -7,6 +7,7 @@
 //! editor, so a blocking command there doesn't hold up the key tree.
 
 pub mod command;
+pub mod server;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -231,6 +232,28 @@ impl RedisSession {
 
     pub fn current_db(&self) -> u8 {
         self.current_db.load(Ordering::SeqCst)
+    }
+
+    /// Round trip of a `PING` on the browse connection, for the status bar.
+    /// `None` when the connection is in use (a command or the key tree is
+    /// waiting on the server); never reconnects.
+    pub async fn ping(&self) -> Result<Option<f64>> {
+        if self.busy.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let Ok(mut guard) = self.link.try_lock() else {
+            return Ok(None);
+        };
+        let Some(l) = guard.as_mut() else {
+            return Err(CoreError::Connection {
+                message: "連線已中斷".into(),
+            });
+        };
+        let timer = Instant::now();
+        ::redis::cmd("PING")
+            .query_async::<Value>(&mut l.browse)
+            .await?;
+        Ok(Some(timer.elapsed().as_secs_f64() * 1000.0))
     }
 
     /// The browse connection, reconnecting if it is gone. The bool is true

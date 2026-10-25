@@ -592,3 +592,21 @@ async fn export_streams_every_row() {
         export("SELECT seq AS n, CONCAT('row ', seq) AS label FROM demo.seq_1_to_3").await;
     assert_eq!(csv, "n,label\r\n1,row 1\r\n2,row 2\r\n3,row 3");
 }
+
+#[tokio::test]
+async fn ping_and_wait_timeout_for_the_status_bar() {
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    assert!(session.ping().await.unwrap().is_some());
+    assert!(session.wait_timeout().await.unwrap().unwrap() > 0);
+    session.execute("SET SESSION wait_timeout = 1234", 10).await;
+    assert_eq!(session.wait_timeout().await.unwrap(), Some(1234));
+
+    // While a statement runs, the ping steps aside instead of waiting.
+    let (out, ping) = tokio::join!(session.execute("SELECT SLEEP(1)", 10), async {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        session.ping().await
+    });
+    assert!(out.error.is_none(), "{:?}", out.error);
+    assert_eq!(ping.unwrap(), None);
+}

@@ -46,7 +46,7 @@ export function ServerPage({ sessionId, connectionId, mariadb, onOpenSql }: Prop
 }
 
 /** Calls `load` now and, while `on`, every `ms`. */
-function usePolling(load: () => void, on: boolean, ms: number) {
+export function usePolling(load: () => void, on: boolean, ms: number) {
   const ref = useRef(load);
   ref.current = load;
   useEffect(() => {
@@ -59,7 +59,7 @@ function usePolling(load: () => void, on: boolean, ms: number) {
   }, [on, ms]);
 }
 
-function duration(seconds: number) {
+export function duration(seconds: number) {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -68,7 +68,7 @@ function duration(seconds: number) {
   return `${m} 分 ${seconds % 60} 秒`;
 }
 
-function bytes(n: number) {
+export function bytes(n: number) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) {
@@ -78,7 +78,7 @@ function bytes(n: number) {
   return `${n.toFixed(n < 10 && i ? 1 : 0)} ${units[i]}`;
 }
 
-function pct(n: number) {
+export function pct(n: number) {
   return `${(n * 100).toFixed(n > 0.999 && n < 1 ? 2 : 1)}%`;
 }
 
