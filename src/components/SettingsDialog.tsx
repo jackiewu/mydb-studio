@@ -436,6 +436,12 @@ export function SettingsDialog({
 
         {tab === "system" && (
           <>
+            <Row title="點兩下才連線" caption="首頁點一下連線卡片只會選取，點兩下或按 Enter 才連線。關掉時點一下就連線。">
+              <Switch
+                checked={settings.connect_on_double_click}
+                onChange={(v) => set({ connect_on_double_click: v })}
+              />
+            </Row>
             <Row title="顯示系統資料庫" caption="左側清單顯示 mysql、information_schema、performance_schema、sys。">
               <Switch checked={settings.show_system_databases} onChange={(v) => set({ show_system_databases: v })} />
             </Row>

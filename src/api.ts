@@ -224,6 +224,8 @@ export interface AppSettings {
   max_rows: number;
   record_by_default: boolean;
   show_system_databases: boolean;
+  /** Home page: click selects, double-click connects; off, a click connects. */
+  connect_on_double_click: boolean;
   schema_autocomplete: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
@@ -371,6 +373,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   max_rows: 1000,
   record_by_default: false,
   show_system_databases: false,
+  connect_on_double_click: true,
   schema_autocomplete: true,
   confirm_dangerous: true,
   auto_limit: 1000,

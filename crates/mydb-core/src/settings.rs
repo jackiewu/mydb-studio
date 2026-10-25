@@ -17,6 +17,9 @@ pub struct AppSettings {
     /// Whether the record toggle starts switched on after connecting.
     pub record_by_default: bool,
     pub show_system_databases: bool,
+    /// Home page: a click selects a connection and a double-click opens it;
+    /// off, a single click opens it.
+    pub connect_on_double_click: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
     /// Ask before running statements that can destroy data.
@@ -46,6 +49,7 @@ impl Default for AppSettings {
             max_rows: DEFAULT_MAX_ROWS,
             record_by_default: false,
             show_system_databases: false,
+            connect_on_double_click: true,
             schema_autocomplete: true,
             confirm_dangerous: true,
             auto_limit: 1000,

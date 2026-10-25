@@ -34,6 +34,7 @@ import { RiskDialog } from "./components/RiskDialog";
 import { ServerPage } from "./components/server/ServerPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
+import { Splitter, usePaneSize } from "./components/Splitter";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
@@ -60,6 +61,10 @@ export default function App() {
   const [session, setSession] = useState<OpenedSession | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
+  // Pane sizes the user dragged to; null keeps the default layout.
+  const [sidebarWidth, setSidebarWidth] = usePaneSize("mydb.sidebarWidth");
+  const [editorHeight, setEditorHeight] = usePaneSize("mydb.editorHeight");
+  const splitRef = useRef<HTMLDivElement>(null);
   const [running, setRunning] = useState(false);
   const [view, setView] = useState<"main" | "records" | "server">("main");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -522,7 +527,13 @@ export default function App() {
   return (
     <div className="app">
       {session && active && (
-        <aside className="sidebar">
+        <aside className="sidebar" style={sidebarWidth ? { width: sidebarWidth } : undefined}>
+          <Splitter
+            dir="col"
+            className="sidebar-splitter"
+            onDrag={(x) => setSidebarWidth(Math.min(Math.max(x, 160), window.innerWidth * 0.6))}
+            onReset={() => setSidebarWidth(null)}
+          />
           <div className="sidebar-head">
             <button className="small ghost" onClick={() => disconnect()} title="中斷連線並回到首頁">
               ← 所有連線
@@ -692,7 +703,22 @@ export default function App() {
           />
         )}
         {session ? (
-          <div className="split" hidden={view === "server"}>
+          <div
+            className="split"
+            hidden={view === "server"}
+            ref={splitRef}
+            style={editorHeight ? { gridTemplateRows: `${editorHeight}px minmax(0, 1fr)` } : undefined}
+          >
+            <Splitter
+              dir="row"
+              className="editor-splitter"
+              style={editorHeight ? { top: editorHeight } : undefined}
+              onDrag={(y) => {
+                const box = splitRef.current?.getBoundingClientRect();
+                if (box) setEditorHeight(Math.min(Math.max(y - box.top, 80), box.height - 80));
+              }}
+              onReset={() => setEditorHeight(null)}
+            />
             <div className="editor-pane">
               <div className="tab-bar" role="tablist">
                 {tabs.tabs.map((t, i) => (
@@ -848,6 +874,7 @@ export default function App() {
           <Home
             connections={connections}
             connecting={connecting}
+            doubleClick={settings.connect_on_double_click}
             onConnect={connect}
             onEdit={setEditing}
             onNew={() => setEditing({ ...newProfile(), kind: undefined })}

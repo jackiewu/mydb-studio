@@ -1,10 +1,13 @@
-import { KIND_LABEL, serverLabel, type ConnectionProfile } from "../api";
+import { useState } from "react";
+import { KIND_LABEL, serverLabel, type ConnectionKind, type ConnectionProfile } from "../api";
 import { openMenu } from "../contextMenu";
 import { copyText } from "../copy";
 
 interface Props {
   connections: ConnectionProfile[];
   connecting: string | null;
+  /** A click selects a card and a double-click connects; else a click connects. */
+  doubleClick: boolean;
   onConnect: (c: ConnectionProfile) => void;
   onEdit: (c: ConnectionProfile) => void;
   onNew: () => void;
@@ -26,11 +29,17 @@ function lastUsed(iso?: string | null) {
   return `${Math.round(hours / 24)} 天前使用`;
 }
 
-type CardProps = Pick<Props, "connecting" | "onConnect" | "onEdit" | "onToggleFavorite" | "onDuplicate" | "onDelete">;
+type CardProps = Pick<
+  Props,
+  "connecting" | "doubleClick" | "onConnect" | "onEdit" | "onToggleFavorite" | "onDuplicate" | "onDelete"
+> & { selected: boolean; onSelect: (c: ConnectionProfile) => void };
 
 function Card({
   c,
   connecting,
+  doubleClick,
+  selected,
+  onSelect,
   onConnect,
   onEdit,
   onToggleFavorite,
@@ -41,8 +50,13 @@ function Card({
   const kind = c.kind ?? "mysql";
   return (
     <div
-      className="card"
-      onClick={() => onConnect(c)}
+      className={selected ? "card selected" : "card"}
+      onClick={() => (doubleClick ? onSelect(c) : onConnect(c))}
+      onDoubleClick={() => doubleClick && onConnect(c)}
+      onFocus={() => onSelect(c)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && e.target === e.currentTarget) onConnect(c);
+      }}
       role="button"
       tabIndex={0}
       onContextMenu={(e) =>
@@ -79,8 +93,12 @@ function Card({
       <div className="card-foot">
         <span className={`badge kind-${kind}`}>{KIND_LABEL[kind]}</span>
         {c.ssl.mode !== "disabled" && <span className="badge good">TLS</span>}
-        {c.ssh && <span className="badge good">SSH {c.ssh.host}</span>}
-        <span className="muted small-text">{lastUsed(c.last_used_at)}</span>
+        {c.ssh && (
+          <span className="badge good" title={`經由 SSH ${c.ssh.user}@${c.ssh.host}`}>
+            SSH
+          </span>
+        )}
+        <span className="muted small-text last-used">{lastUsed(c.last_used_at)}</span>
         <span className="spacer" />
         {connecting === c.id ? (
           <span className="spinner" />
@@ -113,10 +131,73 @@ function Card({
   );
 }
 
+type SortBy = "name" | "recent";
+type KindFilter = "all" | ConnectionKind;
+
+/** A remembered home-page choice; falls back when nothing (valid) is kept. */
+function useChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const v = localStorage.getItem(key) as T | null;
+      return v && allowed.includes(v) ? v : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = (v: T) => {
+    setValue(v);
+    try {
+      localStorage.setItem(key, v);
+    } catch {
+      // Kept until the app closes.
+    }
+  };
+  return [value, set];
+}
+
+function matches(c: ConnectionProfile, text: string) {
+  if (!text) return true;
+  const hay = [c.name, c.host, c.user, c.database ?? "", String(c.port), c.ssh?.host ?? ""].join(" ").toLowerCase();
+  return text
+    .toLowerCase()
+    .split(/\s+/)
+    .every((w) => hay.includes(w));
+}
+
+function sorted(list: ConnectionProfile[], by: SortBy) {
+  return [...list].sort((a, b) =>
+    by === "recent"
+      ? (b.last_used_at ?? "").localeCompare(a.last_used_at ?? "") || a.name.localeCompare(b.name)
+      : a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }),
+  );
+}
+
 export function Home(props: Props) {
   const { connections, onNew, onOpenRecords, onOpenSettings } = props;
-  const favorites = connections.filter((c) => c.favorite);
-  const others = connections.filter((c) => !c.favorite);
+  const [text, setText] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useChoice<SortBy>("mydb.home.sort", ["name", "recent"], "recent");
+  const [kind, setKind] = useChoice<KindFilter>("mydb.home.kind", ["all", "mysql", "redis"], "all");
+  const [grouped, setGrouped] = useChoice<"yes" | "no">("mydb.home.grouped", ["yes", "no"], "no");
+
+  const kindOf = (c: ConnectionProfile) => c.kind ?? "mysql";
+  const count = (k: ConnectionKind) => connections.filter((c) => kindOf(c) === k).length;
+  const shown = sorted(
+    connections.filter((c) => (kind === "all" || kindOf(c) === kind) && matches(c, text.trim())),
+    sortBy,
+  );
+  const favorites = shown.filter((c) => c.favorite);
+  const others = shown.filter((c) => !c.favorite);
+  const sections: { title: string; list: ConnectionProfile[] }[] = [];
+  if (favorites.length > 0) sections.push({ title: "★ 最愛", list: favorites });
+  if (grouped === "yes") {
+    for (const k of ["mysql", "redis"] as const) {
+      const list = others.filter((c) => kindOf(c) === k);
+      if (list.length > 0) sections.push({ title: KIND_LABEL[k], list });
+    }
+  } else if (others.length > 0) {
+    sections.push({ title: favorites.length > 0 ? "其他連線" : "", list: others });
+  }
 
   return (
     <div className="home">
@@ -140,26 +221,51 @@ export function Home(props: Props) {
           </button>
         </div>
       )}
-      {favorites.length > 0 && (
-        <>
-          <h2>★ 最愛</h2>
-          <div className="cards">
-            {favorites.map((c) => (
-              <Card key={c.id} c={c} {...props} />
+      {connections.length > 0 && (
+        <div className="home-filters">
+          <input
+            className="home-search"
+            type="search"
+            placeholder="搜尋名稱、主機、使用者、資料庫…"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setText("");
+              if (e.key === "Enter" && shown.length === 1) props.onConnect(shown[0]);
+            }}
+          />
+          <div className="segmented" role="group" aria-label="連線類型">
+            {(["all", "mysql", "redis"] as const).map((k) => (
+              <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
+                {k === "all" ? `全部 ${connections.length}` : `${KIND_LABEL[k]} ${count(k)}`}
+              </button>
             ))}
           </div>
-        </>
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)} title="排序">
+            <option value="recent">最近使用</option>
+            <option value="name">名稱</option>
+          </select>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={grouped === "yes"}
+              onChange={(e) => setGrouped(e.target.checked ? "yes" : "no")}
+            />
+            依類型分組
+          </label>
+        </div>
       )}
-      {others.length > 0 && (
-        <>
-          {favorites.length > 0 && <h2>其他連線</h2>}
+      {connections.length > 0 && shown.length === 0 && <p className="muted">沒有符合的連線。</p>}
+      {sections.map((sec) => (
+        <div key={sec.title || "all"}>
+          {sec.title && <h2>{sec.title}</h2>}
           <div className="cards">
-            {others.map((c) => (
-              <Card key={c.id} c={c} {...props} />
+            {sec.list.map((c) => (
+              <Card key={c.id} c={c} {...props} selected={selectedId === c.id} onSelect={(c) => setSelectedId(c.id)} />
             ))}
           </div>
-        </>
-      )}
+        </div>
+      ))}
     </div>
   );
 }
