@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { describeError, type ExecutionOutcome, type StatementResult } from "../api";
+import { openMenu } from "../contextMenu";
+import { copyText } from "../copy";
 import { isExplain, readPlan } from "../explain";
 import { ResultGrid } from "./ResultGrid";
 
@@ -79,7 +81,13 @@ export function ResultsPanel({
         {outcome.record_id != null && <span className="recorded">📝 已記錄 #{outcome.record_id}</span>}
         <div className="result-tabs">
           {outcome.results.map((r, i) => (
-            <button key={i} className={i === tab ? "active" : ""} title={r.sql} onClick={() => setTab(i)}>
+            <button
+              key={i}
+              className={i === tab ? "active" : ""}
+              title={`${r.sql}\n\n右鍵：複製 SQL`}
+              onClick={() => setTab(i)}
+              onContextMenu={(e) => openMenu(e, [{ label: "複製 SQL", onClick: () => copyText(r.sql) }])}
+            >
               <span className="tab-no">#{i + 1}</span> {label(r.sql)}
             </button>
           ))}
