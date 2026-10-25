@@ -102,7 +102,7 @@ h1 { font-size: clamp(30px, 6vw, 50px); line-height: 1.15; margin: 0 0 16px; let
 :root[data-theme="dark"] .btn.primary { color: #06202b; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #06202b; } }
 .btn.ghost { background: var(--surface); color: var(--text); }
-.btn.soon { background: transparent; color: var(--muted); border-style: dashed; cursor: default; }
+.dl-meta { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; padding: 0; list-style: none; }
 .chips li { font-size: 13px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 10px; background: var(--surface); }
 
@@ -160,6 +160,8 @@ pre.term .p { color: #7dd3fc; user-select: none; }
   background: var(--warn-soft); color: var(--text); border-radius: 10px; padding: 12px 16px; font-size: 15px;
 }
 .note b { color: var(--warn); }
+.install { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.install b { color: var(--accent); }
 
 .final { text-align: center; }
 .final .cta { justify-content: center; }
@@ -209,7 +211,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
     <nav class="links">
       <a class="opt" href="#features">功能</a>
       <a class="opt" href="#security">安全與隱私</a>
-      <a class="opt" href="#build">從原始碼建置</a>
+      <a class="opt" href="#download">下載</a>
       <a href="https://github.com/jackiewu/mydb-studio">GitHub</a>
       <button class="theme-btn" id="theme" type="button" aria-label="切換深淺色">◐</button>
     </nav>
@@ -220,16 +222,18 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
   <div class="hero">
     <div class="wrap hero-grid">
       <div>
-        <span class="eyebrow">macOS 桌面用戶端 · 開發中</span>
+        <span class="eyebrow">macOS 桌面用戶端</span>
         <h1>MySQL、MariaDB 與 Redis，<br class="d">一個安靜好用的桌面工具。</h1>
         <p class="lead">MyDB Studio 用 Rust + Tauri 2 打造，連線、查詢、管理伺服器都在同一個視窗；AI 只跑在你自己的電腦上，也能透過 MCP 讓 Claude 等工具安全地使用你存好的連線。</p>
         <div class="cta">
-          <a class="btn primary" href="#build">從原始碼建置</a>
+          <a class="btn primary" href="https://github.com/jackiewu/mydb-studio/releases/latest">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg> 下載 macOS 版
+          </a>
           <a class="btn ghost" href="https://github.com/jackiewu/mydb-studio">
             <svg width="16" height="16"><use href="#i-gh"/></svg> 在 GitHub 查看
           </a>
-          <span class="btn soon" title="App 尚未完成公證，也還沒有發佈 Release">安裝檔即將推出</span>
         </div>
+        <p class="dl-meta">Apple Silicon（M 系列晶片）· 已通過 Apple 公證 · 從 GitHub Releases 下載</p>
         <ul class="chips">
           <li>Rust</li><li>Tauri 2</li><li>React</li><li>CodeMirror</li><li>llama.cpp</li><li>MCP</li>
         </ul>
@@ -389,17 +393,18 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
     </div>
   </section>
 
-  <section id="build">
+  <section id="download">
     <div class="wrap build">
       <div>
-        <h2>從原始碼建置</h2>
-        <p class="sub" style="margin-bottom:20px">安裝檔還在準備中，現在可以自己從原始碼建置。</p>
+        <h2>下載與安裝</h2>
+        <p class="sub" style="margin-bottom:20px">macOS 版已經用 Developer ID 簽章並通過 Apple 公證。</p>
+        <div class="note install" style="margin:0 0 28px"><b>安裝：</b>到 <a href="https://github.com/jackiewu/mydb-studio/releases/latest">GitHub Releases</a> 下載 zip，解壓後把 MyDB Studio.app 拖進「應用程式」。目前提供 Apple Silicon（M 系列晶片）版本；Intel Mac 可以從原始碼建置。</div>
+        <h3 id="build" style="margin:0 0 12px;font-size:20px">從原始碼建置</h3>
         <ol>
           <li>安裝 Rust（stable）與 Node 22</li>
           <li>依照 Tauri 文件安裝<a href="https://v2.tauri.app/start/prerequisites/">系統套件</a></li>
           <li>取得原始碼，安裝相依套件後執行</li>
         </ol>
-        <div class="note"><b>即將推出：</b>App 目前尚未完成 Apple 公證，也還沒有發佈 Release。正式安裝檔準備好之後會放在 GitHub Releases。</div>
       </div>
       <pre class="term"><span class="c"># 取得原始碼</span>
 <span class="p">$ </span>git clone https://github.com/jackiewu/mydb-studio.git
@@ -428,6 +433,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
         <a class="btn primary" href="https://github.com/jackiewu/mydb-studio">
           <svg width="16" height="16"><use href="#i-gh"/></svg> jackiewu/mydb-studio
         </a>
+        <a class="btn ghost" href="https://github.com/jackiewu/mydb-studio/releases/latest">下載最新版</a>
         <a class="btn ghost" href="https://github.com/jackiewu/mydb-studio/issues">回報問題</a>
       </div>
     </div>
@@ -436,7 +442,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
 
 <footer>
   <div class="wrap">
-    <span>MyDB Studio · 開發中</span>
+    <span>MyDB Studio</span>
     <span>MySQL、MariaDB、Redis 為各自擁有者的商標。</span>
   </div>
 </footer>
