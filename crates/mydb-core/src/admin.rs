@@ -413,11 +413,11 @@ pub fn account(user: &str, host: &str) -> String {
     format!("{}@{}", ident(user), ident(host))
 }
 
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
-fn string_literal(s: &str, dialect: Dialect) -> String {
+pub(crate) fn string_literal(s: &str, dialect: Dialect) -> String {
     let mut out = String::from("'");
     for c in s.chars() {
         match c {
@@ -437,7 +437,7 @@ fn invalid(message: &str) -> CoreError {
     }
 }
 
-async fn first_cell(session: &Session, sql: &str) -> Result<String> {
+pub(crate) async fn first_cell(session: &Session, sql: &str) -> Result<String> {
     Ok(session
         .query_text(sql)
         .await?

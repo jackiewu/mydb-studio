@@ -376,6 +376,149 @@ export type AdminChange =
   | { kind: "privileges"; user: string; host: string; edits: PrivilegeEdit[] }
   | { kind: "kill"; id: number; query_only: boolean };
 
+export interface Flavor {
+  mariadb: boolean;
+  version: [number, number, number];
+}
+
+export interface CharsetInfo {
+  name: string;
+  description: string;
+  default_collation: string;
+  collations: string[];
+}
+
+export interface SchemaMeta {
+  flavor: Flavor;
+  charsets: CharsetInfo[];
+  /** Usable engines, the default first. */
+  engines: string[];
+  server_charset: string;
+  server_collation: string;
+}
+
+export interface DatabaseOptions {
+  name: string;
+  charset: string;
+  collation: string;
+}
+
+export type ObjectKind = "view" | "procedure" | "function" | "trigger" | "event";
+
+export interface SchemaObject {
+  kind: ObjectKind;
+  name: string;
+  detail: string;
+  definer: string;
+  created: string | null;
+  modified: string | null;
+  comment: string;
+  /** Events only. */
+  enabled: boolean | null;
+}
+
+export interface ObjectList {
+  objects: SchemaObject[];
+  /** ON, OFF or DISABLED; null if it could not be read. */
+  event_scheduler: string | null;
+}
+
+export interface ObjectDefinition {
+  definition: string;
+  sql_mode: string | null;
+}
+
+export interface ColumnDesign {
+  /** Name on the server; null for a column being added. */
+  original: string | null;
+  name: string;
+  column_type: string;
+  charset: string | null;
+  collation: string | null;
+  nullable: boolean;
+  /** As SQL: 'abc', 0, CURRENT_TIMESTAMP, (uuid()); null for none. */
+  default: string | null;
+  on_update: string | null;
+  auto_increment: boolean;
+  /** Expression of a generated column. */
+  generated: string | null;
+  stored: boolean;
+  invisible: boolean;
+  comment: string;
+}
+
+export type IndexKind = "primary" | "unique" | "index" | "fulltext" | "spatial";
+
+export interface IndexPart {
+  column: string;
+  length: number | null;
+  descending: boolean;
+  /** Functional key part (MySQL 8). */
+  expression: string | null;
+}
+
+export interface IndexDesign {
+  original: string | null;
+  name: string;
+  kind: IndexKind;
+  parts: IndexPart[];
+  using: string | null;
+  comment: string;
+}
+
+export interface ForeignKeyDesign {
+  original: string | null;
+  name: string;
+  columns: string[];
+  /** null for the table's own database. */
+  ref_database: string | null;
+  ref_table: string;
+  ref_columns: string[];
+  on_delete: string;
+  on_update: string;
+}
+
+export interface TableOptions {
+  engine: string | null;
+  charset: string | null;
+  collation: string | null;
+  comment: string;
+  auto_increment: number | null;
+}
+
+export interface TableDesign {
+  name: string;
+  columns: ColumnDesign[];
+  indexes: IndexDesign[];
+  foreign_keys: ForeignKeyDesign[];
+  options: TableOptions;
+}
+
+export type SchemaChange =
+  | { kind: "create_database"; name: string; charset: string | null; collation: string | null }
+  | { kind: "alter_database"; name: string; charset: string | null; collation: string | null; convert_tables: boolean }
+  | { kind: "drop_database"; name: string }
+  | { kind: "create_table"; database: string; design: TableDesign }
+  | { kind: "alter_table"; database: string; original: TableDesign; design: TableDesign; convert_charset: boolean }
+  | { kind: "drop_table"; database: string; table: string }
+  | { kind: "save_object"; database: string; object_kind: ObjectKind; original: string | null; definition: string }
+  | { kind: "drop_object"; database: string; object_kind: ObjectKind; name: string }
+  | { kind: "set_event_enabled"; database: string; name: string; enabled: boolean }
+  | { kind: "set_event_scheduler"; on: boolean };
+
+export interface DdlPlan {
+  statements: string[];
+  /** What to know before running it. */
+  notes: string[];
+}
+
+export interface SchemaApplied {
+  statements: string[];
+  error: CoreError | null;
+  record_id: number | null;
+  current_database: string | null;
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   editor_theme: "auto",
   editor_font_size: 13,
@@ -699,6 +842,22 @@ export const api = {
   /** The statements a change would run, passwords masked. */
   adminPlan: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_plan", { sessionId, change }),
   adminApply: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_apply", { sessionId, change }),
+  schemaMeta: (sessionId: string) => invoke<SchemaMeta>("schema_meta", { sessionId }),
+  databaseOptions: (sessionId: string, database: string) =>
+    invoke<DatabaseOptions>("database_options", { sessionId, database }),
+  tableDesign: (sessionId: string, database: string, table: string) =>
+    invoke<TableDesign>("table_design", { sessionId, database, table }),
+  showCreateTable: (sessionId: string, database: string, table: string) =>
+    invoke<string>("show_create_table", { sessionId, database, table }),
+  schemaObjects: (sessionId: string, database: string) =>
+    invoke<ObjectList>("schema_objects", { sessionId, database }),
+  objectDefinition: (sessionId: string, database: string, kind: ObjectKind, name: string) =>
+    invoke<ObjectDefinition>("object_definition", { sessionId, database, kind, name }),
+  /** The statements a schema change would run. */
+  schemaPlan: (sessionId: string, change: SchemaChange) => invoke<DdlPlan>("schema_plan", { sessionId, change }),
+  /** Runs a schema change; it is always kept in the records. */
+  schemaApply: (sessionId: string, change: SchemaChange) =>
+    invoke<SchemaApplied>("schema_apply", { sessionId, change }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
     invoke<TableInfo[]>("list_tables", { sessionId, database }),
