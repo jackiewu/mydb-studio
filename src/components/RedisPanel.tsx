@@ -45,6 +45,10 @@ function grid(columns: string[], rows: Cell[][], sql = ""): StatementResult {
   };
 }
 
+/** What a new editor connection loses. */
+export const CONNECTION_STATE_RESET =
+  "MULTI 交易、WATCH、CLIENT SETNAME 這類綁在連線上的狀態都已重設。";
+
 /** One-line text of a reply, as redis-cli prints scalars. */
 export function replyText(r: Reply): string {
   switch (r.type) {
@@ -187,12 +191,14 @@ function CommandResults({ outcome }: { outcome: RedisOutcome | null }) {
           ⏹ 已停止
           {outcome.failed_command ? "：停在下面這個指令。" : "。"}
           {outcome.failed_command && <pre>{outcome.failed_command}</pre>}
+          <div className="muted small-text">指令列的連線已關閉，下次執行會重新連線；{CONNECTION_STATE_RESET}</div>
         </div>
       )}
       {outcome.error && !outcome.cancelled && !hasErrorReply && (
         <div className="error-box">
           <strong>{describeError(outcome.error)}</strong>
           {outcome.failed_command && <pre>{outcome.failed_command}</pre>}
+          {outcome.error.kind === "connection" && <div className="muted small-text">{CONNECTION_STATE_RESET}</div>}
         </div>
       )}
       {current && (

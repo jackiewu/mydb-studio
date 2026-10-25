@@ -352,13 +352,84 @@ async fn reconnects_after_the_server_drops_the_connection() {
         &format!("CLIENT KILL ID {browse_id}\nCLIENT KILL ID {editor_id}"),
     )
     .await;
+    // Browsing reconnects by itself.
     s.databases().await.unwrap();
-    let out = s.execute("PING").await;
+
+    // The editor reports the lost connection and doesn't send the command
+    // again on a new one: it may have run already.
+    run(&admin, "DEL mydbtest:resend").await;
+    let out = s.execute("INCR mydbtest:resend\nPING").await;
+    match &out.error {
+        Some(CoreError::Connection { message }) => {
+            assert!(message.contains("沒有自動重送"), "{message}")
+        }
+        other => panic!("expected a connection error, got {other:?}"),
+    }
+    assert!(out.results.is_empty());
+    assert_eq!(out.failed_command.as_deref(), Some("INCR mydbtest:resend"));
+
+    // The next run opens a new connection, in the profile's database.
+    let out = s.execute("GET mydbtest:resend\nCLIENT INFO").await;
     assert!(out.error.is_none(), "{:?}", out.error);
     assert!(out.reconnected);
-    // Still in the profile's database.
-    let client = run(&s, "CLIENT INFO").await[0].to_text();
+    assert_eq!(out.results[0].reply, Reply::Nil, "INCR was sent again");
+    let client = out.results[1].reply.to_text();
     assert!(client.contains(&format!("db={DB}")), "{client}");
+}
+
+#[tokio::test]
+async fn transactions_get_only_the_typed_commands() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let replies = run(
+        &s,
+        "DEL mydbtest:tx\nMULTI\nSET mydbtest:tx 1\nINCR mydbtest:tx\nEXEC\nDEL mydbtest:tx",
+    )
+    .await;
+    assert_eq!(replies[1], Reply::Status { value: "OK".into() });
+    assert_eq!(
+        replies[2],
+        Reply::Status {
+            value: "QUEUED".into()
+        }
+    );
+    assert_eq!(
+        replies[3],
+        Reply::Status {
+            value: "QUEUED".into()
+        }
+    );
+    assert_eq!(
+        replies[4],
+        Reply::Array {
+            items: vec![
+                Reply::Status { value: "OK".into() },
+                Reply::Integer { value: 2 }
+            ]
+        }
+    );
+}
+
+#[tokio::test]
+async fn hex_escapes_send_single_bytes() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let replies = run(
+        &s,
+        r#"SET mydbtest:hex "\xff"
+STRLEN mydbtest:hex
+GET mydbtest:hex
+DEL mydbtest:hex"#,
+    )
+    .await;
+    assert_eq!(replies[1], Reply::Integer { value: 1 });
+    assert_eq!(
+        replies[2],
+        Reply::Text {
+            value: "FF".into(),
+            binary: true
+        }
+    );
 }
 
 #[tokio::test]

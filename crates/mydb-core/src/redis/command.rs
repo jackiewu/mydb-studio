@@ -14,16 +14,21 @@ pub const LARGE_SCAN_COUNT: u64 = 10_000;
 
 /// Splits one command line into arguments, like `redis-cli`: spaces
 /// separate, `"…"` allows `\n`, `\t`, `\"`, `\\` and `\xHH`, and `'…'`
-/// is literal apart from `\'`. Errors on an unterminated quote.
-pub fn split_args(line: &str) -> Result<Vec<String>, String> {
+/// is literal apart from `\'`. Arguments are bytes, as sent: `"\xff"` is
+/// the single byte 0xFF. Errors on an unterminated quote.
+pub fn split_args(line: &str) -> Result<Vec<Vec<u8>>, String> {
     let mut args = Vec::new();
     let mut chars = line.chars().peekable();
+    let push = |arg: &mut Vec<u8>, c: char| {
+        let mut buf = [0; 4];
+        arg.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    };
     loop {
         while chars.next_if(|c| c.is_whitespace()).is_some() {}
         let Some(&first) = chars.peek() else {
             return Ok(args);
         };
-        let mut arg = String::new();
+        let mut arg = Vec::new();
         if first == '"' || first == '\'' {
             chars.next();
             let mut closed = false;
@@ -33,35 +38,35 @@ pub fn split_args(line: &str) -> Result<Vec<String>, String> {
                     break;
                 }
                 if c != '\\' {
-                    arg.push(c);
+                    push(&mut arg, c);
                     continue;
                 }
                 let Some(e) = chars.next() else { break };
                 if first == '\'' {
                     if e != '\'' {
-                        arg.push('\\');
+                        arg.push(b'\\');
                     }
-                    arg.push(e);
+                    push(&mut arg, e);
                     continue;
                 }
                 match e {
-                    'n' => arg.push('\n'),
-                    'r' => arg.push('\r'),
-                    't' => arg.push('\t'),
-                    'b' => arg.push('\u{8}'),
-                    'a' => arg.push('\u{7}'),
+                    'n' => arg.push(b'\n'),
+                    'r' => arg.push(b'\r'),
+                    't' => arg.push(b'\t'),
+                    'b' => arg.push(0x08),
+                    'a' => arg.push(0x07),
                     'x' => {
                         let hex: String =
                             [chars.next(), chars.next()].into_iter().flatten().collect();
                         match u8::from_str_radix(&hex, 16) {
-                            Ok(b) if hex.len() == 2 => arg.push(char::from(b)),
+                            Ok(b) if hex.len() == 2 => arg.push(b),
                             _ => {
-                                arg.push_str("\\x");
-                                arg.push_str(&hex);
+                                arg.extend_from_slice(b"\\x");
+                                arg.extend_from_slice(hex.as_bytes());
                             }
                         }
                     }
-                    other => arg.push(other),
+                    other => push(&mut arg, other),
                 }
             }
             if !closed {
@@ -72,7 +77,7 @@ pub fn split_args(line: &str) -> Result<Vec<String>, String> {
             }
         } else {
             while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
-                arg.push(c);
+                push(&mut arg, c);
             }
         }
         args.push(arg);
@@ -89,15 +94,20 @@ pub fn command_lines(text: &str) -> Vec<(usize, &str)> {
         .collect()
 }
 
-fn upper(args: &[String], i: usize) -> String {
+/// An argument as text, for keyword checks.
+fn text(arg: &[u8]) -> String {
+    String::from_utf8_lossy(arg).into_owned()
+}
+
+fn upper(args: &[Vec<u8>], i: usize) -> String {
     args.get(i)
-        .map(|a| a.to_ascii_uppercase())
+        .map(|a| text(a).to_ascii_uppercase())
         .unwrap_or_default()
 }
 
 /// The command name, with the subcommand for container commands
 /// (`CONFIG SET`, `CLIENT KILL` …).
-pub fn command_name(args: &[String]) -> String {
+pub fn command_name(args: &[Vec<u8>]) -> String {
     let name = upper(args, 0);
     let container = [
         "CONFIG", "CLIENT", "ACL", "MEMORY", "OBJECT", "SCRIPT", "FUNCTION", "CLUSTER", "XINFO",
@@ -114,7 +124,7 @@ const MASK: &str = "****";
 
 /// `args` as one line with every password replaced by `****`, for
 /// showing, logging and records.
-pub fn masked_line(args: &[String]) -> String {
+pub fn masked_line(args: &[Vec<u8>]) -> String {
     let mut shown: Vec<String> = args.iter().map(|a| quote(a)).collect();
     let mut hide = |i: usize| {
         if let Some(s) = shown.get_mut(i) {
@@ -126,16 +136,16 @@ pub fn masked_line(args: &[String]) -> String {
         "AUTH" => hide(args.len().saturating_sub(1).max(1)),
         // HELLO 3 AUTH user password SETNAME x
         "HELLO" => {
-            if let Some(i) = args.iter().position(|a| a.eq_ignore_ascii_case("AUTH")) {
+            if let Some(i) = args.iter().position(|a| a.eq_ignore_ascii_case(b"AUTH")) {
                 hide(i + 2);
             }
         }
         // MIGRATE … AUTH password | AUTH2 user password
         "MIGRATE" => {
             for (i, a) in args.iter().enumerate() {
-                if a.eq_ignore_ascii_case("AUTH") {
+                if a.eq_ignore_ascii_case(b"AUTH") {
                     hide(i + 1);
-                } else if a.eq_ignore_ascii_case("AUTH2") {
+                } else if a.eq_ignore_ascii_case(b"AUTH2") {
                     hide(i + 2);
                 }
             }
@@ -151,10 +161,10 @@ pub fn masked_line(args: &[String]) -> String {
         // ACL SETUSER name on >password #hash <password
         "ACL" if upper(args, 1) == "SETUSER" => {
             for (i, a) in args.iter().enumerate().skip(3) {
-                if let Some(first) = a.chars().next()
-                    && matches!(first, '>' | '<' | '#' | '!')
+                if let Some(&first) = a.first()
+                    && matches!(first, b'>' | b'<' | b'#' | b'!')
                 {
-                    shown[i] = format!("{first}{MASK}");
+                    shown[i] = format!("{}{MASK}", first as char);
                 }
             }
         }
@@ -192,25 +202,34 @@ pub fn mask_text(text: &str) -> String {
         .join("\n")
 }
 
-/// Quotes an argument for display when it needs it.
-fn quote(arg: &str) -> String {
-    if !arg.is_empty()
-        && !arg
+/// An argument for display: as is when it is plain text, otherwise
+/// quoted the way `split_args` reads it back (bytes that aren't UTF-8 as
+/// `\xHH`).
+fn quote(arg: &[u8]) -> String {
+    let (shown, binary) = bytes_text(arg);
+    if !binary
+        && !shown.is_empty()
+        && !shown
             .chars()
             .any(|c| c.is_whitespace() || c == '"' || c == '\'' || c.is_control())
     {
-        return arg.to_string();
+        return shown;
     }
     let mut out = String::from("\"");
-    for c in arg.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c => out.push(c),
+    for chunk in arg.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        for b in chunk.invalid() {
+            out.push_str(&format!("\\x{b:02x}"));
         }
     }
     out.push('"');
@@ -218,7 +237,7 @@ fn quote(arg: &str) -> String {
 }
 
 /// Why a command should be confirmed before it runs, if it should.
-pub fn check_command(index: usize, args: &[String]) -> Option<Finding> {
+pub fn check_command(index: usize, args: &[Vec<u8>]) -> Option<Finding> {
     let name = command_name(args);
     let finding = |rule: &'static str, message: String, suggestion: &str| Finding {
         statement: index,
@@ -267,6 +286,94 @@ pub fn check_command(index: usize, args: &[String]) -> Option<Finding> {
             "MONITOR 會讓伺服器把每一個指令都送過來，忙碌的伺服器效能會明顯下降。指令列不會持續顯示輸出，執行後會立即結束。".into(),
             "需要觀察流量時，改用 SLOWLOG GET 或 INFO commandstats。",
         )),
+        "REPLICAOF" | "SLAVEOF" => {
+            let stop = upper(args, 1) == "NO" && upper(args, 2) == "ONE";
+            Some(if stop {
+                finding(
+                    "redis_replicaof",
+                    format!("{name} NO ONE 會讓這台停止複寫、變成主節點，應用程式可能會寫到錯的那台。"),
+                    "確認這是計畫中的切換。",
+                )
+            } else {
+                finding(
+                    "redis_replicaof",
+                    format!("{name} 會讓這台變成另一台的副本：這台目前的資料會全部清掉，換成主節點的資料。"),
+                    "確認主機和埠號正確，而且這台的資料可以丟掉。",
+                )
+            })
+        }
+        "SWAPDB" => Some(finding(
+            "redis_swapdb",
+            format!(
+                "SWAPDB 會把 db{} 和 db{} 的內容整個對調，正在使用這兩個資料庫的用戶端會立刻看到另一邊的資料。",
+                text(args.get(1).map_or(b"?" as &[u8], |a| a)),
+                text(args.get(2).map_or(b"?" as &[u8], |a| a))
+            ),
+            "確認兩個資料庫編號正確。",
+        )),
+        "SCRIPT FLUSH" => Some(finding(
+            "redis_script_flush",
+            "SCRIPT FLUSH 會清掉伺服器快取的所有 Lua 腳本，之後用 EVALSHA 的應用程式會出現 NOSCRIPT 錯誤。".into(),
+            "確認應用程式在 NOSCRIPT 時會改用 EVAL 重新載入。",
+        )),
+        "FUNCTION FLUSH" => Some(finding(
+            "redis_function_flush",
+            "FUNCTION FLUSH 會刪掉伺服器上所有的函式庫，用 FCALL 呼叫的地方都會失敗。".into(),
+            "先用 FUNCTION DUMP 備份。",
+        )),
+        "SAVE" => Some(finding(
+            "redis_save",
+            "SAVE 會在主執行緒寫出整個資料集，寫完之前所有用戶端都要等。".into(),
+            "改用 BGSAVE，在背景寫出。",
+        )),
+        "CLIENT KILL" => Some(finding(
+            "redis_client_kill",
+            "CLIENT KILL 會把符合條件的用戶端連線斷掉，可能包括正在服務的應用程式。".into(),
+            "先用 CLIENT LIST 確認要斷的是哪些連線。",
+        )),
+        "CONFIG REWRITE" => Some(finding(
+            "redis_config_rewrite",
+            "CONFIG REWRITE 會把目前的設定（包括用 CONFIG SET 改過的）寫回伺服器的設定檔，重啟後也會生效。".into(),
+            "確認目前的設定都是要保留的。",
+        )),
+        "CONFIG RESETSTAT" => Some(finding(
+            "redis_config_resetstat",
+            "CONFIG RESETSTAT 會把 INFO 的統計數字（指令次數、命中率、慢查詢紀錄等）歸零，監控會看到數字突然掉下來。".into(),
+            "需要的話先用 INFO 記下目前的數字。",
+        )),
+        "ACL DELUSER" => Some(finding(
+            "redis_acl_deluser",
+            "ACL DELUSER 會刪掉使用者，並斷開用這個帳號登入的所有連線。".into(),
+            "確認沒有應用程式還在用這個帳號。",
+        )),
+        "MODULE LOAD" => Some(finding(
+            "redis_module_load",
+            "MODULE LOAD 會把一個動態函式庫載入伺服器執行，模組有問題時可能讓伺服器當掉。".into(),
+            "只載入信任的模組，並先在測試環境試過。",
+        )),
+        "MODULE UNLOAD" => Some(finding(
+            "redis_module_unload",
+            "MODULE UNLOAD 會卸載模組，用到這個模組的指令和資料型別都會無法使用。".into(),
+            "確認沒有應用程式還在用這個模組。",
+        )),
+        "CLUSTER RESET" => Some(finding(
+            "redis_cluster_reset",
+            "CLUSTER RESET 會讓這個節點忘掉叢集設定；HARD 還會換掉節點 ID。".into(),
+            "通常只在重建叢集時使用。",
+        )),
+        "CLUSTER FAILOVER" => Some(finding(
+            "redis_cluster_failover",
+            "CLUSTER FAILOVER 會讓這個副本接手變成主節點，原本的主節點降為副本。".into(),
+            "確認這是計畫中的切換。",
+        )),
+        // The read-only variants (EVAL_RO …) can't change anything.
+        "EVAL" | "EVALSHA" | "FCALL" => Some(finding(
+            "redis_script",
+            format!(
+                "{name} 會在伺服器上執行腳本。腳本裡呼叫的指令不會逐一檢查，例如腳本裡可以執行 FLUSHALL；執行期間伺服器也無法處理其他用戶端。"
+            ),
+            "確認腳本內容；不確定時先在測試環境執行。",
+        )),
         "DEL" | "UNLINK" if args.len() - 1 > MANY_KEYS => Some(finding(
             "redis_many_keys",
             format!("一次刪除 {} 個 key。", args.len() - 1),
@@ -275,9 +382,9 @@ pub fn check_command(index: usize, args: &[String]) -> Option<Finding> {
         "SCAN" | "SSCAN" | "HSCAN" | "ZSCAN" => {
             let count = args
                 .iter()
-                .position(|a| a.eq_ignore_ascii_case("COUNT"))
+                .position(|a| a.eq_ignore_ascii_case(b"COUNT"))
                 .and_then(|i| args.get(i + 1))
-                .and_then(|n| n.parse::<u64>().ok())?;
+                .and_then(|n| text(n).parse::<u64>().ok())?;
             (count > LARGE_SCAN_COUNT).then(|| {
                 finding(
                     "redis_large_scan",
@@ -434,19 +541,45 @@ impl From<Value> for Reply {
 mod tests {
     use super::*;
 
-    fn args(line: &str) -> Vec<String> {
+    fn args(line: &str) -> Vec<Vec<u8>> {
         split_args(line).unwrap()
+    }
+
+    fn strs(line: &str) -> Vec<String> {
+        args(line).iter().map(|a| text(a)).collect()
     }
 
     #[test]
     fn splits_like_redis_cli() {
-        assert_eq!(args("  SET  user:1  hello "), ["SET", "user:1", "hello"]);
-        assert_eq!(args(r#"SET k "a b\n\x41\"""#), ["SET", "k", "a b\nA\""]);
-        assert_eq!(args(r"SET k 'it\'s \n'"), ["SET", "k", "it's \\n"]);
-        assert_eq!(args(r#"SET k """#), ["SET", "k", ""]);
+        assert_eq!(strs("  SET  user:1  hello "), ["SET", "user:1", "hello"]);
+        assert_eq!(strs(r#"SET k "a b\n\x41\"""#), ["SET", "k", "a b\nA\""]);
+        assert_eq!(strs(r"SET k 'it\'s \n'"), ["SET", "k", "it's \\n"]);
+        assert_eq!(strs(r#"SET k """#), ["SET", "k", ""]);
+        assert_eq!(strs("SET 名稱 值"), ["SET", "名稱", "值"]);
         assert!(split_args(r#"SET k "open"#).is_err());
         assert!(split_args(r#"SET k "a"b"#).is_err());
         assert!(args("").is_empty());
+    }
+
+    #[test]
+    fn hex_escapes_are_single_bytes() {
+        // As redis-cli sends them: one byte each, not UTF-8.
+        assert_eq!(args(r#"SET k "\xff\x00a""#)[2], vec![0xff, 0x00, b'a']);
+        assert_eq!(args(r#"SET k "\xc3\xa9""#)[2], "é".as_bytes());
+        assert_eq!(args(r#"SET k "\xzz""#)[2], b"\\xzz");
+        // Shown so they read back the same.
+        let line = masked_line(&args(r#"SET k "\xff a""#));
+        assert_eq!(line, r#"SET k "\xff a""#);
+        assert_eq!(args(&line), args(r#"SET k "\xff a""#));
+    }
+
+    #[test]
+    fn subcommands_are_part_of_the_name() {
+        assert_eq!(command_name(&args("cluster reset hard")), "CLUSTER RESET");
+        assert_eq!(command_name(&args("Module Load /x.so")), "MODULE LOAD");
+        assert_eq!(command_name(&args("client kill ID 3")), "CLIENT KILL");
+        assert_eq!(command_name(&args("CONFIG")), "CONFIG");
+        assert_eq!(command_name(&args("get k")), "GET");
     }
 
     #[test]
@@ -508,6 +641,53 @@ mod tests {
         assert_eq!(rule("CONFIG GET maxmemory"), None);
         assert_eq!(rule("DEBUG SLEEP 1"), Some("redis_debug"));
         assert_eq!(rule("MONITOR"), Some("redis_monitor"));
+        assert_eq!(rule("REPLICAOF 10.0.0.1 6379"), Some("redis_replicaof"));
+        assert_eq!(rule("slaveof 10.0.0.1 6379"), Some("redis_replicaof"));
+        assert!(
+            check_command(0, &args("REPLICAOF NO ONE"))
+                .unwrap()
+                .message
+                .contains("停止複寫")
+        );
+        assert!(
+            check_command(0, &args("REPLICAOF h 6379"))
+                .unwrap()
+                .message
+                .contains("清掉")
+        );
+        assert_eq!(rule("SWAPDB 0 1"), Some("redis_swapdb"));
+        assert_eq!(rule("SCRIPT FLUSH"), Some("redis_script_flush"));
+        assert_eq!(rule("script exists abc"), None);
+        assert_eq!(rule("FUNCTION FLUSH ASYNC"), Some("redis_function_flush"));
+        assert_eq!(rule("FUNCTION LIST"), None);
+        assert_eq!(rule("SAVE"), Some("redis_save"));
+        assert!(
+            check_command(0, &args("save"))
+                .unwrap()
+                .suggestion
+                .contains("BGSAVE")
+        );
+        assert_eq!(rule("BGSAVE"), None);
+        assert_eq!(rule("CLIENT KILL ID 5"), Some("redis_client_kill"));
+        assert_eq!(rule("CLIENT LIST"), None);
+        assert_eq!(rule("CONFIG REWRITE"), Some("redis_config_rewrite"));
+        assert_eq!(rule("ACL DELUSER bob"), Some("redis_acl_deluser"));
+        assert_eq!(rule("ACL WHOAMI"), None);
+        assert_eq!(rule("MODULE LOAD /x.so"), Some("redis_module_load"));
+        assert_eq!(rule("MODULE LIST"), None);
+        assert_eq!(rule("CLUSTER RESET HARD"), Some("redis_cluster_reset"));
+        assert_eq!(rule("CLUSTER FAILOVER"), Some("redis_cluster_failover"));
+        assert_eq!(rule("CLUSTER INFO"), None);
+        assert_eq!(rule("CONFIG RESETSTAT"), Some("redis_config_resetstat"));
+        assert_eq!(rule("MODULE UNLOAD search"), Some("redis_module_unload"));
+        for ro in ["EVAL_RO \"return 1\" 0", "evalsha_ro abc 0", "FCALL_RO f 0"] {
+            assert_eq!(rule(ro), None, "{ro}");
+        }
+        for script in ["EVAL \"return 1\" 0", "evalsha abc 0", "FCALL myfunc 0"] {
+            let f = check_command(0, &args(script)).unwrap();
+            assert_eq!(f.rule, "redis_script", "{script}");
+            assert!(f.message.contains("FLUSHALL"), "{script}");
+        }
 
         let keys: Vec<String> = (0..=MANY_KEYS).map(|i| format!("k{i}")).collect();
         assert_eq!(

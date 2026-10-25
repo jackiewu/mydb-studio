@@ -39,6 +39,10 @@ pub const VALUE_PAGE: usize = 200;
 /// Strings longer than this are cut when shown.
 pub const MAX_STRING_BYTES: usize = 1024 * 1024;
 
+/// Added to a lost-connection error in the command editor.
+const NOT_RESENT: &str =
+    "（指令沒有自動重送：無法確定伺服器是否已經執行。請確認後再手動執行，下次執行會重新連線。）";
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BROWSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,6 +52,8 @@ pub struct RedisSession {
     link: Mutex<Option<Link>>,
     /// The command editor's connection, opened on first use.
     cmd: Mutex<Option<MultiplexedConnection>>,
+    /// The editor's connection broke; the next one counts as a reconnect.
+    cmd_lost: AtomicBool,
     /// Database selected with `SELECT` in the editor, else the profile's.
     current_db: AtomicU8,
     busy: AtomicBool,
@@ -207,6 +213,7 @@ impl RedisSession {
             info,
             link: Mutex::new(Some(link)),
             cmd: Mutex::new(None),
+            cmd_lost: AtomicBool::new(false),
             current_db: AtomicU8::new(db),
             busy: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
@@ -456,12 +463,8 @@ impl RedisSession {
                 page.next = (start + VALUE_PAGE < len).then(|| (start + VALUE_PAGE).to_string());
             }
             "stream" => {
-                // Exclusive start after the last id of the previous page.
-                let start = if from.is_empty() {
-                    "-".to_string()
-                } else {
-                    format!("({from}")
-                };
+                // Start after the last id of the previous page.
+                let start = stream_start(from, exclusive_ranges(&self.info.server_version));
                 let entries: Vec<(String, Vec<Value>)> = ::redis::cmd("XRANGE")
                     .arg(&k)
                     .arg(&start)
@@ -493,6 +496,11 @@ impl RedisSession {
     /// Runs the command lines in `text` one by one on the editor's
     /// connection, stopping at the first error. Lines must have been
     /// confirmed already (see [`check_command`]).
+    ///
+    /// Commands go out as they are, with nothing sent in between, so a
+    /// `MULTI` … `EXEC` block gets exactly the commands typed. When the
+    /// connection turns out to be gone, the command is not sent again (it
+    /// may have run); the next run opens a new connection.
     pub async fn execute(&self, text: &str) -> RedisOutcome {
         let started_at = Utc::now();
         let timer = Instant::now();
@@ -534,7 +542,7 @@ impl RedisSession {
             };
             let mut c = ::redis::Cmd::new();
             for a in &args {
-                c.arg(a.as_bytes());
+                c.arg(a.as_slice());
             }
             let cmd_timer = Instant::now();
             let stopped = self.stop.notified();
@@ -561,7 +569,10 @@ impl RedisSession {
                 }
                 Some(Ok(v)) => {
                     if name == "SELECT"
-                        && let Some(db) = args.get(1).and_then(|d| d.parse::<u8>().ok())
+                        && let Some(db) = args
+                            .get(1)
+                            .and_then(|d| std::str::from_utf8(d).ok())
+                            .and_then(|d| d.parse::<u8>().ok())
                     {
                         self.current_db.store(db, Ordering::SeqCst);
                     }
@@ -581,18 +592,22 @@ impl RedisSession {
                     }
                 }
                 Some(Err(e)) => {
-                    let e = CoreError::from(e);
-                    if let CoreError::Redis { message } = &e {
-                        results.push(CommandResult {
+                    let mut e = CoreError::from(e);
+                    match &mut e {
+                        CoreError::Redis { message } => results.push(CommandResult {
                             line,
                             command: shown.clone(),
                             duration_ms,
                             reply: Reply::Error {
                                 message: message.clone(),
                             },
-                        });
-                    } else {
-                        *guard = None;
+                        }),
+                        CoreError::Connection { message } => {
+                            *guard = None;
+                            self.cmd_lost.store(true, Ordering::SeqCst);
+                            message.push_str(NOT_RESENT);
+                        }
+                        _ => *guard = None,
                     }
                     error = Some(e);
                     failed_command = Some(shown);
@@ -617,12 +632,11 @@ impl RedisSession {
         &self,
         cmd: &'a mut Option<MultiplexedConnection>,
     ) -> Result<(&'a mut MultiplexedConnection, bool)> {
-        if let Some(c) = cmd.as_mut()
-            && ::redis::cmd("PING").query_async::<Value>(c).await.is_ok()
-        {
+        // No PING first: inside MULTI it would be queued into the
+        // transaction. A dead connection shows when the command fails.
+        if cmd.is_some() {
             return Ok((cmd.as_mut().unwrap(), false));
         }
-        let lost = cmd.take().is_some();
         let client = {
             let mut guard = self.link.lock().await;
             let (l, _) = self.live(&mut guard).await?;
@@ -638,7 +652,10 @@ impl RedisSession {
             .query_async::<()>(&mut conn)
             .await?;
         *cmd = Some(conn);
-        Ok((cmd.as_mut().unwrap(), lost))
+        Ok((
+            cmd.as_mut().unwrap(),
+            self.cmd_lost.swap(false, Ordering::SeqCst),
+        ))
     }
 
     async fn link_tunnel_addr(&self) -> Option<SocketAddr> {
@@ -777,6 +794,34 @@ fn value_int(v: &Value) -> Option<i64> {
     match v {
         Value::Int(i) => Some(*i),
         _ => value_text(v).parse().ok(),
+    }
+}
+
+/// Whether XRANGE takes `(id` for an exclusive start: Redis 6.2 and
+/// later, and every Valkey.
+fn exclusive_ranges(server_version: &str) -> bool {
+    let Some(v) = server_version.strip_prefix("Redis ") else {
+        return true;
+    };
+    let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (major, minor) >= (6, 2)
+}
+
+/// XRANGE start for the page after the entry `from` ("-" for the first).
+/// Without `(id`, the next possible id: the sequence plus one.
+fn stream_start(from: &str, exclusive: bool) -> String {
+    if from.is_empty() {
+        return "-".into();
+    }
+    if exclusive {
+        return format!("({from}");
+    }
+    let (ms, seq) = from.split_once('-').unwrap_or((from, "0"));
+    match (ms.parse::<u64>(), seq.parse::<u64>()) {
+        (Ok(ms), Ok(u64::MAX)) => format!("{}-0", ms + 1),
+        (Ok(ms), Ok(seq)) => format!("{ms}-{}", seq + 1),
+        _ => format!("({from}"),
     }
 }
 
@@ -959,6 +1004,24 @@ mod tests {
         assert_eq!(dbs[5].keys, 1);
         assert_eq!(dbs[1].keys, 0);
         assert_eq!(dbs[16].index, 20);
+    }
+
+    #[test]
+    fn stream_pages_start_after_the_last_id() {
+        assert_eq!(stream_start("", true), "-");
+        assert_eq!(stream_start("", false), "-");
+        assert_eq!(stream_start("1700000000000-5", true), "(1700000000000-5");
+        // Before Redis 6.2: the next id instead.
+        assert_eq!(stream_start("1700000000000-5", false), "1700000000000-6");
+        assert_eq!(
+            stream_start(&format!("1700000000000-{}", u64::MAX), false),
+            "1700000000001-0"
+        );
+        assert!(exclusive_ranges("Redis 7.0.15"));
+        assert!(exclusive_ranges("Redis 6.2.0"));
+        assert!(!exclusive_ranges("Redis 6.0.20"));
+        assert!(!exclusive_ranges("Redis 5.0.7"));
+        assert!(exclusive_ranges("Valkey 8.0.1"));
     }
 
     #[test]

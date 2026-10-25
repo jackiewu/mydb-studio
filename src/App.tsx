@@ -27,7 +27,7 @@ import { Home } from "./components/Home";
 import { RecordsPage } from "./components/RecordsPage";
 import { RedisEditor } from "./components/RedisEditor";
 import { RedisKeyTree } from "./components/RedisKeyTree";
-import { RedisPanel } from "./components/RedisPanel";
+import { CONNECTION_STATE_RESET, RedisPanel } from "./components/RedisPanel";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
@@ -257,7 +257,9 @@ export default function App() {
       tabs.update(key, { redisOutcome: result });
       setRedisDb(result.db);
       setRedisView("result");
-      setNotice(result.reconnected ? { text: "連線曾中斷，已自動重新連線。", kind: "info" } : null);
+      setNotice(
+        result.reconnected ? { text: `指令列的連線曾中斷，已重新連線。${CONNECTION_STATE_RESET}`, kind: "info" } : null,
+      );
     } catch (e) {
       setNotice({ text: describeError(e), kind: "error" });
     } finally {
@@ -782,6 +784,9 @@ export default function App() {
                   ＋
                 </button>
               </div>
+              {isRedis && tab && tab.sql.includes("****") && (
+                <div className="editor-hint">密碼已遮蔽，請重新輸入後再執行。</div>
+              )}
               {tabs.tabs.map((t) =>
                 isRedis ? (
                   <RedisEditor
