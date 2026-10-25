@@ -1,5 +1,6 @@
 mod commands;
 mod keychain;
+mod lock;
 mod mcp;
 
 use std::collections::HashMap;
@@ -57,13 +58,19 @@ pub fn run() {
             let crash = crash_watch(&dir);
             let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
             ai.stop_leftover();
+            let lock = lock::LockState::new(
+                dir.join(mydb_core::LOCK_FLAG),
+                &store.get_settings().unwrap_or_default(),
+            );
             app.manage(AppState {
                 store: Mutex::new(store),
                 sessions: tokio::sync::RwLock::new(HashMap::new()),
                 print_html: Mutex::new(String::new()),
                 ai,
+                lock,
                 crash: Mutex::new(crash),
             });
+            lock::watch_screen_lock(app.handle());
             // Stop the AI model once it sits unused for the configured time.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -99,8 +106,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
+            commands::get_connection,
             commands::cancel_query,
             commands::ai_running,
+            lock::lock_status,
+            lock::lock_app,
+            lock::unlock_app,
+            lock::verify_owner,
+            lock::owner_verified,
             commands::redis_databases,
             commands::redis_scan,
             commands::redis_key_info,
@@ -143,7 +156,8 @@ pub fn run() {
             commands::get_ai_chat,
             commands::delete_ai_chat,
             commands::read_text_file,
-            commands::take_crash_info,
+            commands::crash_info,
+            commands::clear_crash_info,
             commands::bug_report_body,
             commands::open_bug_report,
             commands::use_database,
@@ -163,7 +177,16 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                app.state::<AppState>().ai.kill_now();
+                let state = app.state::<AppState>();
+                state.ai.kill_now();
+                // Stay locked for AI tools until the next start unlocks.
+                let relock = state
+                    .store
+                    .lock()
+                    .unwrap()
+                    .get_settings()
+                    .is_ok_and(|s| s.lock_enabled() && s.lock_on_start);
+                state.lock.set_locked(relock);
                 if let Ok(dir) = app.path().app_data_dir() {
                     let _ = std::fs::remove_file(dir.join(RUNNING_FLAG));
                 }

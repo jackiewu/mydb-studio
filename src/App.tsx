@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ask } from "./ask";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -24,6 +25,7 @@ import { AiDrawer, type AiRequest } from "./components/AiDrawer";
 import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
+import { LockScreen } from "./components/LockScreen";
 import { RecordsPage } from "./components/RecordsPage";
 import { RedisEditor } from "./components/RedisEditor";
 import { RedisKeyTree } from "./components/RedisKeyTree";
@@ -114,14 +116,17 @@ export default function App() {
 
   // Offer to report last run's crash, and catch unexpected errors in this one.
   useEffect(() => {
-    Promise.all([api.takeCrashInfo(), api.getSettings()])
+    Promise.all([api.crashInfo(), api.getSettings()])
       .then(([c, s]) => {
         if (!c) return;
         const reason = c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。";
         const details = c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）";
         // Only a real crash may open the report by itself, and only when asked to;
         // a forced quit (e.g. restarting the dev app) just shows ⚠.
-        if (c.panic && s.report_crash_on_start) setBug({ reason, details });
+        if (c.panic && s.report_crash_on_start) {
+          setBug({ reason, details });
+          api.clearCrashInfo().catch(() => {});
+        }
         else setLastError({ reason, details, summary: reason, severity: c.panic ? "error" : "notice" });
       })
       .catch(() => {});
@@ -153,7 +158,11 @@ export default function App() {
 
   const updateSettings = (next: AppSettings) => {
     setSettings(next);
-    api.saveSettings(next).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
+    api.saveSettings(next).catch((e) => {
+      setNotice({ text: describeError(e), kind: "error" });
+      // Show what is actually saved (e.g. a lock change that was refused).
+      api.getSettings().then(setSettings, () => {});
+    });
   };
 
   /**
@@ -235,6 +244,82 @@ export default function App() {
     setSession(null);
     setView("main");
   };
+
+  // App lock: covered until Touch ID / the login password.
+  const [locked, setLocked] = useState(false);
+  // Locked since the app started (ask at once), rather than idle or Lock now (wait for the owner).
+  const [lockedAtStart, setLockedAtStart] = useState(false);
+  const [lockAvailable, setLockAvailable] = useState(false);
+  const lockOn = settings.lock_mode !== "off";
+  useEffect(() => {
+    api.lockStatus().then(
+      (s) => {
+        setLocked(s.locked);
+        setLockedAtStart(s.locked);
+        setLockAvailable(s.available);
+      },
+      () => {},
+    );
+    const off = listen("app-locked", () => setLocked(true));
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  const lockNow = useCallback(async () => {
+    if (!lockOn) return;
+    await api.lockApp().catch(() => {});
+    setLocked(true);
+  }, [lockOn]);
+  // Lock after idle time, and after the computer slept (the timer jumps).
+  useEffect(() => {
+    if (!lockOn || locked) return;
+    let lastInput = Date.now();
+    let lastTick = Date.now();
+    const touch = () => (lastInput = Date.now());
+    const events = ["pointerdown", "pointermove", "keydown", "wheel"] as const;
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const slept = now - lastTick > 60_000;
+      lastTick = now;
+      const idleMs = settings.lock_idle_minutes * 60_000;
+      if ((slept && settings.lock_on_sleep) || (idleMs > 0 && now - lastInput >= idleMs)) lockNow();
+    }, 5000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, touch));
+      clearInterval(timer);
+    };
+  }, [lockOn, locked, settings.lock_idle_minutes, settings.lock_on_sleep, lockNow]);
+  // ⌘/Ctrl+Shift+L locks now.
+  useEffect(() => {
+    if (!lockOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        lockNow();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lockOn, lockNow]);
+  // Optionally let go of connections while locked.
+  const sessionId = session?.session_id;
+  useEffect(() => {
+    if (locked && settings.lock_disconnect && sessionId) {
+      api.closeSession(sessionId).catch(() => {});
+      setSession(null);
+      setView("main");
+    }
+  }, [locked, settings.lock_disconnect, sessionId]);
+  const lockScreen = locked && (
+    <LockScreen
+      askNow={lockedAtStart}
+      onUnlocked={() => {
+        setLocked(false);
+        setLockedAtStart(false);
+      }}
+    />
+  );
 
   // Risky statements waiting for the user's go-ahead.
   const [risk, setRisk] = useState<{ findings: Finding[]; answer: (run: boolean) => void } | null>(null);
@@ -478,6 +563,7 @@ export default function App() {
         <SettingsDialog
           initialTab={settingsTab}
           settings={settings}
+          lockAvailable={lockAvailable}
           onChange={updateSettings}
           onClose={() => setDialog(null)}
           onOpenSnippets={() => (setSnippetDraft(null), setDialog("snippets"))}
@@ -510,6 +596,7 @@ export default function App() {
       <div className="app">
         <RecordsPage connections={connections} onBack={() => setView("main")} onOpenInEditor={openRecordInEditor} />
         {dialogs}
+        {lockScreen}
       </div>
     );
   }
@@ -879,7 +966,10 @@ export default function App() {
             connecting={connecting}
             doubleClick={settings.connect_on_double_click}
             onConnect={connect}
-            onEdit={setEditing}
+            onEdit={(c) =>
+              // The list has no passwords; this reads them (from the keychain).
+              api.getConnection(c.id).then(setEditing, (e) => setNotice({ text: describeError(e), kind: "error" }))
+            }
             onNew={() => setEditing({ ...newProfile(), kind: undefined })}
             onToggleFavorite={toggleFavorite}
             onDuplicate={(c) =>
@@ -921,13 +1011,16 @@ export default function App() {
         outcome={(isRedis ? tab?.redisOutcome : tab?.outcome) ?? null}
         aiEnabled={settings.ai_enabled}
         problem={lastError}
+        onLock={lockOn ? lockNow : undefined}
         onOpenProblem={() => {
           if (!lastError) return;
           setBug({ reason: lastError.reason, details: lastError.details });
           setLastError(null);
+          api.clearCrashInfo().catch(() => {});
         }}
       />
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
+      {lockScreen}
       {dialogs}
       {risk && (
         <RiskDialog
