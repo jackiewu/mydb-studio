@@ -186,10 +186,23 @@ impl Store {
         let mut moved = false;
         for json in saved {
             let profile: ConnectionProfile = serde_json::from_str(&json)?;
-            if !secrets::strip(&profile).1.is_empty() {
-                self.save_connection(&profile)?;
-                moved = true;
+            let (stripped, found) = secrets::strip(&profile);
+            if found.is_empty() {
+                continue;
             }
+            // Passwords in the file for somewhere other than the ones in the
+            // vault were put there behind the app's back: drop them rather
+            // than let them replace the vault's.
+            let kept = self
+                .secrets
+                .as_ref()
+                .and_then(|s| s.borrow_mut().get(&profile.id));
+            if kept.is_some_and(|k| k.destination.is_some() && k.destination != found.destination) {
+                self.write_connection(&stripped)?;
+            } else {
+                self.save_connection(&profile)?;
+            }
+            moved = true;
         }
         // Rewrite the file once so passwords saved before the vault are
         // gone from free pages and the WAL too.
@@ -233,10 +246,11 @@ impl Store {
         if !found.fits(&profile, self.unbound_ok) {
             return profile;
         }
-        if found.destination.is_none() {
-            // Saved before secrets knew their destination: bind them now.
+        let here = secrets::destination(&profile);
+        if found.destination.as_ref() != Some(&here) {
+            // Saved before secrets knew their whole destination: bind them now.
             let bound = ConnectionSecrets {
-                destination: Some(secrets::destination(&profile)),
+                destination: Some(here),
                 ..found.clone()
             };
             s.put(&profile.id, bound);
@@ -323,6 +337,11 @@ impl Store {
             Some(s) if s.borrow_mut().put(&profile.id, found) => &stripped,
             _ => profile,
         };
+        self.write_connection(profile)
+    }
+
+    /// Writes a profile to the file as it is.
+    fn write_connection(&self, profile: &ConnectionProfile) -> Result<()> {
         self.db.execute(
             "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET
@@ -1076,6 +1095,50 @@ mod tests {
                 .unwrap()
                 .contains("db.example")
         );
+
+        // A different CA file counts as elsewhere.
+        let mut other_ca = p.clone();
+        other_ca.ssl.ca_path = Some("/tmp/evil-ca.pem".into());
+        other_ca.password = None;
+        app.db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&other_ca).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(app.get_connection(&p.id).unwrap().unwrap().password, None);
+
+        // Saving a profile without passwords leaves unbound ones alone.
+        *vault.0.lock().unwrap() = Some(format!(r#"{{"{}":{{"password":"old"}}}}"#, p.id));
+        let mut mcp = Store::open_in_memory().unwrap();
+        mcp.use_vault(Box::new(vault.clone())).unwrap();
+        mcp.save_connection(&planted).unwrap();
+        assert!(vault.0.lock().unwrap().as_deref().unwrap().contains("old"));
+
+        // A password planted in the file for elsewhere doesn't replace the
+        // vault's when the vault is opened.
+        let mut real = Store::open_in_memory().unwrap();
+        real.use_vault(Box::new(vault.clone())).unwrap();
+        real.trust_unbound_secrets();
+        real.save_connection(&p).unwrap();
+        let mut dummy = planted.clone();
+        dummy.password = Some("planted".into());
+        let mut again = Store::open_in_memory().unwrap();
+        again
+            .db
+            .execute(
+                "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)",
+                params![p.id, p.name, serde_json::to_string(&dummy).unwrap()],
+            )
+            .unwrap();
+        again.use_vault(Box::new(vault.clone())).unwrap();
+        let kept = vault.0.lock().unwrap().clone().unwrap();
+        assert!(kept.contains("s3cret") && !kept.contains("planted"));
+        let json: String = again
+            .db
+            .query_row("SELECT profile FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(!json.contains("planted"));
     }
 
     #[test]

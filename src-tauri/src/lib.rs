@@ -25,10 +25,19 @@ fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
     let panic = std::fs::read_to_string(&log).ok();
     let _ = std::fs::remove_file(&log);
     // Held for the whole run: the MCP server checks it to tell whether the
-    // app is running, and the OS lets go when the process ends.
-    if let Ok(held) = mydb_core::running::hold(&flag) {
-        std::mem::forget(held);
-    }
+    // app is running, and the OS lets go when the process ends. Taken on a
+    // thread, since another copy of the app may hold it for a while.
+    std::thread::spawn(move || {
+        loop {
+            match mydb_core::running::hold(&flag) {
+                Ok(held) => break std::mem::forget(held),
+                Err(e) => {
+                    eprintln!("running flag: {e}");
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+    });
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

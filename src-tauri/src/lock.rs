@@ -120,6 +120,7 @@ pub fn lock_status(state: State<'_, AppState>) -> LockStatus {
 /// and tells the main window.
 fn lock_now(app: &AppHandle, state: &AppState) {
     state.lock.set_locked(true);
+    state.print_html.lock().unwrap().clear();
     if let Some(w) = app.get_webview_window(crate::commands::PRINT_WINDOW) {
         let _ = w.close();
     }

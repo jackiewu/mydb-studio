@@ -5,7 +5,7 @@
 //! quit, so a leftover file or a reused process id can't pass for a running
 //! app.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
@@ -13,11 +13,18 @@ use std::path::Path;
 /// whole run).
 pub struct Held(#[allow(dead_code)] File);
 
-/// Creates the running flag and locks it.
+/// Creates the running flag and locks it, waiting while another process
+/// holds it.
 pub fn hold(path: &Path) -> std::io::Result<Held> {
-    let mut file = File::create(path)?;
-    write!(file, "{}", std::process::id())?;
+    // Not truncated before it is ours: another app may still hold it.
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
     imp::lock(&file)?;
+    file.set_len(0)?;
+    write!(file, "{}", std::process::id())?;
     Ok(Held(file))
 }
 
@@ -35,11 +42,15 @@ mod imp {
     use std::os::fd::AsRawFd;
 
     pub fn lock(file: &File) -> std::io::Result<()> {
-        // SAFETY: flock on a file descriptor we own.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
+        loop {
+            // SAFETY: flock on a file descriptor we own.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
         }
     }
 

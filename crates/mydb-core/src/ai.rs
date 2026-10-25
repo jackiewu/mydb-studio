@@ -579,11 +579,17 @@ impl AiRuntime {
             "stream": true,
         })
         .to_string();
-        let mut resp = HttpResponse::send(base_url, "POST", "/v1/chat/completions", Some(&body))
-            .await
-            .map_err(|e| config_err(format!("連不上 AI 模型（{base_url}）：{e}")))?;
+        // A model that answers at all sends its headers (and each piece)
+        // well within this.
+        let wait = Duration::from_secs(300);
+        let mut resp = patient(
+            wait,
+            HttpResponse::send(base_url, "POST", "/v1/chat/completions", Some(&body)),
+        )
+        .await
+        .map_err(|e| config_err(format!("連不上 AI 模型（{base_url}）：{e}")))?;
         if resp.status != 200 {
-            let text = resp.read_all().await.unwrap_or_default();
+            let text = patient(wait, resp.read_all()).await.unwrap_or_default();
             return Err(config_err(format!(
                 "AI 模型回應錯誤 {}：{}",
                 resp.status,
@@ -594,8 +600,7 @@ impl AiRuntime {
         let mut answer = String::new();
         if !resp.event_stream {
             // The server ignored `stream`: one JSON answer.
-            let text = resp
-                .read_all()
+            let text = patient(wait, resp.read_all())
                 .await
                 .map_err(|e| config_err(e.to_string()))?;
             let v: serde_json::Value = serde_json::from_slice(&text)
@@ -612,7 +617,7 @@ impl AiRuntime {
             if self.cancel.load(Ordering::SeqCst) != epoch {
                 return Ok(answer);
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(300), resp.next_chunk())
+            let chunk = tokio::time::timeout(wait, resp.next_chunk())
                 .await
                 .map_err(|_| config_err("AI 模型太久沒有回應。"))?
                 .map_err(|e| config_err(format!("讀取 AI 回應失敗：{e}")))?;
@@ -811,6 +816,16 @@ impl HttpResponse {
     }
 }
 
+/// `work`, or a time-out error once `limit` passes.
+async fn patient<T>(
+    limit: Duration,
+    work: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    tokio::time::timeout(limit, work)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "逾時"))?
+}
+
 /// Sends a request and returns its status and body.
 async fn http_request(
     base: &str,
@@ -818,14 +833,13 @@ async fn http_request(
     path: &str,
     body: Option<&str>,
 ) -> std::io::Result<(u16, Vec<u8>)> {
-    let mut resp = tokio::time::timeout(
-        Duration::from_secs(10),
-        HttpResponse::send(base, method, path, body),
-    )
+    // The whole exchange, body included, has the one time limit.
+    patient(Duration::from_secs(10), async {
+        let mut resp = HttpResponse::send(base, method, path, body).await?;
+        let body = resp.read_all().await?;
+        Ok((resp.status, body))
+    })
     .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "逾時"))??;
-    let body = resp.read_all().await?;
-    Ok((resp.status, body))
 }
 
 #[cfg(test)]

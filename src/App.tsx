@@ -328,6 +328,8 @@ export default function App() {
         onUnlocked={() => {
           setLocked(false);
           setLockedAtStart(false);
+          // Snippets can't be read while locked, so a start behind the lock has none yet.
+          reloadSnippets().catch(() => {});
         }}
       />,
       document.body,

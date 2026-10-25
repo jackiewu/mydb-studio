@@ -39,15 +39,34 @@ pub struct ConnectionSecrets {
 /// database (or Redis) server and its TLS mode, and the SSH jump host and
 /// its pinned key. Turning TLS off or clearing the pin changes it too.
 pub fn destination(profile: &ConnectionProfile) -> String {
+    describe(profile, true)
+}
+
+fn describe(profile: &ConnectionProfile, with_tls_files: bool) -> String {
     let at = |user: &str, host: &str, port: u16| {
         format!("{}@{}:{port}", user.trim(), host.trim().to_lowercase())
+    };
+    let path = |p: &Option<String>| {
+        p.as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("-")
+            .to_string()
     };
     let mut d = format!(
         "{:?} {} tls={:?}",
         profile.kind,
         at(&profile.user, &profile.host, profile.port),
-        profile.ssl.mode
+        profile.ssl.mode,
     );
+    if with_tls_files {
+        d.push_str(&format!(
+            " ca={} cert={} key={}",
+            path(&profile.ssl.ca_path),
+            path(&profile.ssl.cert_path),
+            path(&profile.ssl.key_path),
+        ));
+    }
     if let Some(ssh) = &profile.ssh {
         d.push_str(&format!(
             " via {} key={}",
@@ -60,10 +79,12 @@ pub fn destination(profile: &ConnectionProfile) -> String {
 
 impl ConnectionSecrets {
     /// Whether these may be given to `profile`. Secrets saved before they
-    /// knew their destination fit only when `unbound_ok`.
+    /// knew their whole destination fit only when `unbound_ok`.
     pub fn fits(&self, profile: &ConnectionProfile, unbound_ok: bool) -> bool {
         match &self.destination {
-            Some(d) => *d == destination(profile),
+            Some(d) if *d == destination(profile) => true,
+            // Bound before the TLS files were part of the destination.
+            Some(d) => unbound_ok && *d == describe(profile, false),
             None => unbound_ok,
         }
     }
@@ -179,12 +200,12 @@ impl Secrets {
             return true;
         }
         // A profile saved without passwords because the saved ones are for
-        // somewhere else (it was changed behind the app's back) mustn't
-        // wipe them.
+        // somewhere else (it was changed behind the app's back), or were
+        // never bound to it, mustn't wipe them.
         if secrets.is_empty()
             && before
                 .as_ref()
-                .is_some_and(|b| b.destination.is_some() && b.destination != secrets.destination)
+                .is_some_and(|b| b.destination != secrets.destination)
         {
             return true;
         }

@@ -121,7 +121,11 @@ pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
 
 /// Connects with an unsaved profile and disconnects again.
 #[tauri::command]
-pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> {
+pub async fn test_connection(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> Result<SessionInfo> {
+    state.lock.ensure_unlocked()?;
     let session = connect(&profile).await?;
     let info = session.info().clone();
     session.close().await?;
@@ -131,7 +135,11 @@ pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> 
 /// Database names on the server `profile` points at, for the form's
 /// default database list. Connects just for this.
 #[tauri::command]
-pub async fn list_server_databases(profile: ConnectionProfile) -> Result<Vec<String>> {
+pub async fn list_server_databases(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     let profile = ConnectionProfile {
         database: None,
         ..profile
@@ -804,16 +812,19 @@ pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Resul
 
 #[tauri::command]
 pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_snippets()
 }
 
 #[tauri::command]
 pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snippet> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().save_snippet(&snippet)
 }
 
 #[tauri::command]
 pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_snippet(id)
 }
 
@@ -828,10 +839,14 @@ pub fn list_pinned_tabs(
 
 #[tauri::command]
 pub fn save_pinned_tab(state: State<'_, AppState>, mut tab: PinnedTab) -> Result<PinnedTab> {
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     // A Redis tab may hold AUTH lines; their passwords are never kept.
-    if let Some(p) = store.get_connection(&tab.connection_id)?
-        && p.kind == ConnectionKind::Redis
+    // (Only the kind is needed, so the passwords stay where they are.)
+    if store
+        .list_connections()?
+        .iter()
+        .any(|p| p.id == tab.connection_id && p.kind == ConnectionKind::Redis)
     {
         tab.sql = kv::mask_text(&tab.sql);
     }
@@ -840,11 +855,13 @@ pub fn save_pinned_tab(state: State<'_, AppState>, mut tab: PinnedTab) -> Result
 
 #[tauri::command]
 pub fn delete_pinned_tab(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_pinned_tab(id)
 }
 
 #[tauri::command]
 pub fn delete_draft_tabs(state: State<'_, AppState>, connection_id: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state
         .store
         .lock()
