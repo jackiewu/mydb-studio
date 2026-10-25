@@ -524,6 +524,72 @@ export interface RedisOutcome {
   record_id?: number | null;
 }
 
+/** The overview numbers of the Redis server page, from INFO. */
+export interface RedisSummary {
+  version: string;
+  mode: string | null;
+  uptime_seconds: number;
+  connected_clients: number;
+  maxclients: number | null;
+  blocked_clients: number;
+  used_memory: number;
+  used_memory_peak: number;
+  /** 0 means no limit. */
+  maxmemory: number;
+  maxmemory_policy: string | null;
+  ops_per_sec: number;
+  keyspace_hits: number;
+  keyspace_misses: number;
+  hit_ratio: number | null;
+  expired_keys: number;
+  evicted_keys: number;
+  role: string;
+  connected_slaves: number;
+  rdb_last_save_time: number | null;
+  rdb_last_bgsave_status: string | null;
+  rdb_changes_since_last_save: number;
+  aof_enabled: boolean;
+}
+
+export interface RedisOverview {
+  summary: RedisSummary;
+  keyspace: DbInfo[];
+  info: Record<string, string>;
+}
+
+export interface RedisClient {
+  id: number;
+  addr: string;
+  name: string;
+  user: string;
+  age: number;
+  idle: number;
+  flags: string;
+  db: number;
+  cmd: string;
+  /** This app's own browse connection. */
+  own: boolean;
+}
+
+export interface SlowEntry {
+  id: number;
+  time: number;
+  duration_us: number;
+  /** Passwords masked. */
+  command: string;
+  client: string;
+  client_name: string;
+}
+
+export interface CommandStat {
+  name: string;
+  calls: number;
+  usec: number;
+  usec_per_call: number;
+  rejected_calls: number;
+  failed_calls: number;
+}
+
 /** Plain words for the TLS failures people run into with cloud servers. */
 function tlsHint(message: string) {
   if (/UnknownIssuer/i.test(message))
@@ -599,6 +665,10 @@ export const api = {
   checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
   mcpSetup: () => invoke<McpSetup>("mcp_setup"),
   cancelQuery: (sessionId: string) => invoke<boolean>("cancel_query", { sessionId }),
+  /** Round trip in ms; null while the connection is busy. Never reconnects. */
+  sessionPing: (sessionId: string) => invoke<number | null>("session_ping", { sessionId }),
+  /** MySQL's wait_timeout in seconds; null for Redis. */
+  idleTimeout: (sessionId: string) => invoke<number | null>("idle_timeout", { sessionId }),
   /** Runs `sql` again and writes every row to `path`; returns the row count. */
   exportQuery: (sessionId: string, sql: string, options: ExportOptions, path: string) =>
     invoke<number>("export_query", { sessionId, sql, options, path }),
@@ -643,6 +713,14 @@ export const api = {
     invoke<KeyInfo>("redis_key_info", { sessionId, db, key }),
   redisReadValue: (sessionId: string, db: number, key: KeyName, from: string) =>
     invoke<ValuePage>("redis_read_value", { sessionId, db, key, from }),
+  redisServerOverview: (sessionId: string) => invoke<RedisOverview>("redis_server_overview", { sessionId }),
+  redisClients: (sessionId: string) => invoke<RedisClient[]>("redis_clients", { sessionId }),
+  redisSlowlog: (sessionId: string) => invoke<SlowEntry[]>("redis_slowlog", { sessionId }),
+  redisCommandStats: (sessionId: string) => invoke<CommandStat[]>("redis_command_stats", { sessionId }),
+  /** CONFIG GET *, passwords as ****. */
+  redisConfig: (sessionId: string) => invoke<[string, string][]>("redis_config", { sessionId }),
+  /** CLIENT KILL ID, after the user confirmed it. */
+  redisKillClient: (sessionId: string, id: number) => invoke<boolean>("redis_kill_client", { sessionId, id }),
   redisCheck: (text: string) => invoke<Finding[]>("redis_check", { text }),
   redisExecute: (sessionId: string, text: string, record: boolean) =>
     invoke<RedisOutcome>("redis_execute", { sessionId, text, record }),

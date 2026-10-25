@@ -774,11 +774,17 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
   background: var(--bg); border-top: 1px solid var(--border);
   font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden;
 }
-.status-bar .spacer { flex: 1; }
+.status-bar > * { flex-shrink: 0; }
+.status-bar > .spacer { flex: 1; flex-shrink: 1; }
+.status-bar > .status-conn, .status-bar > .status-run { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-bar .good { color: var(--good); }
 .status-bar .bad { color: var(--bad); }
 .status-conn { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex-shrink: 0; }
+.status-dot.busy { background: var(--warn); }
+.status-dot.bad { background: var(--bad); }
+.status-bar .warn { color: var(--warn); }
+.status-conn strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .status-problem { display: inline-flex; align-items: center; border: none; background: none; padding: 0 4px; height: 20px; font-size: 14px; line-height: 1; cursor: pointer; }
 .status-problem.error { color: var(--bad); }
 .status-problem.notice { color: var(--muted); }

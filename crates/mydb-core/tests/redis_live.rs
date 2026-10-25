@@ -557,3 +557,89 @@ async fn ssh_tunnel_with_tls_checks_real_host_name() {
     wrong.host = "127.0.0.1".into();
     assert!(RedisSession::connect(&wrong).await.is_err());
 }
+
+#[tokio::test]
+async fn server_page_overview_and_ping() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let o = s.server_overview().await.unwrap();
+    assert_eq!(o.summary.version, s.info().server_version);
+    assert!(o.summary.uptime_seconds > 0 || o.info.contains_key("uptime_in_seconds"));
+    assert!(o.summary.connected_clients >= 1);
+    assert!(o.summary.used_memory > 0);
+    assert!(o.summary.maxmemory_policy.is_some());
+    assert!(!o.summary.role.is_empty());
+    assert!(o.keyspace.len() >= 16);
+    assert!(o.info.contains_key("redis_version"));
+    assert!(s.ping().await.unwrap().is_some());
+
+    let stats = s.command_stats().await.unwrap();
+    assert!(
+        stats.iter().any(|c| c.name == "info" && c.calls > 0),
+        "{stats:?}"
+    );
+
+    // Passwords never come back from CONFIG GET, set or not.
+    let config = s.config().await.unwrap();
+    assert!(config.iter().any(|(k, _)| k == "maxmemory"));
+    if let Some((_, v)) = config.iter().find(|(k, _)| k == "requirepass") {
+        assert!(v.is_empty() || v == "****", "{v}");
+    }
+}
+
+#[tokio::test]
+async fn server_page_slowlog() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let before: Vec<Reply> = run(&s, "CONFIG GET slowlog-log-slower-than").await;
+    let old = match &before[0] {
+        Reply::Array { items } => items[1].to_text(),
+        Reply::Map { entries } => entries[0].1.to_text(),
+        other => panic!("{other:?}"),
+    };
+    // Log everything, but only for the one command: other tests run in
+    // parallel and would fill the log.
+    let marker = format!("mydbtest:slow:{}", std::process::id());
+    run(
+        &s,
+        &format!(
+            "CONFIG SET slowlog-log-slower-than 0\nSET {marker} 1\nCONFIG SET slowlog-log-slower-than {old}"
+        ),
+    )
+    .await;
+    run(&s, &format!("DEL {marker}")).await;
+    let log = s.slowlog().await.unwrap();
+    assert!(log.len() <= mydb_core::redis::server::SLOWLOG_ENTRIES);
+    let entry = log
+        .iter()
+        .find(|e| e.command == format!("SET {marker} 1"))
+        .unwrap_or_else(|| panic!("{log:?}"));
+    assert!(entry.time > 0);
+    assert!(entry.duration_us >= 0);
+}
+
+#[tokio::test]
+async fn server_page_clients_and_kill() {
+    let profile = profile_or_skip!();
+    let s = RedisSession::connect(&profile).await.unwrap();
+    let other = RedisSession::connect(&profile).await.unwrap();
+    let other_id = u64::from(other.info().connection_id);
+
+    let clients = s.clients().await.unwrap();
+    let own: Vec<_> = clients.iter().filter(|c| c.own).collect();
+    assert_eq!(own.len(), 1, "{clients:?}");
+    assert_eq!(own[0].id, u64::from(s.info().connection_id));
+    assert_eq!(own[0].cmd, "client|list");
+    let target = clients
+        .iter()
+        .find(|c| c.id == other_id)
+        .expect("other client");
+    assert!(!target.own);
+    assert_eq!(target.db, u64::from(DB));
+
+    assert!(s.kill_client(other_id).await.unwrap());
+    assert!(!s.kill_client(other_id).await.unwrap_or(false));
+    assert!(s.clients().await.unwrap().iter().all(|c| c.id != other_id));
+    // The killed session reconnects on its next call.
+    assert!(other.databases().await.is_ok());
+}

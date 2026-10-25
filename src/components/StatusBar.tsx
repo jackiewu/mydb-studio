@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ConnectionProfile, type ExecutionOutcome, type OpenedSession, type RedisOutcome } from "../api";
+import { idleText } from "../status/usage";
+import type { SessionStatus } from "../status/useSessionStatus";
 
 /** Something to offer reporting: a crash (error) or an unclean exit (notice). */
 export interface Problem {
@@ -13,6 +15,7 @@ interface Props {
   database: string | null;
   running: boolean;
   outcome: ExecutionOutcome | RedisOutcome | null;
+  status: SessionStatus;
   aiEnabled: boolean;
   problem: Problem | null;
   onOpenProblem: () => void;
@@ -64,28 +67,92 @@ function useAiRunning(enabled: boolean) {
   return enabled && up;
 }
 
-export function StatusBar({ session, profile, database, running, outcome, aiEnabled, problem, onOpenProblem }: Props) {
+const LIGHT_TITLE = {
+  ok: "連線正常",
+  bad: "最近一次連線失敗。下次執行會自動重新連線。",
+};
+
+function lightTitle(status: SessionStatus, running: boolean) {
+  if (running) return "執行中";
+  if (status.light === "busy") return "上次執行前連線曾中斷，已自動重新連線";
+  return LIGHT_TITLE[status.light === "bad" ? "bad" : "ok"];
+}
+
+export function StatusBar({
+  session,
+  profile,
+  database,
+  running,
+  outcome,
+  status,
+  aiEnabled,
+  problem,
+  onOpenProblem,
+}: Props) {
   const aiUp = useAiRunning(aiEnabled);
+  const redis = session?.kind === "redis";
+  const unit = redis ? "個指令" : "句";
+  const idle = session ? idleText(status.idleMs) : null;
   return (
     <footer className="status-bar">
       {session && profile ? (
-        <span className="status-conn" title={session.info.server_version}>
-          <span className="status-dot" />
-          {profile.name}
-          <span className="muted">{session.info.server_version}</span>
+        <span className="status-conn">
+          <span className={`status-dot ${status.light}`} title={lightTitle(status, running)} />
+          <strong>{profile.name}</strong>
+          <span className="muted" title="伺服器版本">
+            {session.info.server_version}
+          </span>
           {session.info.tls && <span className="good">TLS</span>}
-          {profile.ssh && <span className="good">SSH</span>}
-          {database && <span className="muted">{database}</span>}
+          {profile.ssh && (
+            <span className="good" title={`經由 SSH ${profile.ssh.user}@${profile.ssh.host}`}>
+              SSH
+            </span>
+          )}
+          {database && (
+            <span className="muted" title={redis ? "指令列使用的資料庫" : "目前資料庫"}>
+              {database}
+            </span>
+          )}
+          {status.latencyMs != null && (
+            <span className="muted" title="閒置時每 30 秒量一次的來回時間（執行中不量）">
+              延遲 {status.latencyMs < 10 ? status.latencyMs.toFixed(1) : Math.round(status.latencyMs)} ms
+            </span>
+          )}
         </span>
       ) : (
         <span className="muted">未連線</span>
       )}
       <span className="spacer" />
       {running ? (
-        <span className="muted">執行中…</span>
+        <span className="muted status-run">執行中…</span>
       ) : (
         session &&
-        outcome && <span className={outcome.error && !outcome.cancelled ? "bad" : "muted"}>{lastRun(outcome)}</span>
+        outcome && (
+          <span className={`status-run ${outcome.error && !outcome.cancelled ? "bad" : "muted"}`}>{lastRun(outcome)}</span>
+        )
+      )}
+      <span className="spacer" />
+      {session && (
+        <span className="muted" title="這次連線後執行的語句數">
+          本次連線 {status.sessionCount.toLocaleString()} {unit}
+        </span>
+      )}
+      <span className="muted" title="今天在這台電腦上用 MyDB Studio 執行的語句與指令數">
+        今日 {status.today.toLocaleString()} 句
+      </span>
+      {session && status.light === "bad" && !running ? (
+        <span className="bad" title="最近一次執行或延遲量測時發現連線已中斷">
+          連線已中斷，下次執行會自動重連
+        </span>
+      ) : session && status.mayBeDropped ? (
+        <span
+          className="warn"
+          title={`已超過伺服器 wait_timeout（${status.waitTimeout} 秒）的 80% 沒有和伺服器聯繫`}
+        >
+          {idle ?? "閒置"}，可能已被伺服器斷線，下次執行會自動重連
+        </span>
+      ) : (
+        idle && <span className="muted">{idle}</span>
       )}
       {aiEnabled && (
         <span className="muted" title="本機 AI 模型用到時才啟動，閒置一段時間後自動關閉">

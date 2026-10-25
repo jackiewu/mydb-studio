@@ -31,6 +31,7 @@ import { CONNECTION_STATE_RESET, RedisPanel } from "./components/RedisPanel";
 import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
+import { RedisServerPage } from "./components/server/RedisServerPage";
 import { ServerPage } from "./components/server/ServerPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
@@ -41,6 +42,7 @@ import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
+import { useSessionStatus } from "./status/useSessionStatus";
 import { fileName, isUnsaved, tabTitle, useTabs, type EditorTab } from "./tabs";
 import "./styles.css";
 
@@ -97,6 +99,7 @@ export default function App() {
   // SQL to open in a new tab once a connection's tabs have loaded.
   const pendingSql = useRef<string | null>(null);
   const systemDark = useSystemDark();
+  const sessionStatus = useSessionStatus(session?.session_id ?? null, running);
 
   const reload = useCallback(async () => {
     setConnections(await api.listConnections());
@@ -262,6 +265,7 @@ export default function App() {
     setRunning(true);
     try {
       const result = await api.redisExecute(session.session_id, text, record);
+      sessionStatus.record(result);
       tabs.update(key, { redisOutcome: result });
       setRedisDb(result.db);
       setRedisView("result");
@@ -269,6 +273,7 @@ export default function App() {
         result.reconnected ? { text: `指令列的連線曾中斷，已重新連線。${CONNECTION_STATE_RESET}`, kind: "info" } : null,
       );
     } catch (e) {
+      sessionStatus.recordError(e);
       setNotice({ text: describeError(e), kind: "error" });
     } finally {
       setRunning(false);
@@ -290,6 +295,7 @@ export default function App() {
         settings.max_rows,
         noLimit ? 0 : settings.auto_limit,
       );
+      sessionStatus.record(result, text);
       tabs.update(key, { outcome: result });
       setCurrentDb(result.current_database ?? null);
       setNotice(
@@ -301,6 +307,7 @@ export default function App() {
           : null,
       );
     } catch (e) {
+      sessionStatus.recordError(e);
       setNotice({ text: describeError(e), kind: "error" });
     } finally {
       setRunning(false);
@@ -573,9 +580,6 @@ export default function App() {
         {session && active && (
           <header className="topbar">
             <strong>{active.name}</strong>
-            <span className="badge">{session.info.server_version}</span>
-            {session.info.tls && <span className="badge good">TLS</span>}
-            {active.ssh && <span className="badge good">SSH</span>}
             {isRedis ? (
               <label className="db-picker" title="指令列使用的資料庫（SELECT）。左側雙擊資料庫也可以切換。">
                 資料庫
@@ -602,15 +606,13 @@ export default function App() {
             </label>
             )}
             <span className="spacer" />
-            {!isRedis && (
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
-              title="伺服器狀態、執行中的查詢、使用者與權限"
+              title={isRedis ? "伺服器狀態、用戶端、慢查詢、指令統計與設定" : "伺服器狀態、執行中的查詢、使用者與權限"}
             >
               🖥 伺服器
             </button>
-            )}
             {view === "server" ? (
               <button className="primary" onClick={() => setView("main")}>
                 ← 回到編輯器
@@ -693,7 +695,10 @@ export default function App() {
           </div>
         )}
 
-        {session && view === "server" && (
+        {session && view === "server" && isRedis && (
+          <RedisServerPage key={session.session_id} sessionId={session.session_id} confirmRisk={confirmRisk} />
+        )}
+        {session && view === "server" && !isRedis && (
           <ServerPage
             key={session.session_id}
             sessionId={session.session_id}
@@ -919,6 +924,7 @@ export default function App() {
         database={isRedis ? `db${redisDb}` : currentDb}
         running={running}
         outcome={(isRedis ? tab?.redisOutcome : tab?.outcome) ?? null}
+        status={sessionStatus.status}
         aiEnabled={settings.ai_enabled}
         problem={lastError}
         onOpenProblem={() => {

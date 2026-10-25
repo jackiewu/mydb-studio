@@ -7,6 +7,7 @@ use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
 use mydb_core::export::{ExportOptions, RowWriter};
+use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
@@ -875,6 +876,75 @@ pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Res
         AnySession::Mysql(s) => s.cancel().await,
         AnySession::Redis(s) => Ok(s.cancel()),
     }
+}
+
+/// Round trip to the server in milliseconds, for the status bar; `None`
+/// when the connection is busy. Never reconnects.
+#[tauri::command]
+pub async fn session_ping(state: State<'_, AppState>, session_id: String) -> Result<Option<f64>> {
+    state.any_session(&session_id).await?.ping().await
+}
+
+/// Seconds an idle connection is kept by the server: MySQL's
+/// `@@wait_timeout`; `None` for Redis.
+#[tauri::command]
+pub async fn idle_timeout(state: State<'_, AppState>, session_id: String) -> Result<Option<u64>> {
+    match state.any_session(&session_id).await? {
+        AnySession::Mysql(s) => s.wait_timeout().await,
+        AnySession::Redis(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn redis_server_overview(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<RedisOverview> {
+    state.redis(&session_id).await?.server_overview().await
+}
+
+#[tauri::command]
+pub async fn redis_clients(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<ClientInfo>> {
+    state.redis(&session_id).await?.clients().await
+}
+
+#[tauri::command]
+pub async fn redis_slowlog(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<SlowEntry>> {
+    state.redis(&session_id).await?.slowlog().await
+}
+
+#[tauri::command]
+pub async fn redis_command_stats(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<CommandStat>> {
+    state.redis(&session_id).await?.command_stats().await
+}
+
+/// `CONFIG GET *`, passwords shown as `****`.
+#[tauri::command]
+pub async fn redis_config(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<(String, String)>> {
+    state.redis(&session_id).await?.config().await
+}
+
+/// `CLIENT KILL ID id`, after the UI confirmed it (rule
+/// `redis_client_kill`).
+#[tauri::command]
+pub async fn redis_kill_client(
+    state: State<'_, AppState>,
+    session_id: String,
+    id: u64,
+) -> Result<bool> {
+    state.redis(&session_id).await?.kill_client(id).await
 }
 
 #[tauri::command]
