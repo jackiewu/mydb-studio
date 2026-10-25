@@ -224,6 +224,10 @@ export interface AppSettings {
   max_rows: number;
   record_by_default: boolean;
   show_system_databases: boolean;
+  /** Home page: click selects, double-click connects; off, a click connects. */
+  connect_on_double_click: boolean;
+  /** Open the problem report at startup after a crash; off, only the status bar shows ⚠. */
+  report_crash_on_start: boolean;
   schema_autocomplete: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
@@ -371,6 +375,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   max_rows: 1000,
   record_by_default: false,
   show_system_databases: false,
+  connect_on_double_click: true,
+  report_crash_on_start: false,
   schema_autocomplete: true,
   confirm_dangerous: true,
   auto_limit: 1000,
@@ -577,6 +583,7 @@ export const api = {
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),
+  aiRunning: () => invoke<boolean>("ai_running"),
   aiContext: (sessionId: string | null, sql: string, error: string | null, explain: string | null) =>
     invoke<AiContext>("ai_context", { sessionId, sql, error, explain }),
   aiChat: (context: AiContext, messages: ChatMessage[], onEvent: (e: AiEvent) => void) => {

@@ -249,6 +249,12 @@ pub fn ai_status(app: AppHandle, state: State<'_, AppState>) -> Result<mydb_core
     ))
 }
 
+/// Whether the local model is loaded, for the status bar.
+#[tauri::command]
+pub async fn ai_running(state: State<'_, AppState>) -> Result<bool> {
+    Ok(state.ai.is_running().await)
+}
+
 /// Checks SQL before it runs: risky statements and slow patterns.
 #[tauri::command]
 pub fn check_sql(sql: String) -> Vec<Finding> {

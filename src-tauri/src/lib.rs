@@ -100,6 +100,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::cancel_query,
+            commands::ai_running,
             commands::redis_databases,
             commands::redis_scan,
             commands::redis_key_info,
