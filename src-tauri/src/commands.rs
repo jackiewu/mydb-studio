@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mydb_core::admin;
-use mydb_core::ddl;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
+use mydb_core::ddl;
 use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
@@ -940,7 +940,10 @@ pub async fn admin_apply(
 }
 
 #[tauri::command]
-pub async fn schema_meta(state: State<'_, AppState>, session_id: String) -> Result<ddl::SchemaMeta> {
+pub async fn schema_meta(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ddl::SchemaMeta> {
     state.lock.ensure_unlocked()?;
     ddl::meta(&*state.session(&session_id).await?).await
 }

@@ -411,7 +411,8 @@ pub async fn meta(session: &Session) -> Result<SchemaMeta> {
     let collations = Rows(session.query_text("SHOW COLLATION").await?);
     let mut by_charset: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for r in 0..collations.len() {
-        if let (Some(c), Some(cs)) = (collations.get(r, "Collation"), collations.get(r, "Charset")) {
+        if let (Some(c), Some(cs)) = (collations.get(r, "Collation"), collations.get(r, "Charset"))
+        {
             by_charset.entry(cs).or_default().push(c);
         }
     }
@@ -470,9 +471,13 @@ pub async fn database_options(session: &Session, database: &str) -> Result<Datab
             &[database],
         )
         .await?;
-    let row = rows.rows.into_iter().next().ok_or_else(|| CoreError::Config {
-        message: format!("找不到資料庫 {database}"),
-    })?;
+    let row = rows
+        .rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| CoreError::Config {
+            message: format!("找不到資料庫 {database}"),
+        })?;
     let cell = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     Ok(DatabaseOptions {
         name: database.to_string(),
@@ -733,11 +738,8 @@ pub async fn table_design(session: &Session, database: &str, table: &str) -> Res
                 },
                 name,
                 parts: vec![part],
-                using: (!matches!(
-                    index_type.as_str(),
-                    "BTREE" | "FULLTEXT" | "SPATIAL" | ""
-                ))
-                .then_some(index_type),
+                using: (!matches!(index_type.as_str(), "BTREE" | "FULLTEXT" | "SPATIAL" | ""))
+                    .then_some(index_type),
                 comment: stats.text(r, "Index_comment"),
             }),
         }
@@ -784,8 +786,12 @@ pub async fn table_design(session: &Session, database: &str, table: &str) -> Res
             ref_database: (ref_db != database).then_some(ref_db),
             ref_table: keys.text(r, "REFERENCED_TABLE_NAME"),
             ref_columns: vec![ref_column],
-            on_delete: rule.map(|i| rules.text(i, "DELETE_RULE")).unwrap_or_default(),
-            on_update: rule.map(|i| rules.text(i, "UPDATE_RULE")).unwrap_or_default(),
+            on_delete: rule
+                .map(|i| rules.text(i, "DELETE_RULE"))
+                .unwrap_or_default(),
+            on_update: rule
+                .map(|i| rules.text(i, "UPDATE_RULE"))
+                .unwrap_or_default(),
         });
     }
 
@@ -802,7 +808,9 @@ fn read_column(cols: &Rows, r: usize, flavor: Flavor, dialect: Dialect) -> Colum
     let name = cols.text(r, "COLUMN_NAME");
     let extra = cols.text(r, "EXTRA");
     let extra_upper = extra.to_ascii_uppercase();
-    let expression = cols.get(r, "GENERATION_EXPRESSION").filter(|e| !e.is_empty());
+    let expression = cols
+        .get(r, "GENERATION_EXPRESSION")
+        .filter(|e| !e.is_empty());
     let generated = expression.filter(|_| {
         cols.text(r, "IS_GENERATED") == "ALWAYS"
             || extra_upper.contains("VIRTUAL")
@@ -954,7 +962,8 @@ pub async fn plan(session: &Session, change: &SchemaChange) -> Result<DdlPlan> {
             }
         }
         SchemaChange::DropDatabase { name } => {
-            plan.statements.push(format!("DROP DATABASE {}", ident(name)));
+            plan.statements
+                .push(format!("DROP DATABASE {}", ident(name)));
             let tables = base_tables(session, name).await.unwrap_or_default();
             plan.notes.push(format!(
                 "資料庫裡的 {} 個資料表、所有資料與預存程序都會刪除，無法復原。執行紀錄只會留下資料表清單，不會備份資料。",
@@ -993,7 +1002,8 @@ pub async fn plan(session: &Session, change: &SchemaChange) -> Result<DdlPlan> {
             original,
             definition,
         } => {
-            let saved = save_object_sql(database, *object_kind, original.as_deref(), definition, ctx)?;
+            let saved =
+                save_object_sql(database, *object_kind, original.as_deref(), definition, ctx)?;
             plan.statements = saved.statements;
             plan.notes = saved.notes;
             if let Some(orig) = original
@@ -1059,9 +1069,7 @@ pub async fn apply(session: &Session, change: &SchemaChange) -> Result<DdlRun> {
 
     match change {
         SchemaChange::AlterTable {
-            database,
-            original,
-            ..
+            database, original, ..
         } => {
             let now = table_design(session, database, &original.name).await?;
             if !same_structure(&now, original) {
@@ -1267,7 +1275,10 @@ pub fn create_table_sql(database: &str, design: &TableDesign, ctx: Ctx) -> Resul
         sql.push_str(&format!(" AUTO_INCREMENT={n}"));
     }
     if !o.comment.is_empty() {
-        sql.push_str(&format!(" COMMENT={}", string_literal(&o.comment, ctx.dialect)));
+        sql.push_str(&format!(
+            " COMMENT={}",
+            string_literal(&o.comment, ctx.dialect)
+        ));
     }
     Ok(sql)
 }
@@ -1624,7 +1635,10 @@ pub fn column_sql(c: &ColumnDesign, ctx: Ctx) -> Result<String> {
         s.push_str(" AUTO_INCREMENT");
     }
     if !c.comment.is_empty() {
-        s.push_str(&format!(" COMMENT {}", string_literal(&c.comment, ctx.dialect)));
+        s.push_str(&format!(
+            " COMMENT {}",
+            string_literal(&c.comment, ctx.dialect)
+        ));
     }
     Ok(s)
 }
@@ -1661,7 +1675,10 @@ pub fn index_sql(ix: &IndexDesign) -> Result<String> {
     }
     if !ix.comment.is_empty() {
         // Comments of indexes take no sql_mode care beyond quotes.
-        s.push_str(&format!(" COMMENT '{}'", ix.comment.replace('\'', "''").replace('\\', "\\\\")));
+        s.push_str(&format!(
+            " COMMENT '{}'",
+            ix.comment.replace('\'', "''").replace('\\', "\\\\")
+        ));
     }
     Ok(s)
 }
@@ -1674,7 +1691,11 @@ pub fn foreign_key_sql(database: &str, fk: &ForeignKeyDesign) -> Result<String> 
             .collect::<Result<Vec<_>>>()?
             .join(", "))
     };
-    let table = match fk.ref_database.as_deref().filter(|d| !d.is_empty() && *d != database) {
+    let table = match fk
+        .ref_database
+        .as_deref()
+        .filter(|d| !d.is_empty() && *d != database)
+    {
         Some(db) => qualified(db, &fk.ref_table),
         None => ident(&non_empty(&fk.ref_table, "參照的資料表")?),
     };
@@ -1708,7 +1729,11 @@ pub fn save_object_sql(
     definition: &str,
     ctx: Ctx,
 ) -> Result<DdlPlan> {
-    let def = definition.trim().trim_end_matches(';').trim_end().to_string();
+    let def = definition
+        .trim()
+        .trim_end_matches(';')
+        .trim_end()
+        .to_string();
     if def
         .lines()
         .any(|l| l.trim_start().to_ascii_uppercase().starts_with("DELIMITER"))
@@ -1763,8 +1788,10 @@ pub fn save_object_sql(
                 plan.statements.push(drop(orig));
             }
             if !same {
-                plan.notes
-                    .push(format!("名稱改了：會建立 {}，再刪除原本的 {orig}。", parsed.name));
+                plan.notes.push(format!(
+                    "名稱改了：會建立 {}，再刪除原本的 {orig}。",
+                    parsed.name
+                ));
             }
         }
     }
@@ -1796,7 +1823,9 @@ pub struct CreateHead {
 /// [AGGREGATE] {VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT} [IF NOT EXISTS] name`.
 pub fn parse_create(sql: &str) -> Result<CreateHead> {
     let mut lex = Lexer { s: sql, at: 0 };
-    let bad = || invalid("看不懂這段定義：需要以 CREATE VIEW／PROCEDURE／FUNCTION／TRIGGER／EVENT 開頭。");
+    let bad = || {
+        invalid("看不懂這段定義：需要以 CREATE VIEW／PROCEDURE／FUNCTION／TRIGGER／EVENT 開頭。")
+    };
     match lex.next() {
         Some(Tok::Word(w)) if w.eq_ignore_ascii_case("CREATE") => {}
         _ => return Err(bad()),
@@ -1885,7 +1914,11 @@ fn with_or_replace(def: &str, head: &CreateHead) -> String {
     if head.or_replace {
         return def.to_string();
     }
-    format!("{} OR REPLACE{}", &def[..head.create_end], &def[head.create_end..])
+    format!(
+        "{} OR REPLACE{}",
+        &def[..head.create_end],
+        &def[head.create_end..]
+    )
 }
 
 #[derive(Debug, PartialEq)]
@@ -2157,7 +2190,11 @@ mod tests {
     #[test]
     fn unchanged_table_needs_nothing() {
         let t = users();
-        assert!(alter_table_sql("shop", &t, &t, false, MYSQL).unwrap().is_empty());
+        assert!(
+            alter_table_sql("shop", &t, &t, false, MYSQL)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2338,14 +2375,23 @@ mod tests {
         let my = MYSQL.flavor;
         let ma = MARIA.flavor;
         assert_eq!(default_sql(None, "", "int", my, d), None);
-        assert_eq!(default_sql(Some("0"), "", "int", my, d).as_deref(), Some("0"));
+        assert_eq!(
+            default_sql(Some("0"), "", "int", my, d).as_deref(),
+            Some("0")
+        );
         assert_eq!(
             default_sql(Some("it's"), "", "varchar", my, d).as_deref(),
             Some("'it''s'")
         );
         assert_eq!(
-            default_sql(Some("CURRENT_TIMESTAMP"), "DEFAULT_GENERATED", "datetime", my, d)
-                .as_deref(),
+            default_sql(
+                Some("CURRENT_TIMESTAMP"),
+                "DEFAULT_GENERATED",
+                "datetime",
+                my,
+                d
+            )
+            .as_deref(),
             Some("CURRENT_TIMESTAMP")
         );
         assert_eq!(
@@ -2380,7 +2426,10 @@ mod tests {
             "CREATE DEFINER=`root`@`%` PROCEDURE `tidy`(IN n INT)\nBEGIN\n  SELECT n;\nEND",
         )
         .unwrap();
-        assert_eq!((h.kind, h.database, h.name.as_str()), (ObjectKind::Procedure, None, "tidy"));
+        assert_eq!(
+            (h.kind, h.database, h.name.as_str()),
+            (ObjectKind::Procedure, None, "tidy")
+        );
         let h = parse_create(
             "-- note\nCREATE OR REPLACE ALGORITHM=UNDEFINED DEFINER='a'@'localhost' SQL SECURITY DEFINER VIEW shop.v AS SELECT 1",
         )
@@ -2391,9 +2440,11 @@ mod tests {
         assert!(h.or_replace);
         let h = parse_create("create definer = current_user() trigger `t``x` before insert on t for each row set new.a = 1").unwrap();
         assert_eq!((h.kind, h.name.as_str()), (ObjectKind::Trigger, "t`x"));
-        let h = parse_create("CREATE EVENT IF NOT EXISTS e ON SCHEDULE EVERY 1 DAY DO SELECT 1").unwrap();
+        let h = parse_create("CREATE EVENT IF NOT EXISTS e ON SCHEDULE EVERY 1 DAY DO SELECT 1")
+            .unwrap();
         assert_eq!((h.kind, h.name.as_str()), (ObjectKind::Event, "e"));
-        let h = parse_create("CREATE AGGREGATE FUNCTION f() RETURNS INT BEGIN RETURN 1; END").unwrap();
+        let h =
+            parse_create("CREATE AGGREGATE FUNCTION f() RETURNS INT BEGIN RETURN 1; END").unwrap();
         assert_eq!(h.kind, ObjectKind::Function);
         assert!(parse_create("SELECT 1").is_err());
         assert!(parse_create("CREATE TABLE t (a int)").is_err());
@@ -2414,7 +2465,9 @@ mod tests {
         let ma = save_object_sql("shop", ObjectKind::Procedure, Some("TIDY"), def, MARIA).unwrap();
         assert_eq!(
             ma.statements,
-            ["CREATE OR REPLACE DEFINER=`root`@`%` PROCEDURE `tidy`()\nBEGIN\n  DELETE FROM t;\nEND"]
+            [
+                "CREATE OR REPLACE DEFINER=`root`@`%` PROCEDURE `tidy`()\nBEGIN\n  DELETE FROM t;\nEND"
+            ]
         );
         let renamed = save_object_sql(
             "shop",
@@ -2431,11 +2484,35 @@ mod tests {
                 "DROP VIEW `shop`.`old_v`"
             ]
         );
-        assert!(save_object_sql("shop", ObjectKind::View, None, "CREATE VIEW other.v AS SELECT 1", MYSQL).is_err());
-        assert!(save_object_sql("shop", ObjectKind::Function, None, "CREATE PROCEDURE p() SELECT 1", MYSQL).is_err());
         assert!(
-            save_object_sql("shop", ObjectKind::Procedure, None, "DELIMITER $$\nCREATE PROCEDURE p() SELECT 1$$", MYSQL)
-                .is_err()
+            save_object_sql(
+                "shop",
+                ObjectKind::View,
+                None,
+                "CREATE VIEW other.v AS SELECT 1",
+                MYSQL
+            )
+            .is_err()
+        );
+        assert!(
+            save_object_sql(
+                "shop",
+                ObjectKind::Function,
+                None,
+                "CREATE PROCEDURE p() SELECT 1",
+                MYSQL
+            )
+            .is_err()
+        );
+        assert!(
+            save_object_sql(
+                "shop",
+                ObjectKind::Procedure,
+                None,
+                "DELIMITER $$\nCREATE PROCEDURE p() SELECT 1$$",
+                MYSQL
+            )
+            .is_err()
         );
     }
 
@@ -2445,6 +2522,12 @@ mod tests {
             r#"{"kind":"save_object","database":"shop","object_kind":"view","original":null,"definition":"CREATE VIEW v AS SELECT 1"}"#,
         )
         .unwrap();
-        assert!(matches!(change, SchemaChange::SaveObject { object_kind: ObjectKind::View, .. }));
+        assert!(matches!(
+            change,
+            SchemaChange::SaveObject {
+                object_kind: ObjectKind::View,
+                ..
+            }
+        ));
     }
 }
