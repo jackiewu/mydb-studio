@@ -35,6 +35,7 @@ import { ServerPage } from "./components/server/ServerPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { Splitter, usePaneSize } from "./components/Splitter";
+import { StatusBar, type Problem } from "./components/StatusBar";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
@@ -74,9 +75,9 @@ export default function App() {
   // The AI drawer, and what it was last opened about.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiRequest, setAiRequest] = useState<AiRequest | null>(null);
-  // A crash or unexpected error to offer reporting, and one waiting for the user to ask.
+  // The open problem report, and a crash or unexpected error waiting behind ⚠ in the status bar.
   const [bug, setBug] = useState<BugInfo | null>(null);
-  const [lastError, setLastError] = useState<BugInfo | null>(null);
+  const [lastError, setLastError] = useState<(BugInfo & Problem) | null>(null);
   // SQL from the editor to start a new snippet with.
   const [snippetDraft, setSnippetDraft] = useState<Snippet | null>(null);
   // Database selected with USE (double-click in the tree, the picker, or SQL).
@@ -113,19 +114,21 @@ export default function App() {
 
   // Offer to report last run's crash, and catch unexpected errors in this one.
   useEffect(() => {
-    api
-      .takeCrashInfo()
-      .then((c) => {
+    Promise.all([api.takeCrashInfo(), api.getSettings()])
+      .then(([c, s]) => {
         if (!c) return;
-        setBug({
-          reason: c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。",
-          details: c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）",
-        });
+        const reason = c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。";
+        const details = c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）";
+        // Only a real crash may open the report by itself, and only when asked to;
+        // a forced quit (e.g. restarting the dev app) just shows ⚠.
+        if (c.panic && s.report_crash_on_start) setBug({ reason, details });
+        else setLastError({ reason, details, summary: reason, severity: c.panic ? "error" : "notice" });
       })
       .catch(() => {});
     const onError = (message: string, stack?: string) => {
       if (/ResizeObserver loop/.test(message)) return;
-      setLastError({ reason: "app 發生了未預期的錯誤。", details: `${message}\n${stack ?? ""}` });
+      const reason = "app 發生了未預期的錯誤。";
+      setLastError({ reason, details: `${message}\n${stack ?? ""}`, summary: reason, severity: "error" });
     };
     const onWindowError = (e: ErrorEvent) => onError(e.message, e.error?.stack);
     const onRejection = (e: PromiseRejectionEvent) => {
@@ -525,7 +528,7 @@ export default function App() {
           : { text: "執行單行", hint: "執行游標所在的那一句（淡色底的那段）" };
 
   return (
-    <div className="app">
+    <div className="app with-status">
       {session && active && (
         <aside className="sidebar" style={sidebarWidth ? { width: sidebarWidth } : undefined}>
           <Splitter
@@ -910,17 +913,20 @@ export default function App() {
           onNewTab={(sql) => tabs.add(sql)}
         />
       )}
-      {lastError && !bug && (
-        <div className="toast">
-          發生未預期的錯誤。
-          <button className="link report-link" onClick={() => (setBug(lastError), setLastError(null))}>
-            回報問題…
-          </button>
-          <button className="link" onClick={() => setLastError(null)}>
-            ✕
-          </button>
-        </div>
-      )}
+      <StatusBar
+        session={session}
+        profile={active}
+        database={isRedis ? `db${redisDb}` : currentDb}
+        running={running}
+        outcome={(isRedis ? tab?.redisOutcome : tab?.outcome) ?? null}
+        aiEnabled={settings.ai_enabled}
+        problem={lastError}
+        onOpenProblem={() => {
+          if (!lastError) return;
+          setBug({ reason: lastError.reason, details: lastError.details });
+          setLastError(null);
+        }}
+      />
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
       {dialogs}
       {risk && (

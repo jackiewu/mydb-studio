@@ -520,6 +520,15 @@ impl AiRuntime {
         }
     }
 
+    /// Whether the app's own model process is running now.
+    pub async fn is_running(&self) -> bool {
+        self.running
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|r| matches!(r.child.try_wait(), Ok(None)))
+    }
+
     pub async fn stop(&self) {
         if let Some(mut r) = self.running.lock().await.take() {
             let _ = r.child.kill().await;

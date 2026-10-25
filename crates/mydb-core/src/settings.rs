@@ -20,6 +20,9 @@ pub struct AppSettings {
     /// Home page: a click selects a connection and a double-click opens it;
     /// off, a single click opens it.
     pub connect_on_double_click: bool,
+    /// Open the problem report at startup after a crash; off, the status
+    /// bar only shows a warning sign.
+    pub report_crash_on_start: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
     /// Ask before running statements that can destroy data.
@@ -50,6 +53,7 @@ impl Default for AppSettings {
             record_by_default: false,
             show_system_databases: false,
             connect_on_double_click: true,
+            report_crash_on_start: false,
             schema_autocomplete: true,
             confirm_dangerous: true,
             auto_limit: 1000,
