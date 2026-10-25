@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyDB Studio</title>
+<meta name="description" content="MyDB Studio：macOS 上的 MySQL / MariaDB / Redis 桌面用戶端，用 Rust + Tauri 2 開發，內建本機 AI 與 MCP server。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e7490'/%3E%3Cellipse cx='16' cy='10' rx='8' ry='3' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M8 10v12c0 1.7 3.6 3 8 3s8-1.3 8-3V10M8 16c0 1.7 3.6 3 8 3s8-1.3 8-3' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --text: #1a1d23;
+  --muted: #5b6270;
+  --border: #e1e4ea;
+  --accent: #0e7490;
+  --accent-soft: #e0f2f7;
+  --code-bg: #1e2430;
+  --code-text: #e6e9ef;
+  --code-dim: #8b93a3;
+  --warn: #9a5b00;
+  --warn-soft: #fff4e0;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1f242c;
+    --text: #e6e9ef;
+    --muted: #9aa2b1;
+    --border: #2a3039;
+    --accent: #38bdf8;
+    --accent-soft: #10303d;
+    --code-bg: #0b0e12;
+    --warn: #f5b74a;
+    --warn-soft: #2e2410;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --surface: #171b21;
+  --surface-2: #1f242c;
+  --text: #e6e9ef;
+  --muted: #9aa2b1;
+  --border: #2a3039;
+  --accent: #38bdf8;
+  --accent-soft: #10303d;
+  --code-bg: #0b0e12;
+  --warn: #f5b74a;
+  --warn-soft: #2e2410;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.7 -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+}
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+code { font-size: .9em; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; padding: .05em .35em; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+/* Header */
+header.top {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+header.top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); text-decoration: none; }
+.brand svg { width: 28px; height: 28px; flex: none; }
+nav.links { margin-left: auto; display: flex; gap: 18px; align-items: center; font-size: 14px; }
+nav.links a { color: var(--muted); text-decoration: none; }
+nav.links a:hover { color: var(--text); }
+.theme-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 15px; line-height: 1;
+}
+@media (max-width: 720px) { nav.links a.opt { display: none; } }
+
+/* Hero */
+.hero { padding: 72px 0 48px; }
+.hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; }
+.eyebrow { display: inline-block; font-size: 13px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 12px; margin-bottom: 18px; }
+h1 { font-size: clamp(30px, 6vw, 50px); line-height: 1.15; margin: 0 0 16px; letter-spacing: -.01em; }
+.lead { font-size: 18px; color: var(--muted); margin: 0 0 28px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px;
+  font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid var(--border);
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+:root[data-theme="dark"] .btn.primary { color: #06202b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #06202b; } }
+.btn.ghost { background: var(--surface); color: var(--text); }
+.btn.soon { background: transparent; color: var(--muted); border-style: dashed; cursor: default; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; padding: 0; list-style: none; }
+.chips li { font-size: 13px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 10px; background: var(--surface); }
+
+/* Screenshot placeholder */
+.window { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; box-shadow: 0 20px 50px -24px rgba(0,0,0,.25); }
+.window-bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.window-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border); }
+.shot {
+  aspect-ratio: 16 / 10; display: grid; place-items: center; text-align: center; color: var(--muted);
+  background: repeating-linear-gradient(135deg, transparent 0 14px, color-mix(in srgb, var(--border) 45%, transparent) 14px 15px);
+  font-size: 14px; padding: 16px;
+}
+.shot strong { display: block; font-size: 16px; color: var(--text); margin-bottom: 4px; }
+
+/* Sections */
+section { padding: 64px 0; }
+section + section { border-top: 1px solid var(--border); }
+h2 { font-size: clamp(26px, 4vw, 32px); margin: 0 0 8px; line-height: 1.3; }
+.sub { color: var(--muted); margin: 0 0 36px; }
+
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+.card h3 { margin: 0 0 10px; font-size: 17px; display: flex; align-items: center; gap: 10px; }
+.card h3 .ic { width: 30px; height: 30px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; flex: none; }
+.card h3 .ic svg { width: 17px; height: 17px; }
+.card ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 15px; }
+.card li + li { margin-top: 4px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+.security { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.security .card { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; }
+.security .card .ic { margin-top: 2px; }
+.security .card h3 { margin-bottom: 6px; }
+
+.gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.gallery figure { margin: 0; }
+.gallery figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; text-align: center; }
+.gallery .shot { border: 1px dashed var(--border); border-radius: 10px; background-color: var(--surface); }
+
+.stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.stack .card h3 { font-size: 15px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.stack .card p { color: var(--text); font-size: 15px; }
+
+pre.term {
+  background: var(--code-bg); color: var(--code-text); border-radius: 12px; padding: 18px 20px;
+  overflow-x: auto; font-size: 14px; line-height: 1.75; margin: 0;
+}
+pre.term .c { color: var(--code-dim); }
+pre.term .p { color: #7dd3fc; user-select: none; }
+.build { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.build ol { margin: 0; padding-left: 20px; }
+.build li + li { margin-top: 10px; }
+.note {
+  margin-top: 20px; border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft); color: var(--text); border-radius: 10px; padding: 12px 16px; font-size: 15px;
+}
+.note b { color: var(--warn); }
+
+.final { text-align: center; }
+.final .cta { justify-content: center; }
+footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+
+@media (max-width: 900px) {
+  .hero-grid, .build { grid-template-columns: 1fr; gap: 32px; }
+  .cards, .gallery { grid-template-columns: repeat(2, 1fr); }
+  .stack { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .hero { padding: 44px 0 32px; }
+  section { padding: 48px 0; }
+  .cards, .gallery, .security, .stack { grid-template-columns: 1fr; }
+  br.d { display: none; }
+  .lead { font-size: 17px; }
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m3 7 9-4 9 4-9 4zM3 12l9 4 9-4M3 17l9 4 9-4"/></symbol>
+    <symbol id="i-ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M6 18l2-2M16 8l2-2"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-gh" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+  </defs>
+</svg>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><ellipse cx="16" cy="10" rx="8" ry="3" fill="none" stroke="#fff" stroke-width="2"/><path d="M8 10v12c0 1.7 3.6 3 8 3s8-1.3 8-3V10M8 16c0 1.7 3.6 3 8 3s8-1.3 8-3" fill="none" stroke="#fff" stroke-width="2"/></svg>
+      MyDB Studio
+    </a>
+    <nav class="links">
+      <a class="opt" href="#features">功能</a>
+      <a class="opt" href="#security">安全與隱私</a>
+      <a class="opt" href="#build">從原始碼建置</a>
+      <a href="https://github.com/jackiewu/mydb-studio">GitHub</a>
+      <button class="theme-btn" id="theme" type="button" aria-label="切換深淺色">◐</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">macOS 桌面用戶端 · 開發中</span>
+        <h1>MySQL、MariaDB 與 Redis，<br class="d">一個安靜好用的桌面工具。</h1>
+        <p class="lead">MyDB Studio 用 Rust + Tauri 2 打造，連線、查詢、管理伺服器都在同一個視窗；AI 只跑在你自己的電腦上，也能透過 MCP 讓 Claude 等工具安全地使用你存好的連線。</p>
+        <div class="cta">
+          <a class="btn primary" href="#build">從原始碼建置</a>
+          <a class="btn ghost" href="https://github.com/jackiewu/mydb-studio">
+            <svg width="16" height="16"><use href="#i-gh"/></svg> 在 GitHub 查看
+          </a>
+          <span class="btn soon" title="App 尚未完成公證，也還沒有發佈 Release">安裝檔即將推出</span>
+        </div>
+        <ul class="chips">
+          <li>Rust</li><li>Tauri 2</li><li>React</li><li>CodeMirror</li><li>llama.cpp</li><li>MCP</li>
+        </ul>
+      </div>
+      <div class="window" role="img" aria-label="主畫面截圖待補">
+        <div class="window-bar"><i></i><i></i><i></i></div>
+        <div class="shot"><div><strong>截圖待補</strong>主畫面：連線、SQL 編輯器與結果表格</div></div>
+      </div>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>功能</h2>
+      <p class="sub">日常查詢到伺服器管理，常用的事情都放在順手的位置。</p>
+      <div class="cards">
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-plug"/></svg></span>連線</h3>
+          <ul>
+            <li>SSL/TLS 四種模式，對應 mysql 的 <code>--ssl-mode</code></li>
+            <li>雲端預設：AWS RDS / Aurora、Google Cloud SQL、Azure；Redis 有 ElastiCache / MemoryDB、Memorystore</li>
+            <li>SSH 通道，第一次連線記住跳板機金鑰指紋，之後不符就拒絕</li>
+            <li>閒置斷線後自動重連（含 SSH 通道），保留 <code>USE</code> 的資料庫</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-code"/></svg></span>SQL 編輯器</h3>
+          <ul>
+            <li>多分頁，釘選的分頁下次開同一連線時還原</li>
+            <li>自動完成資料庫、資料表、欄位名稱</li>
+            <li>只執行選取或游標所在那句；Explain 標出全表掃描</li>
+            <li>Snippet 縮寫展開，<code>${欄位}</code> 用 Tab 依序填</li>
+            <li>「■ 停止」中止查詢；「匯出全部」串流寫進檔案</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-table"/></svg></span>結果表格</h3>
+          <ul>
+            <li>選取儲存格、整列或整欄複製</li>
+            <li>存成 TSV、CSV、JSON、INSERT SQL、Markdown</li>
+            <li>CSV 有試算表公式防護：以 <code>=</code>、<code>+</code>、<code>-</code>、<code>@</code> 開頭的文字會先加上 <code>'</code></li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-log"/></svg></span>執行紀錄與報表</h3>
+          <ul>
+            <li>記錄每次執行的 SQL、耗時、影響／回傳筆數、錯誤與結果預覽</li>
+            <li>可搜尋、篩選、加備註，帶回編輯器</li>
+            <li>勾選紀錄產生 Markdown、HTML 或 CSV 報表</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-server"/></svg></span>伺服器管理</h3>
+          <ul>
+            <li>版本、運行時間、連線數、快取命中率等重要指標</li>
+            <li>狀態與系統變數搜尋；執行中的查詢可以中止</li>
+            <li>使用者新增、改密碼、鎖定、刪除</li>
+            <li>權限勾選與預設組合，套用前先預覽 GRANT／REVOKE</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-key"/></svg></span>Redis</h3>
+          <ul>
+            <li>只用 <code>SCAN</code> 分批載入 key，依冒號前綴分組</li>
+            <li>依型別檢視值，大型集合分頁</li>
+            <li>指令列一行一個指令；<code>KEYS</code>、<code>FLUSHALL</code> 等危險指令先確認</li>
+            <li>指令寫進執行紀錄，<code>AUTH</code> 的密碼一律遮蔽</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-ai"/></svg></span>本機 AI</h3>
+          <ul>
+            <li>用 llama.cpp 在本機執行 Qwen2.5-Coder（7B 建議，3B 省記憶體）</li>
+            <li>分析錯誤、解釋 SQL、給出修改建議</li>
+            <li>不用的時候模型不會啟動，閒置後自動停止</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-link"/></svg></span>MCP server</h3>
+          <ul>
+            <li><code>mydb-studio --mcp</code> 讓 Claude 等 AI 工具用存好的 MySQL / MariaDB 連線查詢</li>
+            <li>每個連線可設定關閉、唯讀（預設）或可寫入</li>
+            <li>AI 執行的查詢都會寫進執行紀錄並加上備註</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3><span class="ic"><svg><use href="#i-lock"/></svg></span>App 鎖定</h3>
+          <ul>
+            <li>用 Touch ID 或登入密碼解鎖</li>
+            <li>閒置一段時間、螢幕鎖定或睡眠時自動鎖定</li>
+            <li>可設定開啟 app 時就先鎖定、鎖定時關閉連線</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="security">
+    <div class="wrap">
+      <h2>安全與隱私</h2>
+      <p class="sub">資料庫裡的東西很重要，所以預設值都往保守的方向走。</p>
+      <div class="security">
+        <article class="card">
+          <span class="ic"><svg width="17" height="17"><use href="#i-chip"/></svg></span>
+          <div>
+            <h3>AI 在本機執行</h3>
+            <p>預設由 app 在本機啟動 llama.cpp 的 <code>llama-server</code>，只聽 127.0.0.1，資料不會送到雲端服務。若你已經自己架好 llama.cpp 伺服器，也可以在設定裡改用它。</p>
+          </div>
+        </article>
+        <article class="card">
+          <span class="ic"><svg width="17" height="17"><use href="#i-key"/></svg></span>
+          <div>
+            <h3>密碼放在 macOS 鑰匙圈</h3>
+            <p>連線密碼、SSH 密碼與金鑰密語存在系統鑰匙圈，app 資料庫只保存不含密碼的連線設定。密碼也只會交給原本設定的主機。</p>
+          </div>
+        </article>
+        <article class="card">
+          <span class="ic"><svg width="17" height="17"><use href="#i-shield"/></svg></span>
+          <div>
+            <h3>MCP 預設唯讀</h3>
+            <p>唯讀連線只接受 SELECT、SHOW、DESCRIBE、EXPLAIN，並在唯讀交易中執行作為第二道防線。要開放寫入必須逐一連線手動設定；Redis 連線不提供給 MCP。</p>
+          </div>
+        </article>
+        <article class="card">
+          <span class="ic"><svg width="17" height="17"><use href="#i-lock"/></svg></span>
+          <div>
+            <h3>App 鎖定也鎖住 MCP</h3>
+            <p>App 鎖定時，MCP server 會拒絕所有工具呼叫，直到你用 Touch ID 或登入密碼解鎖；即使 app 異常結束，也會依設定保持鎖定。</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="screens">
+    <div class="wrap">
+      <h2>畫面</h2>
+      <p class="sub">正式截圖整理中，先保留位置。</p>
+      <div class="gallery">
+        <figure><div class="shot"><div><strong>截圖待補</strong>SQL 編輯器與 Explain</div></div><figcaption>SQL 編輯器</figcaption></figure>
+        <figure><div class="shot"><div><strong>截圖待補</strong>指標、變數與權限</div></div><figcaption>伺服器管理</figcaption></figure>
+        <figure><div class="shot"><div><strong>截圖待補</strong>key 分組與型別檢視</div></div><figcaption>Redis</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="stack">
+    <div class="wrap">
+      <h2>技術棧</h2>
+      <p class="sub">核心邏輯與 UI 分開，桌面 app 和 MCP server 共用同一套程式碼。</p>
+      <div class="stack">
+        <div class="card"><h3>核心</h3><p>Rust：連線、SSH 通道、查詢、SQL 分句、本機 SQLite（<code>crates/mydb-core</code>）</p></div>
+        <div class="card"><h3>桌面殼層</h3><p>Tauri 2，把核心包成前端可呼叫的指令（<code>src-tauri</code>）</p></div>
+        <div class="card"><h3>前端</h3><p>React + TypeScript，CodeMirror 編輯器（<code>src</code>）</p></div>
+        <div class="card"><h3>AI 與整合</h3><p>llama.cpp 本機模型；MCP（JSON-RPC over stdio，<code>crates/mydb-mcp</code>）</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="build">
+    <div class="wrap build">
+      <div>
+        <h2>從原始碼建置</h2>
+        <p class="sub" style="margin-bottom:20px">安裝檔還在準備中，現在可以自己從原始碼建置。</p>
+        <ol>
+          <li>安裝 Rust（stable）與 Node 22</li>
+          <li>依照 Tauri 文件安裝<a href="https://v2.tauri.app/start/prerequisites/">系統套件</a></li>
+          <li>取得原始碼，安裝相依套件後執行</li>
+        </ol>
+        <div class="note"><b>即將推出：</b>App 目前尚未完成 Apple 公證，也還沒有發佈 Release。正式安裝檔準備好之後會放在 GitHub Releases。</div>
+      </div>
+      <pre class="term"><span class="c"># 取得原始碼</span>
+<span class="p">$ </span>git clone https://github.com/jackiewu/mydb-studio.git
+<span class="p">$ </span>cd mydb-studio
+
+<span class="c"># 安裝相依套件</span>
+<span class="p">$ </span>npm install
+
+<span class="c"># 開發模式</span>
+<span class="p">$ </span>npm run tauri dev
+
+<span class="c"># 打包安裝檔</span>
+<span class="p">$ </span>npm run tauri build
+
+<span class="c"># 測試</span>
+<span class="p">$ </span>cargo test --workspace
+<span class="p">$ </span>npm test</pre>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap">
+      <h2>在 GitHub 上追蹤進度</h2>
+      <p class="sub">原始碼、問題回報與更新紀錄都在 GitHub。</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/jackiewu/mydb-studio">
+          <svg width="16" height="16"><use href="#i-gh"/></svg> jackiewu/mydb-studio
+        </a>
+        <a class="btn ghost" href="https://github.com/jackiewu/mydb-studio/issues">回報問題</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>MyDB Studio · 開發中</span>
+    <span>MySQL、MariaDB、Redis 為各自擁有者的商標。</span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var key = "mydb-theme";
+  try { var saved = localStorage.getItem(key); if (saved) root.setAttribute("data-theme", saved); } catch (e) {}
+  document.getElementById("theme").addEventListener("click", function () {
+    var current = root.getAttribute("data-theme") ||
+      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    var next = current === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem(key, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
