@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
-use crate::profile::ConnectionProfile;
+use crate::profile::{ConnectionKind, ConnectionProfile};
 use crate::records::{ExecutionRecord, RecordFilter};
 use crate::secrets::{self, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
@@ -104,11 +104,13 @@ ORDER BY size_mb DESC;');",
     // 7: every tab is kept while open (unpinned ones as drafts), with its file
     "ALTER TABLE pinned_tabs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE pinned_tabs ADD COLUMN file_path TEXT;",
+    // 8: records of Redis commands, told apart from SQL
+    "ALTER TABLE executions ADD COLUMN connection_kind TEXT NOT NULL DEFAULT 'mysql';",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
     started_at, duration_ms, sql, statements, statement_count, affected_rows, returned_rows,
-    error_code, error_message, failed_statement, note";
+    error_code, error_message, failed_statement, note, connection_kind";
 
 fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, String)> {
     Ok((
@@ -130,6 +132,10 @@ fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, 
             error_message: r.get(14)?,
             failed_statement: r.get(15)?,
             note: r.get(16)?,
+            connection_kind: match r.get::<_, String>(17)?.as_str() {
+                "redis" => ConnectionKind::Redis,
+                _ => ConnectionKind::Mysql,
+            },
         },
         r.get(9)?,
     ))
@@ -309,8 +315,9 @@ impl Store {
         self.db.execute(
             "INSERT INTO executions (connection_id, connection_name, server, server_version,
                 database, started_at, duration_ms, sql, statements, statement_count,
-                affected_rows, returned_rows, error_code, error_message, failed_statement, note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                affected_rows, returned_rows, error_code, error_message, failed_statement, note,
+                connection_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 rec.connection_id,
                 rec.connection_name,
@@ -328,6 +335,7 @@ impl Store {
                 rec.error_message,
                 rec.failed_statement,
                 rec.note,
+                rec.connection_kind.as_str(),
             ],
         )?;
         Ok(self.db.last_insert_rowid())
@@ -342,6 +350,10 @@ impl Store {
         if let Some(id) = non_empty(&filter.connection_id) {
             args.push(Box::new(id));
             sql += &format!(" AND connection_id = ?{}", args.len());
+        }
+        if let Some(kind) = filter.connection_kind {
+            args.push(Box::new(kind.as_str()));
+            sql += &format!(" AND connection_kind = ?{}", args.len());
         }
         if let Some(text) = non_empty(&filter.text) {
             args.push(Box::new(format!("%{}%", text.trim())));
@@ -718,6 +730,7 @@ mod tests {
             id: 0,
             connection_id: Some(name.into()),
             connection_name: name.into(),
+            connection_kind: ConnectionKind::Mysql,
             server: "u@h:3306".into(),
             server_version: "11.4".into(),
             database: None,
@@ -846,6 +859,29 @@ mod tests {
         // Report order is oldest first.
         let picked = store.get_records(&[c, a]).unwrap();
         assert_eq!(picked.iter().map(|r| r.id).collect::<Vec<_>>(), [a, c]);
+
+        let mut redis = record("cache", "2026-10-22T10:00:00+00:00", "GET k", None);
+        redis.connection_kind = ConnectionKind::Redis;
+        let d = store.insert_record(&redis).unwrap();
+        assert_eq!(
+            ids(RecordFilter {
+                connection_kind: Some(ConnectionKind::Redis),
+                ..Default::default()
+            }),
+            [d]
+        );
+        assert_eq!(
+            ids(RecordFilter {
+                connection_kind: Some(ConnectionKind::Mysql),
+                ..Default::default()
+            }),
+            [c, b, a]
+        );
+        assert_eq!(
+            store.get_record(d).unwrap().unwrap().connection_kind,
+            ConnectionKind::Redis
+        );
+        store.delete_records(&[d]).unwrap();
 
         store.delete_records(&[a, c]).unwrap();
         assert_eq!(ids(RecordFilter::default()), [b]);

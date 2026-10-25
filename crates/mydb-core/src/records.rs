@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
+use crate::profile::ConnectionKind;
 use crate::session::{ColumnInfo, ExecutionOutcome};
 
 /// Rows of each result set kept in a record, for reports.
@@ -35,6 +36,9 @@ pub struct ExecutionRecord {
     pub id: i64,
     pub connection_id: Option<String>,
     pub connection_name: String,
+    /// MySQL or Redis; records from before Redis support are MySQL.
+    #[serde(default)]
+    pub connection_kind: ConnectionKind,
     /// `user@host:port`, kept so records stay readable if the profile goes.
     pub server: String,
     pub server_version: String,
@@ -91,6 +95,7 @@ impl ExecutionRecord {
             id: 0,
             connection_id: Some(ctx.connection_id.to_string()),
             connection_name: ctx.connection_name.to_string(),
+            connection_kind: ConnectionKind::Mysql,
             server: ctx.server,
             server_version: ctx.server_version.to_string(),
             database: ctx.database,
@@ -119,6 +124,9 @@ impl ExecutionRecord {
 pub struct RecordFilter {
     #[serde(default)]
     pub connection_id: Option<String>,
+    /// Only records of this kind of connection.
+    #[serde(default)]
+    pub connection_kind: Option<ConnectionKind>,
     /// Matched against the SQL, the note and the error message.
     #[serde(default)]
     pub text: Option<String>,

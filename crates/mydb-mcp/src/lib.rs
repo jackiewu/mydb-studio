@@ -136,7 +136,7 @@ impl Server {
         let list = self.store.lock().unwrap().list_connections()?;
         let connections: Vec<Value> = list
             .iter()
-            .filter(|p| p.mcp != McpAccess::Off)
+            .filter(|p| p.mcp_allowed())
             .map(|p| {
                 json!({
                     "id": p.id,
@@ -242,7 +242,7 @@ impl Server {
                 .into_iter()
                 .find(|p| p.id == wanted || p.name.eq_ignore_ascii_case(&wanted))
         }
-        .filter(|p| p.mcp != McpAccess::Off)
+        .filter(|p| p.mcp_allowed())
         .ok_or_else(|| {
             ToolError(format!(
                 "no connection named \"{wanted}\" is available to AI tools; call list_connections"
@@ -511,6 +511,10 @@ mod tests {
         store
             .save_connection(&ConnectionProfile::new("Shop", "127.0.0.1", "reader"))
             .unwrap();
+        // The MCP server only speaks SQL: Redis stays out even when allowed.
+        let mut cache = ConnectionProfile::new_redis("cache", "127.0.0.1");
+        cache.mcp = McpAccess::ReadWrite;
+        store.save_connection(&cache).unwrap();
         Server::new(store)
     }
 
@@ -562,12 +566,14 @@ mod tests {
         // No password or other secret is listed.
         assert!(!out.to_string().contains("password"));
 
-        let out = ask(
-            &s,
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_databases","arguments":{"connection":"hidden"}}}),
-        )
-        .await;
-        assert_eq!(out["result"]["isError"], true);
+        for name in ["hidden", "cache"] {
+            let out = ask(
+                &s,
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_query","arguments":{"connection":name,"sql":"SELECT 1"}}}),
+            )
+            .await;
+            assert_eq!(out["result"]["isError"], true, "{name}");
+        }
     }
 
     #[test]

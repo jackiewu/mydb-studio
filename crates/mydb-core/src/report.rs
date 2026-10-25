@@ -203,7 +203,11 @@ fn markdown(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &st
         if !r.note.trim().is_empty() {
             out.push_str(&format!("- 備註：{}\n", r.note.trim()));
         }
-        out.push_str(&format!("\n```sql\n{}\n```\n\n", r.sql));
+        let lang = match r.connection_kind {
+            crate::ConnectionKind::Redis => "redis",
+            crate::ConnectionKind::Mysql => "sql",
+        };
+        out.push_str(&format!("\n```{lang}\n{}\n```\n\n", r.sql));
         if !r.statements.is_empty() {
             md_statement_table(&mut out, &r.statements);
         }
@@ -805,6 +809,7 @@ mod tests {
             id: 1,
             connection_id: Some("c1".into()),
             connection_name: "prod".into(),
+            connection_kind: crate::ConnectionKind::Mysql,
             server: "app@db:3306".into(),
             server_version: "10.11.6-MariaDB".into(),
             database: Some("shop".into()),

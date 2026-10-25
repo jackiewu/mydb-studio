@@ -7,11 +7,12 @@ use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
 use mydb_core::export::{ExportOptions, RowWriter};
+use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
-    AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
-    ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext, RecordFilter, Result, Session,
-    SessionInfo, Snippet, Store, TableInfo,
+    AnySession, AppSettings, ColumnDef, ConnectionKind, ConnectionProfile, CoreError,
+    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext,
+    RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -21,7 +22,7 @@ use tokio::sync::RwLock;
 pub struct AppState {
     pub store: Mutex<Store>,
     /// Open sessions by session id. One connection profile can have several.
-    pub sessions: RwLock<HashMap<String, Arc<Session>>>,
+    pub sessions: RwLock<HashMap<String, AnySession>>,
     /// The report shown in the print window, served by the `mydbreport:`
     /// protocol.
     pub print_html: Mutex<String>,
@@ -42,7 +43,7 @@ impl AppState {
             })
     }
 
-    async fn session(&self, id: &str) -> Result<Arc<Session>> {
+    async fn any_session(&self, id: &str) -> Result<AnySession> {
         self.sessions
             .read()
             .await
@@ -50,6 +51,33 @@ impl AppState {
             .cloned()
             .ok_or_else(|| CoreError::NotConnected { id: id.to_string() })
     }
+
+    /// A MySQL session; SQL commands refuse Redis ones.
+    async fn session(&self, id: &str) -> Result<Arc<Session>> {
+        match self.any_session(id).await? {
+            AnySession::Mysql(s) => Ok(s),
+            AnySession::Redis(_) => Err(CoreError::Config {
+                message: "這是 Redis 連線，不能執行 SQL。".into(),
+            }),
+        }
+    }
+
+    async fn redis(&self, id: &str) -> Result<Arc<RedisSession>> {
+        match self.any_session(id).await? {
+            AnySession::Redis(s) => Ok(s),
+            AnySession::Mysql(_) => Err(CoreError::Config {
+                message: "這不是 Redis 連線。".into(),
+            }),
+        }
+    }
+}
+
+/// Connects to the server `profile` points at, whichever kind it is.
+async fn connect(profile: &ConnectionProfile) -> Result<AnySession> {
+    Ok(match profile.kind {
+        ConnectionKind::Mysql => AnySession::Mysql(Arc::new(Session::connect(profile).await?)),
+        ConnectionKind::Redis => AnySession::Redis(Arc::new(RedisSession::connect(profile).await?)),
+    })
 }
 
 #[tauri::command]
@@ -82,7 +110,7 @@ pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
 /// Connects with an unsaved profile and disconnects again.
 #[tauri::command]
 pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> {
-    let session = Session::connect(&profile).await?;
+    let session = connect(&profile).await?;
     let info = session.info().clone();
     session.close().await?;
     Ok(info)
@@ -129,8 +157,11 @@ pub fn aws_rds_ca_path(app: AppHandle) -> Result<String> {
 pub struct OpenedSession {
     session_id: String,
     connection_id: String,
+    kind: ConnectionKind,
     info: SessionInfo,
     current_database: Option<String>,
+    /// Redis: the database selected.
+    redis_db: Option<u8>,
 }
 
 #[tauri::command]
@@ -139,9 +170,12 @@ pub async fn open_session(
     connection_id: String,
 ) -> Result<OpenedSession> {
     let mut profile = state.connection(&connection_id)?;
-    let session = Session::connect(&profile).await?;
+    let session = connect(&profile).await?;
     let info = session.info().clone();
-    let current_database = session.current_database();
+    let (current_database, redis_db) = match &session {
+        AnySession::Mysql(s) => (s.current_database(), None),
+        AnySession::Redis(s) => (None, Some(s.current_db())),
+    };
 
     // Trust on first use: remember the SSH host key for next time.
     if let (Some(ssh), Some(fp)) = (profile.ssh.as_mut(), &info.ssh_host_fingerprint)
@@ -162,12 +196,14 @@ pub async fn open_session(
         .sessions
         .write()
         .await
-        .insert(session_id.clone(), Arc::new(session));
+        .insert(session_id.clone(), session);
     Ok(OpenedSession {
         session_id,
         connection_id,
+        kind: profile.kind,
         info,
         current_database,
+        redis_db,
     })
 }
 
@@ -175,7 +211,7 @@ pub async fn open_session(
 pub async fn close_session(state: State<'_, AppState>, session_id: String) -> Result<()> {
     let session = state.sessions.write().await.remove(&session_id);
     // Only disconnect cleanly if no query is still holding the session.
-    if let Some(session) = session.and_then(|s| Arc::try_unwrap(s).ok()) {
+    if let Some(session) = session {
         session.close().await?;
     }
     Ok(())
@@ -242,7 +278,7 @@ pub async fn execute(
             RecordContext {
                 connection_id: &p.id,
                 connection_name: &p.name,
-                server: format!("{}@{}:{}", p.user, p.host, p.port),
+                server: p.server_label(),
                 server_version: &session.info().server_version,
                 database: session.current_database(),
             },
@@ -740,8 +776,15 @@ pub fn list_pinned_tabs(
 }
 
 #[tauri::command]
-pub fn save_pinned_tab(state: State<'_, AppState>, tab: PinnedTab) -> Result<PinnedTab> {
-    state.store.lock().unwrap().save_pinned_tab(&tab)
+pub fn save_pinned_tab(state: State<'_, AppState>, mut tab: PinnedTab) -> Result<PinnedTab> {
+    let store = state.store.lock().unwrap();
+    // A Redis tab may hold AUTH lines; their passwords are never kept.
+    if let Some(p) = store.get_connection(&tab.connection_id)?
+        && p.kind == ConnectionKind::Redis
+    {
+        tab.sql = kv::mask_text(&tab.sql);
+    }
+    store.save_pinned_tab(&tab)
 }
 
 #[tauri::command]
@@ -819,10 +862,98 @@ pub async fn admin_apply(
     admin::apply(&*state.session(&session_id).await?, &change).await
 }
 
-/// Stops the statement running on this session, if any.
+/// Stops the statement (or Redis command) running on this session, if any.
 #[tauri::command]
 pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<bool> {
-    state.session(&session_id).await?.cancel().await
+    match state.any_session(&session_id).await? {
+        AnySession::Mysql(s) => s.cancel().await,
+        AnySession::Redis(s) => Ok(s.cancel()),
+    }
+}
+
+#[tauri::command]
+pub async fn redis_databases(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<DbInfo>> {
+    state.redis(&session_id).await?.databases().await
+}
+
+/// The next batch of keys; only ever `SCAN`, never `KEYS`.
+#[tauri::command]
+pub async fn redis_scan(
+    state: State<'_, AppState>,
+    session_id: String,
+    db: u8,
+    cursor: String,
+    pattern: String,
+) -> Result<ScanPage> {
+    state
+        .redis(&session_id)
+        .await?
+        .scan(db, &cursor, pattern.trim())
+        .await
+}
+
+#[tauri::command]
+pub async fn redis_key_info(
+    state: State<'_, AppState>,
+    session_id: String,
+    db: u8,
+    key: KeyName,
+) -> Result<KeyInfo> {
+    state.redis(&session_id).await?.key_info(db, &key).await
+}
+
+#[tauri::command]
+pub async fn redis_read_value(
+    state: State<'_, AppState>,
+    session_id: String,
+    db: u8,
+    key: KeyName,
+    from: String,
+) -> Result<ValuePage> {
+    state
+        .redis(&session_id)
+        .await?
+        .read_value(db, &key, &from)
+        .await
+}
+
+/// Commands in `text` to confirm before running.
+#[tauri::command]
+pub fn redis_check(text: String) -> Vec<Finding> {
+    kv::command_lines(&text)
+        .into_iter()
+        .filter_map(|(line, raw)| kv::check_command(line, &kv::split_args(raw).ok()?))
+        .collect()
+}
+
+#[derive(Serialize)]
+pub struct RedisExecuteResponse {
+    #[serde(flatten)]
+    outcome: RedisOutcome,
+    record_id: Option<i64>,
+}
+
+/// Runs the command lines in `text`, after the UI confirmed any that
+/// [`redis_check`] flagged.
+#[tauri::command]
+pub async fn redis_execute(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    record: Option<bool>,
+) -> Result<RedisExecuteResponse> {
+    let session = state.redis(&session_id).await?;
+    let outcome = session.execute(&text).await;
+    let record_id = if record.unwrap_or(false) {
+        let rec = session.record(&text, &outcome);
+        Some(state.store.lock().unwrap().insert_record(&rec)?)
+    } else {
+        None
+    };
+    Ok(RedisExecuteResponse { outcome, record_id })
 }
 
 /// Runs `sql` again and writes every row to `path`, without the row limit of

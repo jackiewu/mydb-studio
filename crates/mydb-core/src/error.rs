@@ -34,6 +34,9 @@ pub enum CoreError {
     Config { message: String },
     #[error("not connected: {id}")]
     NotConnected { id: String },
+    /// An error reply from a Redis server, e.g. `WRONGTYPE …`.
+    #[error("Redis error: {message}")]
+    Redis { message: String },
     /// The user stopped the run before this statement started.
     #[error("cancelled")]
     Cancelled,
@@ -60,6 +63,27 @@ impl From<mysql_async::Error> for CoreError {
             other => CoreError::Driver {
                 message: other.to_string(),
             },
+        }
+    }
+}
+
+impl From<::redis::RedisError> for CoreError {
+    fn from(err: ::redis::RedisError) -> Self {
+        if err.is_io_error()
+            || err.is_connection_dropped()
+            || err.is_connection_refusal()
+            || err.is_timeout()
+        {
+            CoreError::Connection {
+                message: err.to_string(),
+            }
+        } else {
+            // `WRONGTYPE Operation against a key …`, as redis-cli shows it.
+            let message = match (err.code(), err.detail()) {
+                (Some(code), Some(detail)) => format!("{code} {detail}"),
+                _ => err.to_string(),
+            };
+            CoreError::Redis { message }
         }
     }
 }
