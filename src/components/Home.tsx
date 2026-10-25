@@ -2,6 +2,7 @@ import { useState } from "react";
 import { KIND_LABEL, serverLabel, type ConnectionKind, type ConnectionProfile } from "../api";
 import { openMenu } from "../contextMenu";
 import { copyText } from "../copy";
+import { homeSections } from "../home/sections";
 
 interface Props {
   connections: ConnectionProfile[];
@@ -186,18 +187,7 @@ export function Home(props: Props) {
     connections.filter((c) => (kind === "all" || kindOf(c) === kind) && matches(c, text.trim())),
     sortBy,
   );
-  const favorites = shown.filter((c) => c.favorite);
-  const others = shown.filter((c) => !c.favorite);
-  const sections: { title: string; list: ConnectionProfile[] }[] = [];
-  if (favorites.length > 0) sections.push({ title: "★ 最愛", list: favorites });
-  if (grouped === "yes") {
-    for (const k of ["mysql", "redis"] as const) {
-      const list = others.filter((c) => kindOf(c) === k);
-      if (list.length > 0) sections.push({ title: KIND_LABEL[k], list });
-    }
-  } else if (others.length > 0) {
-    sections.push({ title: favorites.length > 0 ? "其他連線" : "", list: others });
-  }
+  const sections = homeSections(shown, grouped === "yes", (k) => KIND_LABEL[k]);
 
   return (
     <div className="home">
