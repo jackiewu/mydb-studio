@@ -23,6 +23,16 @@ pub struct AppSettings {
     /// Open the problem report at startup after a crash; off, the status
     /// bar only shows a warning sign.
     pub report_crash_on_start: bool,
+    /// App lock: `off`, or `system` (Touch ID / the login password).
+    pub lock_mode: String,
+    /// Lock after this many minutes without input; 0 never.
+    pub lock_idle_minutes: u32,
+    /// Lock when the screen locks or the computer sleeps.
+    pub lock_on_sleep: bool,
+    /// Start locked.
+    pub lock_on_start: bool,
+    /// Close open connections when locking.
+    pub lock_disconnect: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
     /// Ask before running statements that can destroy data.
@@ -54,6 +64,11 @@ impl Default for AppSettings {
             show_system_databases: false,
             connect_on_double_click: true,
             report_crash_on_start: false,
+            lock_mode: "off".into(),
+            lock_idle_minutes: 15,
+            lock_on_sleep: true,
+            lock_on_start: true,
+            lock_disconnect: false,
             schema_autocomplete: true,
             confirm_dangerous: true,
             auto_limit: 1000,
@@ -67,6 +82,33 @@ impl Default for AppSettings {
         }
     }
 }
+
+impl AppSettings {
+    pub fn lock_enabled(&self) -> bool {
+        self.lock_mode != "off"
+    }
+
+    /// Whether `other` differs in any app-lock setting.
+    pub fn lock_changed(&self, other: &AppSettings) -> bool {
+        (
+            &self.lock_mode,
+            self.lock_idle_minutes,
+            self.lock_on_sleep,
+            self.lock_on_start,
+            self.lock_disconnect,
+        ) != (
+            &other.lock_mode,
+            other.lock_idle_minutes,
+            other.lock_on_sleep,
+            other.lock_on_start,
+            other.lock_disconnect,
+        )
+    }
+}
+
+/// While this file is in the app data folder the app is locked, and the
+/// MCP server (a separate process) refuses to work.
+pub const LOCK_FLAG: &str = "locked.flag";
 
 /// A reusable piece of SQL. Typing `prefix` in the editor offers `body`,
 /// where `${name}` marks a field to fill in (Tab moves to the next one).

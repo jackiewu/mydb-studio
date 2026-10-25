@@ -228,6 +228,13 @@ export interface AppSettings {
   connect_on_double_click: boolean;
   /** Open the problem report at startup after a crash; off, only the status bar shows ⚠. */
   report_crash_on_start: boolean;
+  /** App lock: "off" or "system" (Touch ID / the login password). */
+  lock_mode: string;
+  /** Lock after this many idle minutes; 0 never. */
+  lock_idle_minutes: number;
+  lock_on_sleep: boolean;
+  lock_on_start: boolean;
+  lock_disconnect: boolean;
   schema_autocomplete: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
@@ -377,6 +384,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   show_system_databases: false,
   connect_on_double_click: true,
   report_crash_on_start: false,
+  lock_mode: "off",
+  lock_idle_minutes: 15,
+  lock_on_sleep: true,
+  lock_on_start: true,
+  lock_disconnect: false,
   schema_autocomplete: true,
   confirm_dangerous: true,
   auto_limit: 1000,
@@ -584,6 +596,10 @@ export const api = {
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),
   aiRunning: () => invoke<boolean>("ai_running"),
+  lockStatus: () => invoke<{ locked: boolean; available: boolean }>("lock_status"),
+  lockApp: () => invoke<void>("lock_app"),
+  unlockApp: () => invoke<void>("unlock_app"),
+  verifyOwner: (reason: string) => invoke<void>("verify_owner", { reason }),
   aiContext: (sessionId: string | null, sql: string, error: string | null, explain: string | null) =>
     invoke<AiContext>("ai_context", { sessionId, sql, error, explain }),
   aiChat: (context: AiContext, messages: ChatMessage[], onEvent: (e: AiEvent) => void) => {

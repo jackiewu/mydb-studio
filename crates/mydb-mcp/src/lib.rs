@@ -9,6 +9,7 @@
 //! execution records with a note, so the user can see what an AI tool ran.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use mydb_core::export::json_value;
@@ -39,6 +40,8 @@ pub struct Server {
     store: Mutex<Store>,
     /// Open sessions by connection id, reused across calls.
     sessions: tokio::sync::Mutex<HashMap<String, Arc<Session>>>,
+    /// Present while MyDB Studio is locked; then every tool is refused.
+    lock_flag: Option<PathBuf>,
 }
 
 /// A tool failure, shown to the AI as the tool's result.
@@ -57,7 +60,14 @@ impl Server {
         Self {
             store: Mutex::new(store),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
+            lock_flag: None,
         }
+    }
+
+    /// Refuses all tools while `flag` exists (the app is locked).
+    pub fn with_lock_flag(mut self, flag: PathBuf) -> Self {
+        self.lock_flag = Some(flag);
+        self
     }
 
     /// Reads JSON-RPC messages, one per line, until `input` ends.
@@ -111,7 +121,11 @@ impl Server {
     async fn call(&self, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        let locked = self.lock_flag.as_ref().is_some_and(|f| f.exists());
         let result = match name {
+            _ if locked => Err(ToolError(
+                "MyDB Studio is locked. Ask the user to unlock it, then try again.".into(),
+            )),
             "list_connections" => self.list_connections(),
             "list_databases" => self.list_databases(&args).await,
             "list_tables" => self.list_tables(&args).await,
@@ -493,8 +507,11 @@ fn tools() -> Value {
 }
 
 /// Serves MCP on stdin/stdout until stdin closes.
-pub async fn serve_stdio(store: Store) -> std::io::Result<()> {
-    let server = Server::new(store);
+pub async fn serve_stdio(store: Store, lock_flag: Option<PathBuf>) -> std::io::Result<()> {
+    let mut server = Server::new(store);
+    if let Some(flag) = lock_flag {
+        server = server.with_lock_flag(flag);
+    }
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     server.serve(stdin, tokio::io::stdout()).await
 }
@@ -588,5 +605,29 @@ mod tests {
         ] {
             assert!(check_read_only(sql).is_err(), "{sql}");
         }
+    }
+
+    #[tokio::test]
+    async fn locked_app_refuses_every_tool() {
+        let dir = std::env::temp_dir().join(format!("mydb-mcp-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flag = dir.join(mydb_core::LOCK_FLAG);
+        let s = server().with_lock_flag(flag.clone());
+        let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_connections","arguments":{}}});
+
+        std::fs::write(&flag, "").unwrap();
+        let out = ask(&s, list.clone()).await;
+        assert_eq!(out["result"]["isError"], true);
+        assert!(
+            out["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("locked")
+        );
+
+        std::fs::remove_file(&flag).unwrap();
+        let out = ask(&s, list).await;
+        assert!(out["result"]["isError"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

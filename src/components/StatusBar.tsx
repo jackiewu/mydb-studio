@@ -16,6 +16,8 @@ interface Props {
   aiEnabled: boolean;
   problem: Problem | null;
   onOpenProblem: () => void;
+  /** Locks the app now; absent when the lock is off. */
+  onLock?: () => void;
 }
 
 function ms(n: number) {
@@ -64,7 +66,17 @@ function useAiRunning(enabled: boolean) {
   return enabled && up;
 }
 
-export function StatusBar({ session, profile, database, running, outcome, aiEnabled, problem, onOpenProblem }: Props) {
+export function StatusBar({
+  session,
+  profile,
+  database,
+  running,
+  outcome,
+  aiEnabled,
+  problem,
+  onOpenProblem,
+  onLock,
+}: Props) {
   const aiUp = useAiRunning(aiEnabled);
   return (
     <footer className="status-bar">
@@ -91,6 +103,11 @@ export function StatusBar({ session, profile, database, running, outcome, aiEnab
         <span className="muted" title="本機 AI 模型用到時才啟動，閒置一段時間後自動關閉">
           AI：{aiUp ? "已載入" : "未啟動"}
         </span>
+      )}
+      {onLock && (
+        <button className="status-lock" onClick={onLock} title="立即鎖定（⌘⇧L）">
+          🔒
+        </button>
       )}
       {problem && (
         <button

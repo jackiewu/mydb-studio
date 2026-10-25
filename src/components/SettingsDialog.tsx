@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type AiStatus, type AppSettings, type ConnectionProfile, type McpSetup, type ModelFile } from "../api";
+import { api, describeError, type AiStatus, type AppSettings, type ConnectionProfile, type McpSetup, type ModelFile } from "../api";
 import { copyText } from "../copy";
 import { EDITOR_THEMES } from "../editor/themes";
 
@@ -14,15 +14,18 @@ interface Props {
   initialTab?: Tab;
   /** Opens the GitHub bug report. */
   onReportBug?: () => void;
+  /** Whether this computer can confirm the owner (Touch ID / login password). */
+  lockAvailable?: boolean;
 }
 
-export type Tab = "editor" | "run" | "ai" | "mcp" | "system";
+export type Tab = "editor" | "run" | "ai" | "mcp" | "lock" | "system";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "editor", label: "編輯器", icon: "✎" },
   { id: "run", label: "執行與安全", icon: "▶" },
   { id: "ai", label: "AI 建議", icon: "✨" },
   { id: "mcp", label: "AI 工具（MCP）", icon: "⇄" },
+  { id: "lock", label: "App 鎖定", icon: "🔒" },
   { id: "system", label: "系統", icon: "⚙" },
 ];
 
@@ -316,12 +319,83 @@ function AiSection({ settings, set }: { settings: AppSettings; set: (p: Partial<
   );
 }
 
+const IDLE_CHOICES = [1, 5, 15, 30, 60, 0];
+
+/** App lock. Every change asks for Touch ID / the login password first. */
+function LockSection({
+  settings,
+  onChange,
+  available,
+}: {
+  settings: AppSettings;
+  onChange: (settings: AppSettings) => void;
+  available: boolean;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const on = settings.lock_mode !== "off";
+  const change = async (patch: Partial<AppSettings>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.verifyOwner("變更 MyDB Studio 的鎖定設定");
+      onChange({ ...settings, ...patch });
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <p className="set-intro">
+        離開座位時把 app 鎖起來：畫面整個遮住，要用 Touch ID 或這台 Mac 的登入密碼才能解鎖，不用另外記一組 PIN。
+        鎖定期間 AI 工具（MCP）也不能查詢。每次變更這裡的設定都要先驗證一次。
+      </p>
+      {!available && <p className="set-warn">這台電腦不能使用系統驗證（目前只支援 macOS），所以無法開啟 App 鎖定。</p>}
+      <fieldset disabled={busy || !available} className="plain">
+        <Row title="App 鎖定" caption="用系統驗證（Touch ID 或登入密碼）解鎖。">
+          <Switch checked={on} onChange={(v) => change({ lock_mode: v ? "system" : "off" })} />
+        </Row>
+        {on && (
+          <>
+            <Row title="閒置多久自動鎖定" caption="app 視窗裡沒有鍵盤或滑鼠操作的時間。">
+              <select
+                value={settings.lock_idle_minutes}
+                onChange={(e) => change({ lock_idle_minutes: Number(e.target.value) })}
+              >
+                {IDLE_CHOICES.map((m) => (
+                  <option key={m} value={m}>
+                    {m === 0 ? "不自動鎖定" : `${m} 分鐘`}
+                  </option>
+                ))}
+              </select>
+            </Row>
+            <Row title="螢幕鎖定或睡眠時鎖定" caption="Mac 鎖定螢幕、進入睡眠後立刻鎖定。">
+              <Switch checked={settings.lock_on_sleep} onChange={(v) => change({ lock_on_sleep: v })} />
+            </Row>
+            <Row title="打開 app 時先解鎖">
+              <Switch checked={settings.lock_on_start} onChange={(v) => change({ lock_on_start: v })} />
+            </Row>
+            <Row title="鎖定時中斷連線" caption="關掉時連線會保持，正在跑的查詢也會跑完，解鎖後回到原來的畫面。">
+              <Switch checked={settings.lock_disconnect} onChange={(v) => change({ lock_disconnect: v })} />
+            </Row>
+            <p className="set-footer">隨時可以按 ⌘⇧L（或狀態列的 🔒）立即鎖定。</p>
+          </>
+        )}
+      </fieldset>
+      {error && <p className="set-warn">{error}</p>}
+    </>
+  );
+}
+
 export function SettingsDialog({
   settings,
   onChange,
   onClose,
   onOpenSnippets,
   onReportBug,
+  lockAvailable = false,
   initialTab = "editor",
 }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -433,6 +507,8 @@ export function SettingsDialog({
         {tab === "ai" && <AiSection settings={settings} set={set} />}
 
         {tab === "mcp" && <McpSection />}
+
+        {tab === "lock" && <LockSection settings={settings} onChange={onChange} available={lockAvailable} />}
 
         {tab === "system" && (
           <>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ask } from "./ask";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -24,6 +25,7 @@ import { AiDrawer, type AiRequest } from "./components/AiDrawer";
 import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { Home } from "./components/Home";
+import { LockScreen } from "./components/LockScreen";
 import { RecordsPage } from "./components/RecordsPage";
 import { RedisEditor } from "./components/RedisEditor";
 import { RedisKeyTree } from "./components/RedisKeyTree";
@@ -153,7 +155,11 @@ export default function App() {
 
   const updateSettings = (next: AppSettings) => {
     setSettings(next);
-    api.saveSettings(next).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
+    api.saveSettings(next).catch((e) => {
+      setNotice({ text: describeError(e), kind: "error" });
+      // Show what is actually saved (e.g. a lock change that was refused).
+      api.getSettings().then(setSettings, () => {});
+    });
   };
 
   /**
@@ -235,6 +241,71 @@ export default function App() {
     setSession(null);
     setView("main");
   };
+
+  // App lock: covered until Touch ID / the login password.
+  const [locked, setLocked] = useState(false);
+  const [lockAvailable, setLockAvailable] = useState(false);
+  const lockOn = settings.lock_mode !== "off";
+  useEffect(() => {
+    api.lockStatus().then(
+      (s) => {
+        setLocked(s.locked);
+        setLockAvailable(s.available);
+      },
+      () => {},
+    );
+    const off = listen("app-locked", () => setLocked(true));
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  const lockNow = useCallback(async () => {
+    if (!lockOn) return;
+    await api.lockApp().catch(() => {});
+    setLocked(true);
+  }, [lockOn]);
+  // Lock after idle time, and after the computer slept (the timer jumps).
+  useEffect(() => {
+    if (!lockOn || locked) return;
+    let lastInput = Date.now();
+    let lastTick = Date.now();
+    const touch = () => (lastInput = Date.now());
+    const events = ["pointerdown", "pointermove", "keydown", "wheel"] as const;
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const slept = now - lastTick > 60_000;
+      lastTick = now;
+      const idleMs = settings.lock_idle_minutes * 60_000;
+      if ((slept && settings.lock_on_sleep) || (idleMs > 0 && now - lastInput >= idleMs)) lockNow();
+    }, 5000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, touch));
+      clearInterval(timer);
+    };
+  }, [lockOn, locked, settings.lock_idle_minutes, settings.lock_on_sleep, lockNow]);
+  // ⌘/Ctrl+Shift+L locks now.
+  useEffect(() => {
+    if (!lockOn) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        lockNow();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lockOn, lockNow]);
+  // Optionally let go of connections while locked.
+  const sessionId = session?.session_id;
+  useEffect(() => {
+    if (locked && settings.lock_disconnect && sessionId) {
+      api.closeSession(sessionId).catch(() => {});
+      setSession(null);
+      setView("main");
+    }
+  }, [locked, settings.lock_disconnect, sessionId]);
+  const lockScreen = locked && <LockScreen onUnlocked={() => setLocked(false)} />;
 
   // Risky statements waiting for the user's go-ahead.
   const [risk, setRisk] = useState<{ findings: Finding[]; answer: (run: boolean) => void } | null>(null);
@@ -478,6 +549,7 @@ export default function App() {
         <SettingsDialog
           initialTab={settingsTab}
           settings={settings}
+          lockAvailable={lockAvailable}
           onChange={updateSettings}
           onClose={() => setDialog(null)}
           onOpenSnippets={() => (setSnippetDraft(null), setDialog("snippets"))}
@@ -510,6 +582,7 @@ export default function App() {
       <div className="app">
         <RecordsPage connections={connections} onBack={() => setView("main")} onOpenInEditor={openRecordInEditor} />
         {dialogs}
+        {lockScreen}
       </div>
     );
   }
@@ -921,6 +994,7 @@ export default function App() {
         outcome={(isRedis ? tab?.redisOutcome : tab?.outcome) ?? null}
         aiEnabled={settings.ai_enabled}
         problem={lastError}
+        onLock={lockOn ? lockNow : undefined}
         onOpenProblem={() => {
           if (!lastError) return;
           setBug({ reason: lastError.reason, details: lastError.details });
@@ -928,6 +1002,7 @@ export default function App() {
         }}
       />
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
+      {lockScreen}
       {dialogs}
       {risk && (
         <RiskDialog

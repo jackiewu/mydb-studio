@@ -28,6 +28,7 @@ pub struct AppState {
     pub print_html: Mutex<String>,
     /// The local AI model, started on demand.
     pub ai: mydb_core::ai::AiRuntime,
+    pub lock: crate::lock::LockState,
     /// How the previous run ended, until the UI asks.
     pub crash: Mutex<Option<CrashInfo>>,
 }
@@ -755,7 +756,11 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
-    state.store.lock().unwrap().save_settings(&settings)
+    let store = state.store.lock().unwrap();
+    state
+        .lock
+        .check_settings_change(&store.get_settings()?, &settings)?;
+    store.save_settings(&settings)
 }
 
 #[tauri::command]
