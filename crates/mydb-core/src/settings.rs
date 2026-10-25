@@ -110,6 +110,10 @@ impl AppSettings {
 /// MCP server (a separate process) refuses to work.
 pub const LOCK_FLAG: &str = "locked.flag";
 
+/// Holds the app's process id while it runs; left behind when it doesn't
+/// exit normally (a crash or force quit).
+pub const RUNNING_FLAG: &str = "running.flag";
+
 /// A reusable piece of SQL. Typing `prefix` in the editor offers `body`,
 /// where `${name}` marks a field to fill in (Tab moves to the next one).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

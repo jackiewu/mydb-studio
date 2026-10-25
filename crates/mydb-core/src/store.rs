@@ -8,7 +8,7 @@ use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
 use crate::profile::{ConnectionKind, ConnectionProfile};
 use crate::records::{ExecutionRecord, RecordFilter};
-use crate::secrets::{self, SecretVault, Secrets};
+use crate::secrets::{self, ConnectionSecrets, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
@@ -145,6 +145,9 @@ pub struct Store {
     db: Connection,
     /// Where passwords go instead of `db`, when set.
     secrets: Option<std::cell::RefCell<Secrets>>,
+    /// Whether secrets saved before they knew their destination may be
+    /// used (and then bound); see [`Store::trust_unbound_secrets`].
+    unbound_ok: bool,
 }
 
 impl Store {
@@ -162,7 +165,11 @@ impl Store {
         // Overwrite deleted content, so a replaced profile (or anything
         // else removed) doesn't linger in free pages.
         db.pragma_update(None, "secure_delete", "ON")?;
-        let mut store = Self { db, secrets: None };
+        let mut store = Self {
+            db,
+            secrets: None,
+            unbound_ok: false,
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -179,10 +186,23 @@ impl Store {
         let mut moved = false;
         for json in saved {
             let profile: ConnectionProfile = serde_json::from_str(&json)?;
-            if !secrets::strip(&profile).1.is_empty() {
-                self.save_connection(&profile)?;
-                moved = true;
+            let (stripped, found) = secrets::strip(&profile);
+            if found.is_empty() {
+                continue;
             }
+            // Passwords in the file for somewhere other than the ones in the
+            // vault were put there behind the app's back: drop them rather
+            // than let them replace the vault's.
+            let kept = self
+                .secrets
+                .as_ref()
+                .and_then(|s| s.borrow_mut().get(&profile.id));
+            if kept.is_some_and(|k| k.destination != found.destination) {
+                self.write_connection(&stripped)?;
+            } else {
+                self.save_connection(&profile)?;
+            }
+            moved = true;
         }
         // Rewrite the file once so passwords saved before the vault are
         // gone from free pages and the WAL too.
@@ -205,13 +225,37 @@ impl Store {
         Ok(())
     }
 
-    /// `profile` with its passwords from the vault.
+    /// Lets secrets saved before they knew their destination be used, binding
+    /// them to the profile on first use. Only the app does this, where the
+    /// owner sees which server a connection points at; the MCP server
+    /// leaves them alone, so a changed database can't claim them.
+    pub fn trust_unbound_secrets(&mut self) {
+        self.unbound_ok = true;
+    }
+
+    /// `profile` with its passwords from the vault, if they were saved for
+    /// the servers it points at.
     fn with_secrets(&self, mut profile: ConnectionProfile) -> ConnectionProfile {
-        if let Some(s) = &self.secrets
-            && let Some(found) = s.borrow_mut().get(&profile.id)
-        {
-            secrets::fill(&mut profile, &found);
+        let Some(s) = &self.secrets else {
+            return profile;
+        };
+        let mut s = s.borrow_mut();
+        let Some(found) = s.get(&profile.id) else {
+            return profile;
+        };
+        if !found.fits(&profile, self.unbound_ok) {
+            return profile;
         }
+        let here = secrets::destination(&profile);
+        if found.destination.as_ref() != Some(&here) {
+            // Saved before secrets knew their whole destination: bind them now.
+            let bound = ConnectionSecrets {
+                destination: Some(here),
+                ..found.clone()
+            };
+            s.put(&profile.id, bound);
+        }
+        secrets::fill(&mut profile, &found);
         profile
     }
 
@@ -293,6 +337,11 @@ impl Store {
             Some(s) if s.borrow_mut().put(&profile.id, found) => &stripped,
             _ => profile,
         };
+        self.write_connection(profile)
+    }
+
+    /// Writes a profile to the file as it is.
+    fn write_connection(&self, profile: &ConnectionProfile) -> Result<()> {
         self.db.execute(
             "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET
@@ -442,7 +491,7 @@ impl Store {
         self.db
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
         if let Some(s) = &self.secrets {
-            s.borrow_mut().put(id, Default::default());
+            s.borrow_mut().remove(id);
         }
         Ok(())
     }
@@ -965,6 +1014,131 @@ mod tests {
 
         store.delete_snippet(mine.id).unwrap();
         assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn passwords_only_go_where_they_were_saved_for() {
+        let mut store = Store::open_in_memory().unwrap();
+        let vault = crate::secrets::MemoryVault::default();
+        store.use_vault(Box::new(vault.clone())).unwrap();
+        let mut p = ConnectionProfile::new("prod", "db.example", "app");
+        p.password = Some("s3cret".into());
+        p.ssl.mode = crate::profile::SslMode::Required;
+        store.save_connection(&p).unwrap();
+
+        // The database is changed behind the app's back to point elsewhere.
+        let mut planted = p.clone();
+        planted.host = "attacker.example".into();
+        planted.password = None;
+        store
+            .db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&planted).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+
+        // Turning TLS off or clearing the SSH pin counts as elsewhere too.
+        let mut weaker = p.clone();
+        weaker.ssl.mode = crate::profile::SslMode::Disabled;
+        weaker.password = None;
+        store
+            .db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&weaker).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+        // Saving that profile (it has no password) keeps the real one.
+        store.save_connection(&weaker).unwrap();
+        assert!(
+            vault
+                .0
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap()
+                .contains("s3cret")
+        );
+
+        // Secrets saved before they knew their destination: the MCP server
+        // leaves them alone; the app uses them and binds them.
+        *vault.0.lock().unwrap() = Some(format!(r#"{{"{}":{{"password":"old"}}}}"#, p.id));
+        let mut mcp = Store::open_in_memory().unwrap();
+        mcp.save_connection(&planted).unwrap();
+        mcp.use_vault(Box::new(vault.clone())).unwrap();
+        assert_eq!(mcp.get_connection(&p.id).unwrap().unwrap().password, None);
+        let mut app = Store::open_in_memory().unwrap();
+        app.save_connection(&ConnectionProfile {
+            password: None,
+            ..p.clone()
+        })
+        .unwrap();
+        app.use_vault(Box::new(vault.clone())).unwrap();
+        app.trust_unbound_secrets();
+        assert_eq!(
+            app.get_connection(&p.id)
+                .unwrap()
+                .unwrap()
+                .password
+                .as_deref(),
+            Some("old")
+        );
+        assert!(
+            vault
+                .0
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap()
+                .contains("db.example")
+        );
+
+        // A different CA file counts as elsewhere.
+        let mut other_ca = p.clone();
+        other_ca.ssl.ca_path = Some("/tmp/evil-ca.pem".into());
+        other_ca.password = None;
+        app.db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&other_ca).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(app.get_connection(&p.id).unwrap().unwrap().password, None);
+
+        // Saving a profile without passwords leaves unbound ones alone.
+        *vault.0.lock().unwrap() = Some(format!(r#"{{"{}":{{"password":"old"}}}}"#, p.id));
+        let mut mcp = Store::open_in_memory().unwrap();
+        mcp.use_vault(Box::new(vault.clone())).unwrap();
+        mcp.save_connection(&planted).unwrap();
+        assert!(vault.0.lock().unwrap().as_deref().unwrap().contains("old"));
+
+        // A password planted in the file for elsewhere doesn't replace the
+        // vault's when the vault is opened.
+        let mut real = Store::open_in_memory().unwrap();
+        real.use_vault(Box::new(vault.clone())).unwrap();
+        real.trust_unbound_secrets();
+        real.save_connection(&p).unwrap();
+        let mut dummy = planted.clone();
+        dummy.password = Some("planted".into());
+        let mut again = Store::open_in_memory().unwrap();
+        again
+            .db
+            .execute(
+                "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)",
+                params![p.id, p.name, serde_json::to_string(&dummy).unwrap()],
+            )
+            .unwrap();
+        again.use_vault(Box::new(vault.clone())).unwrap();
+        let kept = vault.0.lock().unwrap().clone().unwrap();
+        assert!(kept.contains("s3cret") && !kept.contains("planted"));
+        let json: String = again
+            .db
+            .query_row("SELECT profile FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(!json.contains("planted"));
     }
 
     #[test]

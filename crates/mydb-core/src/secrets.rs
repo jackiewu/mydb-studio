@@ -27,9 +27,68 @@ pub struct ConnectionSecrets {
     pub ssh_password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_passphrase: Option<String>,
+    /// Where these secrets were saved for (see [`destination`]). They are
+    /// only handed to a profile that still points there, so a changed (or
+    /// planted) database can't send them to another server. `None` for
+    /// secrets saved before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+}
+
+/// The servers a profile's secrets go to, and how they are checked: the
+/// database (or Redis) server and its TLS mode, and the SSH jump host and
+/// its pinned key. Turning TLS off or clearing the pin changes it too.
+pub fn destination(profile: &ConnectionProfile) -> String {
+    describe(profile, true)
+}
+
+fn describe(profile: &ConnectionProfile, with_tls_files: bool) -> String {
+    let at = |user: &str, host: &str, port: u16| {
+        format!("{}@{}:{port}", user.trim(), host.trim().to_lowercase())
+    };
+    let path = |p: &Option<String>| {
+        p.as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("-")
+            .to_string()
+    };
+    let mut d = format!(
+        "{:?} {} tls={:?}",
+        profile.kind,
+        at(&profile.user, &profile.host, profile.port),
+        profile.ssl.mode,
+    );
+    if with_tls_files {
+        d.push_str(&format!(
+            " ca={} cert={} key={}",
+            path(&profile.ssl.ca_path),
+            path(&profile.ssl.cert_path),
+            path(&profile.ssl.key_path),
+        ));
+    }
+    if let Some(ssh) = &profile.ssh {
+        d.push_str(&format!(
+            " via {} key={}",
+            at(&ssh.user, &ssh.host, ssh.port),
+            ssh.known_host_fingerprint.as_deref().unwrap_or("-")
+        ));
+    }
+    d
 }
 
 impl ConnectionSecrets {
+    /// Whether these may be given to `profile`. Secrets saved before they
+    /// knew their whole destination fit only when `unbound_ok`.
+    pub fn fits(&self, profile: &ConnectionProfile, unbound_ok: bool) -> bool {
+        match &self.destination {
+            Some(d) if *d == destination(profile) => true,
+            // Bound before the TLS files were part of the destination.
+            Some(d) => unbound_ok && *d == describe(profile, false),
+            None => unbound_ok,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.password.is_none() && self.ssh_password.is_none() && self.ssh_passphrase.is_none()
     }
@@ -44,6 +103,7 @@ pub fn strip(profile: &ConnectionProfile) -> (ConnectionProfile, ConnectionSecre
     let mut p = profile.clone();
     let mut s = ConnectionSecrets {
         password: p.password.take().filter(|x| !x.is_empty()),
+        destination: Some(destination(profile)),
         ..Default::default()
     };
     if let Some(ssh) = p.ssh.as_mut() {
@@ -122,12 +182,31 @@ impl Secrets {
         self.map()?.get(id).cloned()
     }
 
+    /// Forgets the secrets of `id` (a deleted connection).
+    pub fn remove(&mut self, id: &str) {
+        let Some(map) = self.map() else { return };
+        if map.remove(id).is_some() {
+            let data = serde_json::to_string(&*map).unwrap_or_default();
+            let _ = self.vault.save(&data);
+        }
+    }
+
     /// Keeps `secrets` for `id` (removing them when empty). False when the
     /// vault can't be used, so the caller keeps them itself.
     pub fn put(&mut self, id: &str, secrets: ConnectionSecrets) -> bool {
         let Some(map) = self.map() else { return false };
         let before = map.get(id).cloned();
         if before.as_ref() == Some(&secrets) || (before.is_none() && secrets.is_empty()) {
+            return true;
+        }
+        // A profile saved without passwords because the saved ones are for
+        // somewhere else (it was changed behind the app's back), or were
+        // never bound to it, mustn't wipe them.
+        if secrets.is_empty()
+            && before
+                .as_ref()
+                .is_some_and(|b| b.destination != secrets.destination)
+        {
             return true;
         }
         if secrets.is_empty() {

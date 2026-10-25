@@ -11,6 +11,7 @@ pub mod profile;
 pub mod records;
 pub mod redis;
 pub mod report;
+pub mod running;
 pub mod secrets;
 pub mod session;
 pub mod settings;
@@ -29,6 +30,6 @@ pub use session::{
     AnySession, ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
     StatementResult, TableInfo, TextRows,
 };
-pub use settings::{AppSettings, LOCK_FLAG, PinnedTab, Snippet};
+pub use settings::{AppSettings, LOCK_FLAG, PinnedTab, RUNNING_FLAG, Snippet};
 pub use split::split_statements;
 pub use store::Store;

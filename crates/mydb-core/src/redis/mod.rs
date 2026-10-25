@@ -210,7 +210,7 @@ impl RedisSession {
         let mut link = open_link(profile, db).await?;
         let info = server_info(profile, &mut link).await?;
         Ok(Self {
-            profile: profile.clone(),
+            profile: profile.with_pinned_host_key(info.ssh_host_fingerprint.as_deref()),
             info,
             link: Mutex::new(Some(link)),
             cmd: Mutex::new(None),

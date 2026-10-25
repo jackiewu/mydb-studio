@@ -90,6 +90,7 @@ pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionProf
 /// One connection with its passwords, for editing.
 #[tauri::command]
 pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<ConnectionProfile> {
+    state.lock.ensure_unlocked()?;
     state.connection(&id)
 }
 
@@ -98,6 +99,7 @@ pub fn save_connection(
     state: State<'_, AppState>,
     mut profile: ConnectionProfile,
 ) -> Result<ConnectionProfile> {
+    state.lock.ensure_unlocked()?;
     if profile.id.is_empty() {
         profile.id = uuid_v4();
     }
@@ -107,17 +109,23 @@ pub fn save_connection(
 
 #[tauri::command]
 pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().set_favorite(&id, favorite)
 }
 
 #[tauri::command]
 pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_connection(&id)
 }
 
 /// Connects with an unsaved profile and disconnects again.
 #[tauri::command]
-pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> {
+pub async fn test_connection(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> Result<SessionInfo> {
+    state.lock.ensure_unlocked()?;
     let session = connect(&profile).await?;
     let info = session.info().clone();
     session.close().await?;
@@ -127,7 +135,11 @@ pub async fn test_connection(profile: ConnectionProfile) -> Result<SessionInfo> 
 /// Database names on the server `profile` points at, for the form's
 /// default database list. Connects just for this.
 #[tauri::command]
-pub async fn list_server_databases(profile: ConnectionProfile) -> Result<Vec<String>> {
+pub async fn list_server_databases(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     let profile = ConnectionProfile {
         database: None,
         ..profile
@@ -177,6 +189,7 @@ pub async fn open_session(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<OpenedSession> {
+    state.lock.ensure_unlocked()?;
     let mut profile = state.connection(&connection_id)?;
     let session = connect(&profile).await?;
     let info = session.info().clone();
@@ -278,6 +291,7 @@ pub async fn execute(
     auto_limit: Option<u64>,
     record: Option<bool>,
 ) -> Result<ExecuteResponse> {
+    state.lock.ensure_unlocked()?;
     let session = state.session(&session_id).await?;
     let outcome = session
         .execute_limited(
@@ -326,21 +340,25 @@ pub fn list_records(
     state: State<'_, AppState>,
     filter: RecordFilter,
 ) -> Result<Vec<ExecutionRecord>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_records(&filter)
 }
 
 #[tauri::command]
 pub fn get_record(state: State<'_, AppState>, id: i64) -> Result<Option<ExecutionRecord>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().get_record(id)
 }
 
 #[tauri::command]
 pub fn set_record_note(state: State<'_, AppState>, id: i64, note: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().set_record_note(id, &note)
 }
 
 #[tauri::command]
 pub fn delete_records(state: State<'_, AppState>, ids: Vec<i64>) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_records(&ids)
 }
 
@@ -350,6 +368,7 @@ pub fn generate_report(
     ids: Vec<i64>,
     options: ReportOptions,
 ) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     let mut records = store.get_records(&ids)?;
     if options.hide_connection {
@@ -367,6 +386,7 @@ pub fn generate_report(
 /// every platform offers saving as PDF.
 #[tauri::command]
 pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     *state.print_html.lock().unwrap() = html;
     let failed = |e: tauri::Error| CoreError::Config {
         message: format!("無法開啟列印視窗：{e}"),
@@ -403,7 +423,8 @@ const PRINT_URL: &str = "mydbreport://localhost/";
 
 /// Writes a generated report to the path the user picked in the save dialog.
 #[tauri::command]
-pub fn save_text_file(path: String, contents: String) -> Result<()> {
+pub fn save_text_file(state: State<'_, AppState>, path: String, contents: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     std::fs::write(&path, contents)?;
     Ok(())
 }
@@ -510,7 +531,8 @@ pub fn open_bug_report(title: String, body: String) -> Result<()> {
 
 /// Reads a text file the user picked in the open dialog.
 #[tauri::command]
-pub fn read_text_file(path: String) -> Result<String> {
+pub fn read_text_file(state: State<'_, AppState>, path: String) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let bytes = std::fs::read(&path)?;
     if bytes.len() > 20 * 1024 * 1024 {
         return Err(CoreError::Config {
@@ -554,6 +576,7 @@ pub async fn ai_context(
     error: Option<String>,
     explain: Option<String>,
 ) -> Result<AiContext> {
+    state.lock.ensure_unlocked()?;
     let mut ctx = AiContext {
         sql: sql.clone(),
         error,
@@ -658,6 +681,7 @@ pub async fn ai_chat(
     messages: Vec<ChatMessage>,
     on_event: Channel<AiEvent>,
 ) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let settings = state.store.lock().unwrap().get_settings()?;
     if !settings.ai_enabled {
         return Err(CoreError::Config {
@@ -689,21 +713,25 @@ pub fn ai_cancel(state: State<'_, AppState>) {
 
 #[tauri::command]
 pub fn save_ai_chat(state: State<'_, AppState>, chat: AiChat) -> Result<i64> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().save_ai_chat(&chat)
 }
 
 #[tauri::command]
 pub fn list_ai_chats(state: State<'_, AppState>) -> Result<Vec<AiChatSummary>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_ai_chats(300)
 }
 
 #[tauri::command]
 pub fn get_ai_chat(state: State<'_, AppState>, id: i64) -> Result<Option<AiChat>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().get_ai_chat(id)
 }
 
 #[tauri::command]
 pub fn delete_ai_chat(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_ai_chat(id)
 }
 
@@ -712,6 +740,7 @@ pub async fn list_databases(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<DatabaseInfo>> {
+    state.lock.ensure_unlocked()?;
     state.session(&session_id).await?.list_databases().await
 }
 
@@ -721,6 +750,7 @@ pub async fn list_tables(
     session_id: String,
     database: String,
 ) -> Result<Vec<TableInfo>> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -734,6 +764,7 @@ pub async fn use_database(
     session_id: String,
     database: String,
 ) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -747,6 +778,7 @@ pub async fn list_all_tables(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
+    state.lock.ensure_unlocked()?;
     state.session(&session_id).await?.list_all_tables().await
 }
 
@@ -756,6 +788,7 @@ pub async fn list_columns(
     session_id: String,
     database: String,
 ) -> Result<Vec<ColumnDef>> {
+    state.lock.ensure_unlocked()?;
     state
         .session(&session_id)
         .await?
@@ -770,6 +803,8 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
+    // Settings include where AI prompts go and what program runs the model.
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     state
         .lock
@@ -779,16 +814,19 @@ pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Resul
 
 #[tauri::command]
 pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_snippets()
 }
 
 #[tauri::command]
 pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snippet> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().save_snippet(&snippet)
 }
 
 #[tauri::command]
 pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_snippet(id)
 }
 
@@ -797,15 +835,20 @@ pub fn list_pinned_tabs(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<PinnedTab>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_pinned_tabs(&connection_id)
 }
 
 #[tauri::command]
 pub fn save_pinned_tab(state: State<'_, AppState>, mut tab: PinnedTab) -> Result<PinnedTab> {
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     // A Redis tab may hold AUTH lines; their passwords are never kept.
-    if let Some(p) = store.get_connection(&tab.connection_id)?
-        && p.kind == ConnectionKind::Redis
+    // (Only the kind is needed, so the passwords stay where they are.)
+    if store
+        .list_connections()?
+        .iter()
+        .any(|p| p.id == tab.connection_id && p.kind == ConnectionKind::Redis)
     {
         tab.sql = kv::mask_text(&tab.sql);
     }
@@ -814,11 +857,13 @@ pub fn save_pinned_tab(state: State<'_, AppState>, mut tab: PinnedTab) -> Result
 
 #[tauri::command]
 pub fn delete_pinned_tab(state: State<'_, AppState>, id: i64) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_pinned_tab(id)
 }
 
 #[tauri::command]
 pub fn delete_draft_tabs(state: State<'_, AppState>, connection_id: String) -> Result<()> {
+    state.lock.ensure_unlocked()?;
     state
         .store
         .lock()
@@ -835,6 +880,7 @@ pub async fn server_overview(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<admin::ServerOverview> {
+    state.lock.ensure_unlocked()?;
     admin::overview(&*state.session(&session_id).await?).await
 }
 
@@ -843,6 +889,7 @@ pub async fn server_processes(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<admin::ProcessInfo>> {
+    state.lock.ensure_unlocked()?;
     admin::processes(&*state.session(&session_id).await?).await
 }
 
@@ -851,6 +898,7 @@ pub async fn server_users(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<admin::UserAccount>> {
+    state.lock.ensure_unlocked()?;
     admin::users(&*state.session(&session_id).await?).await
 }
 
@@ -861,6 +909,7 @@ pub async fn user_grants(
     user: String,
     host: String,
 ) -> Result<Vec<admin::Grant>> {
+    state.lock.ensure_unlocked()?;
     admin::grants(&*state.session(&session_id).await?, &user, &host).await
 }
 
@@ -872,6 +921,7 @@ pub async fn admin_plan(
     session_id: String,
     change: admin::AdminChange,
 ) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     let session = state.session(&session_id).await?;
     admin::plan(&change, admin::dialect(&session).await?, true)
 }
@@ -884,6 +934,7 @@ pub async fn admin_apply(
     session_id: String,
     change: admin::AdminChange,
 ) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     admin::apply(&*state.session(&session_id).await?, &change).await
 }
 
@@ -918,6 +969,7 @@ pub async fn redis_server_overview(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<RedisOverview> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.server_overview().await
 }
 
@@ -926,6 +978,7 @@ pub async fn redis_clients(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ClientInfo>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.clients().await
 }
 
@@ -934,6 +987,7 @@ pub async fn redis_slowlog(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<SlowEntry>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.slowlog().await
 }
 
@@ -942,6 +996,7 @@ pub async fn redis_command_stats(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<CommandStat>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.command_stats().await
 }
 
@@ -951,6 +1006,7 @@ pub async fn redis_config(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.config().await
 }
 
@@ -962,6 +1018,7 @@ pub async fn redis_kill_client(
     session_id: String,
     id: u64,
 ) -> Result<bool> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.kill_client(id).await
 }
 
@@ -970,6 +1027,7 @@ pub async fn redis_databases(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<DbInfo>> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.databases().await
 }
 
@@ -982,6 +1040,7 @@ pub async fn redis_scan(
     cursor: String,
     pattern: String,
 ) -> Result<ScanPage> {
+    state.lock.ensure_unlocked()?;
     state
         .redis(&session_id)
         .await?
@@ -996,6 +1055,7 @@ pub async fn redis_key_info(
     db: u8,
     key: KeyName,
 ) -> Result<KeyInfo> {
+    state.lock.ensure_unlocked()?;
     state.redis(&session_id).await?.key_info(db, &key).await
 }
 
@@ -1007,6 +1067,7 @@ pub async fn redis_read_value(
     key: KeyName,
     from: String,
 ) -> Result<ValuePage> {
+    state.lock.ensure_unlocked()?;
     state
         .redis(&session_id)
         .await?
@@ -1039,6 +1100,7 @@ pub async fn redis_execute(
     text: String,
     record: Option<bool>,
 ) -> Result<RedisExecuteResponse> {
+    state.lock.ensure_unlocked()?;
     let session = state.redis(&session_id).await?;
     let outcome = session.execute(&text).await;
     let record_id = if record.unwrap_or(false) {
@@ -1062,6 +1124,7 @@ pub async fn export_query(
     options: ExportOptions,
     path: String,
 ) -> Result<u64> {
+    state.lock.ensure_unlocked()?;
     if !advisor::is_plain_read(&sql) {
         return Err(CoreError::Config {
             message: "只能匯出查詢（SELECT、SHOW 等）的結果，這句會修改資料或鎖定資料列。".into(),

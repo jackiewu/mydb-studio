@@ -636,6 +636,7 @@ fn ipv4_len(b: &[u8]) -> Option<usize> {
 // ---------- CSV ----------
 
 fn csv_field(s: &str) -> String {
+    let s = &crate::export::defuse_formula(s);
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {

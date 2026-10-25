@@ -21,15 +21,23 @@ export interface Block {
 // Driver type names (see session.rs) that hold numbers and need no quotes.
 const NUMERIC = new Set(["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "FLOAT", "DOUBLE", "DECIMAL", "NEWDECIMAL", "YEAR", "BIT"]);
 
+/**
+ * Text that starts like a formula (=, +, -, @, tab, CR) gets a leading ', so a
+ * spreadsheet shows it instead of running it. Numbers such as -5 are left alone.
+ */
+export function defuseFormula(s: string) {
+  return /^[=+\-@\t\r]/.test(s) && Number.isNaN(Number(s.trim())) ? `'${s}` : s;
+}
+
 function tsvCell(v: Cell) {
   if (v === null) return "NULL";
   // Tabs and newlines would break the grid when pasted.
-  return String(v).replace(/[\t\r\n]+/g, " ");
+  return defuseFormula(String(v)).replace(/[\t\r\n]+/g, " ");
 }
 
 function csvCell(v: Cell) {
   if (v === null) return "";
-  const s = String(v);
+  const s = defuseFormula(String(v));
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -68,7 +76,7 @@ export function formatBlock(block: Block, format: CopyFormat, header: boolean, t
   switch (format) {
     case "tsv": {
       const lines = rows.map((r) => r.map(tsvCell).join("\t"));
-      return (header ? [names.join("\t"), ...lines] : lines).join("\n");
+      return (header ? [names.map((n) => tsvCell(n)).join("\t"), ...lines] : lines).join("\n");
     }
     case "csv": {
       const lines = rows.map((r) => r.map(csvCell).join(","));

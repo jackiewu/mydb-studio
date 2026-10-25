@@ -13,8 +13,7 @@ use tauri::Manager;
 
 pub use commands::AppState;
 
-/// Present while the app runs; left behind when it doesn't exit normally.
-const RUNNING_FLAG: &str = "running.flag";
+use mydb_core::RUNNING_FLAG;
 const PANIC_LOG: &str = "last-panic.txt";
 
 /// Finds how the previous run ended, and sets up this run's tracking: the
@@ -22,10 +21,24 @@ const PANIC_LOG: &str = "last-panic.txt";
 fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
     let flag = dir.join(RUNNING_FLAG);
     let log = dir.join(PANIC_LOG);
-    let unclean_exit = flag.exists();
+    // A clean exit empties the flag (see `run`).
+    let unclean_exit = std::fs::metadata(&flag).is_ok_and(|m| m.len() > 0);
     let panic = std::fs::read_to_string(&log).ok();
     let _ = std::fs::remove_file(&log);
-    let _ = std::fs::write(&flag, std::process::id().to_string());
+    // Held for the whole run: the MCP server checks it to tell whether the
+    // app is running, and the OS lets go when the process ends. Taken on a
+    // thread, since another copy of the app may hold it for a while.
+    std::thread::spawn(move || {
+        loop {
+            match mydb_core::running::hold(&flag) {
+                Ok(held) => break std::mem::forget(held),
+                Err(e) => {
+                    eprintln!("running flag: {e}");
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+    });
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -54,14 +67,17 @@ pub fn run() {
             let mut store = Store::open(dir.join("mydb-studio.db"))?;
             if let Some(vault) = keychain::vault() {
                 store.use_vault(vault)?;
+                store.trust_unbound_secrets();
             }
-            let crash = crash_watch(&dir);
-            let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
-            ai.stop_leftover();
+            // Locked before the running flag says the app runs, so the MCP
+            // server never sees a running, unlocked app that should be locked.
             let lock = lock::LockState::new(
                 dir.join(mydb_core::LOCK_FLAG),
                 &store.get_settings().unwrap_or_default(),
             );
+            let crash = crash_watch(&dir);
+            let ai = mydb_core::ai::AiRuntime::new(dir.join("llama-server.pid"));
+            ai.stop_leftover();
             app.manage(AppState {
                 store: Mutex::new(store),
                 sessions: tokio::sync::RwLock::new(HashMap::new()),
@@ -187,16 +203,14 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 state.ai.kill_now();
-                // Stay locked for AI tools until the next start unlocks.
-                let relock = state
-                    .store
-                    .lock()
-                    .unwrap()
-                    .get_settings()
-                    .is_ok_and(|s| s.lock_enabled() && s.lock_on_start);
-                state.lock.set_locked(relock);
+                // Emptied, not removed: another copy of the app may be
+                // waiting for its lock, and must get the same file the MCP
+                // server checks.
                 if let Ok(dir) = app.path().app_data_dir() {
-                    let _ = std::fs::remove_file(dir.join(RUNNING_FLAG));
+                    let _ = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(dir.join(RUNNING_FLAG))
+                        .and_then(|f| f.set_len(0));
                 }
             }
         });

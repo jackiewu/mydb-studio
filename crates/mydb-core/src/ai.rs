@@ -579,11 +579,17 @@ impl AiRuntime {
             "stream": true,
         })
         .to_string();
-        let mut resp = HttpResponse::send(base_url, "POST", "/v1/chat/completions", Some(&body))
-            .await
-            .map_err(|e| config_err(format!("連不上 AI 模型（{base_url}）：{e}")))?;
+        // A model that answers at all sends its headers (and each piece)
+        // well within this.
+        let wait = Duration::from_secs(300);
+        let mut resp = patient(
+            wait,
+            HttpResponse::send(base_url, "POST", "/v1/chat/completions", Some(&body)),
+        )
+        .await
+        .map_err(|e| config_err(format!("連不上 AI 模型（{base_url}）：{e}")))?;
         if resp.status != 200 {
-            let text = resp.read_all().await.unwrap_or_default();
+            let text = patient(wait, resp.read_all()).await.unwrap_or_default();
             return Err(config_err(format!(
                 "AI 模型回應錯誤 {}：{}",
                 resp.status,
@@ -594,8 +600,7 @@ impl AiRuntime {
         let mut answer = String::new();
         if !resp.event_stream {
             // The server ignored `stream`: one JSON answer.
-            let text = resp
-                .read_all()
+            let text = patient(wait, resp.read_all())
                 .await
                 .map_err(|e| config_err(e.to_string()))?;
             let v: serde_json::Value = serde_json::from_slice(&text)
@@ -607,17 +612,24 @@ impl AiRuntime {
             return Ok(content.to_string());
         }
 
+        let started = std::time::Instant::now();
         let mut pending = Vec::<u8>::new();
         loop {
             if self.cancel.load(Ordering::SeqCst) != epoch {
                 return Ok(answer);
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(300), resp.next_chunk())
+            if started.elapsed() > MAX_ANSWER_TIME {
+                return Err(config_err("AI 回答太久，已停止。"));
+            }
+            let chunk = tokio::time::timeout(wait, resp.next_chunk())
                 .await
                 .map_err(|_| config_err("AI 模型太久沒有回應。"))?
                 .map_err(|e| config_err(format!("讀取 AI 回應失敗：{e}")))?;
             let Some(chunk) = chunk else { break };
             pending.extend_from_slice(&chunk);
+            if pending.len() > MAX_BODY {
+                return Err(config_err("AI 回應的一行太長。"));
+            }
             while let Some(nl) = pending.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=nl).collect();
                 let line = String::from_utf8_lossy(&line);
@@ -635,6 +647,9 @@ impl AiRuntime {
                     if let Some(piece) = v["choices"][0]["delta"]["content"].as_str()
                         && !piece.is_empty()
                     {
+                        if answer.len() + piece.len() > MAX_BODY {
+                            return Err(config_err("AI 回應太長。"));
+                        }
                         answer.push_str(piece);
                         on_token(piece);
                     }
@@ -680,6 +695,23 @@ fn parse_url(url: &str) -> std::io::Result<Target> {
     })
 }
 
+/// Largest chunk, whole body and header line accepted from the local model
+/// server.
+const MAX_CHUNK: usize = 1 << 20;
+const MAX_BODY: usize = 32 << 20;
+const MAX_LINE: u64 = 16 << 10;
+/// The longest one answer may stream for.
+const MAX_ANSWER_TIME: Duration = Duration::from_secs(15 * 60);
+
+/// Reads one line of at most [`MAX_LINE`] bytes; a longer one is an error.
+async fn read_line(reader: &mut BufReader<TcpStream>, line: &mut String) -> std::io::Result<usize> {
+    let n = (&mut *reader).take(MAX_LINE).read_line(line).await?;
+    if n as u64 == MAX_LINE && !line.ends_with('\n') {
+        return Err(std::io::Error::other("回應的標頭太長"));
+    }
+    Ok(n)
+}
+
 struct HttpResponse {
     status: u16,
     chunked: bool,
@@ -718,7 +750,7 @@ impl HttpResponse {
         s.flush().await?;
 
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        read_line(&mut reader, &mut line).await?;
         let status = line
             .split_whitespace()
             .nth(1)
@@ -727,7 +759,7 @@ impl HttpResponse {
         let (mut chunked, mut event_stream) = (false, false);
         loop {
             line.clear();
-            if reader.read_line(&mut line).await? == 0 || line.trim().is_empty() {
+            if read_line(&mut reader, &mut line).await? == 0 || line.trim().is_empty() {
                 break;
             }
             let lower = line.to_ascii_lowercase();
@@ -763,17 +795,21 @@ impl HttpResponse {
             return Ok(Some(buf));
         }
         let mut line = String::new();
-        self.reader.read_line(&mut line).await?;
+        read_line(&mut self.reader, &mut line).await?;
         let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or(""), 16)
             .map_err(|_| std::io::Error::other("分塊格式不正確"))?;
         if size == 0 {
             self.done = true;
             return Ok(None);
         }
+        // The size comes from the other end: don't let it pick the allocation.
+        if size > MAX_CHUNK {
+            return Err(std::io::Error::other("回應的分塊太大"));
+        }
         let mut buf = vec![0; size];
         self.reader.read_exact(&mut buf).await?;
         line.clear();
-        self.reader.read_line(&mut line).await?;
+        read_line(&mut self.reader, &mut line).await?;
         Ok(Some(buf))
     }
 
@@ -781,9 +817,22 @@ impl HttpResponse {
         let mut all = Vec::new();
         while let Some(c) = self.next_chunk().await? {
             all.extend(c);
+            if all.len() > MAX_BODY {
+                return Err(std::io::Error::other("回應太大"));
+            }
         }
         Ok(all)
     }
+}
+
+/// `work`, or a time-out error once `limit` passes.
+async fn patient<T>(
+    limit: Duration,
+    work: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    tokio::time::timeout(limit, work)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "逾時"))?
 }
 
 /// Sends a request and returns its status and body.
@@ -793,14 +842,13 @@ async fn http_request(
     path: &str,
     body: Option<&str>,
 ) -> std::io::Result<(u16, Vec<u8>)> {
-    let mut resp = tokio::time::timeout(
-        Duration::from_secs(10),
-        HttpResponse::send(base, method, path, body),
-    )
+    // The whole exchange, body included, has the one time limit.
+    patient(Duration::from_secs(10), async {
+        let mut resp = HttpResponse::send(base, method, path, body).await?;
+        let body = resp.read_all().await?;
+        Ok((resp.status, body))
+    })
     .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "逾時"))??;
-    let body = resp.read_all().await?;
-    Ok((resp.status, body))
 }
 
 #[cfg(test)]

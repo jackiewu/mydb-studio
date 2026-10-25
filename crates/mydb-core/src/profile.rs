@@ -74,6 +74,18 @@ pub enum McpAccess {
 }
 
 impl ConnectionProfile {
+    /// This profile with the SSH host key seen on connecting pinned, if it
+    /// had none: later connects through it (a reconnect, a cancel) then
+    /// refuse a different key instead of trusting whatever answers.
+    pub fn with_pinned_host_key(&self, seen: Option<&str>) -> ConnectionProfile {
+        let mut p = self.clone();
+        if let (Some(ssh), Some(fp)) = (p.ssh.as_mut(), seen.filter(|f| !f.is_empty())) {
+            ssh.known_host_fingerprint
+                .get_or_insert_with(|| fp.to_string());
+        }
+        p
+    }
+
     pub fn new(name: impl Into<String>, host: impl Into<String>, user: impl Into<String>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -190,6 +202,29 @@ pub enum SshAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_seen_host_key_gets_pinned_but_never_replaced() {
+        let mut p = ConnectionProfile::new("prod", "db.internal", "app");
+        assert!(p.with_pinned_host_key(Some("SHA256:a")).ssh.is_none());
+        p.ssh = Some(SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "jackie".into(),
+            auth: SshAuth::Password {
+                password: String::new(),
+            },
+            known_host_fingerprint: None,
+        });
+        let pinned = p.with_pinned_host_key(Some("SHA256:a"));
+        let fp = |p: &ConnectionProfile| p.ssh.as_ref().unwrap().known_host_fingerprint.clone();
+        assert_eq!(fp(&pinned).as_deref(), Some("SHA256:a"));
+        assert_eq!(
+            fp(&pinned.with_pinned_host_key(Some("SHA256:b"))).as_deref(),
+            Some("SHA256:a")
+        );
+        assert_eq!(fp(&p.with_pinned_host_key(Some(""))), None);
+    }
 
     #[test]
     fn profile_round_trips_through_json() {

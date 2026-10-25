@@ -8,6 +8,7 @@ const SETTLE_MS = 1500;
  * Covers the whole window until the owner confirms with Touch ID or the login password.
  * The system prompt never shows up by itself while the window is in the background:
  * it asks when the owner comes back to the window, or on the button (or Enter).
+ * The app underneath is inert, and no key reaches it.
  */
 export function LockScreen({ askNow, onUnlocked }: { askNow: boolean; onUnlocked: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -46,6 +47,15 @@ export function LockScreen({ askNow, onUnlocked }: { askNow: boolean; onUnlocked
       away = false;
       unlock();
     };
+    // Keys go to nothing but the lock screen: Enter or Space unlocks, and
+    // the app's own shortcuts never see them.
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.type === "keydown" && (e.key === "Enter" || e.key === " ")) unlock();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKey, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
     // On start the owner is right here, so ask at once if the window is in front.
@@ -54,6 +64,8 @@ export function LockScreen({ askNow, onUnlocked }: { askNow: boolean; onUnlocked
       unlock();
     }
     return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKey, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
     };
