@@ -86,6 +86,12 @@ pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionProf
     state.store.lock().unwrap().list_connections()
 }
 
+/// One connection with its passwords, for editing.
+#[tauri::command]
+pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<ConnectionProfile> {
+    state.connection(&id)
+}
+
 #[tauri::command]
 pub fn save_connection(
     state: State<'_, AppState>,
@@ -432,10 +438,17 @@ pub struct CrashInfo {
     pub panic: Option<String>,
 }
 
-/// The previous run's crash, once: later calls return nothing.
+/// The previous run's crash, until [`clear_crash_info`]: the page may load
+/// more than once (a reload), and each load should still offer it.
 #[tauri::command]
-pub fn take_crash_info(state: State<'_, AppState>) -> Option<CrashInfo> {
-    state.crash.lock().unwrap().take()
+pub fn crash_info(state: State<'_, AppState>) -> Option<CrashInfo> {
+    state.crash.lock().unwrap().clone()
+}
+
+/// The previous run's crash was shown in the report dialog.
+#[tauri::command]
+pub fn clear_crash_info(state: State<'_, AppState>) {
+    state.crash.lock().unwrap().take();
 }
 
 /// A bug report for GitHub with anything identifying scrubbed: see

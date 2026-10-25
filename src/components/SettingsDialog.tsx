@@ -321,7 +321,7 @@ function AiSection({ settings, set }: { settings: AppSettings; set: (p: Partial<
 
 const IDLE_CHOICES = [1, 5, 15, 30, 60, 0];
 
-/** App lock. Every change asks for Touch ID / the login password first. */
+/** App lock. Changes need Touch ID / the login password, asked at most once every few minutes. */
 function LockSection({
   settings,
   onChange,
@@ -338,7 +338,7 @@ function LockSection({
     setBusy(true);
     setError(null);
     try {
-      await api.verifyOwner("變更 MyDB Studio 的鎖定設定");
+      if (!(await api.ownerVerified())) await api.verifyOwner("變更 MyDB Studio 的鎖定設定");
       onChange({ ...settings, ...patch });
     } catch (e) {
       setError(describeError(e));
@@ -350,7 +350,7 @@ function LockSection({
     <>
       <p className="set-intro">
         離開座位時把 app 鎖起來：畫面整個遮住，要用 Touch ID 或這台 Mac 的登入密碼才能解鎖，不用另外記一組 PIN。
-        鎖定期間 AI 工具（MCP）也不能查詢。每次變更這裡的設定都要先驗證一次。
+        鎖定期間 AI 工具（MCP）也不能查詢。變更這裡的設定要先驗證，驗證後 5 分鐘內不用再驗證。
       </p>
       {!available && <p className="set-warn">這台電腦不能使用系統驗證（目前只支援 macOS），所以無法開啟 App 鎖定。</p>}
       <fieldset disabled={busy || !available} className="plain">

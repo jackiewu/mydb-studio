@@ -13,8 +13,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::AppState;
 
-/// How long one confirmation allows changing the lock settings.
-const VERIFIED_FOR: Duration = Duration::from_secs(120);
+/// How long one confirmation allows changing the lock settings. Each change
+/// made in that time extends it.
+const VERIFIED_FOR: Duration = Duration::from_secs(5 * 60);
 
 pub struct LockState {
     locked: AtomicBool,
@@ -42,6 +43,7 @@ impl LockState {
     pub fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::SeqCst);
         if locked {
+            *self.verified_at.lock().unwrap() = None;
             let _ = std::fs::write(&self.flag, "");
         } else {
             let _ = std::fs::remove_file(&self.flag);
@@ -58,12 +60,20 @@ impl LockState {
     /// Refuses changes to the lock settings without a recent confirmation,
     /// so nobody can turn the lock off while the owner is away.
     pub fn check_settings_change(&self, old: &AppSettings, new: &AppSettings) -> Result<()> {
-        if old.lock_changed(new) && !self.recently_verified() {
+        if !old.lock_changed(new) {
+            return Ok(());
+        }
+        if !self.recently_verified() {
             return Err(CoreError::Config {
                 message: "變更 App 鎖定設定前，請先通過系統驗證。".into(),
             });
         }
+        self.mark_verified();
         Ok(())
+    }
+
+    fn mark_verified(&self) {
+        *self.verified_at.lock().unwrap() = Some(Instant::now());
     }
 }
 
@@ -108,8 +118,8 @@ pub fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
 #[tauri::command]
 pub async fn unlock_app(state: State<'_, AppState>) -> Result<()> {
     system_auth("解鎖 MyDB Studio").await?;
-    *state.lock.verified_at.lock().unwrap() = Some(Instant::now());
     state.lock.set_locked(false);
+    state.lock.mark_verified();
     Ok(())
 }
 
@@ -117,8 +127,15 @@ pub async fn unlock_app(state: State<'_, AppState>) -> Result<()> {
 #[tauri::command]
 pub async fn verify_owner(state: State<'_, AppState>, reason: String) -> Result<()> {
     system_auth(&reason).await?;
-    *state.lock.verified_at.lock().unwrap() = Some(Instant::now());
+    state.lock.mark_verified();
     Ok(())
+}
+
+/// Whether the owner confirmed recently enough to change the lock settings
+/// without asking again.
+#[tauri::command]
+pub fn owner_verified(state: State<'_, AppState>) -> bool {
+    state.lock.recently_verified()
 }
 
 /// Locks when the screen locks, if the settings ask for it.

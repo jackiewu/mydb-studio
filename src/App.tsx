@@ -116,14 +116,17 @@ export default function App() {
 
   // Offer to report last run's crash, and catch unexpected errors in this one.
   useEffect(() => {
-    Promise.all([api.takeCrashInfo(), api.getSettings()])
+    Promise.all([api.crashInfo(), api.getSettings()])
       .then(([c, s]) => {
         if (!c) return;
         const reason = c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。";
         const details = c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）";
         // Only a real crash may open the report by itself, and only when asked to;
         // a forced quit (e.g. restarting the dev app) just shows ⚠.
-        if (c.panic && s.report_crash_on_start) setBug({ reason, details });
+        if (c.panic && s.report_crash_on_start) {
+          setBug({ reason, details });
+          api.clearCrashInfo().catch(() => {});
+        }
         else setLastError({ reason, details, summary: reason, severity: c.panic ? "error" : "notice" });
       })
       .catch(() => {});
@@ -244,12 +247,15 @@ export default function App() {
 
   // App lock: covered until Touch ID / the login password.
   const [locked, setLocked] = useState(false);
+  // Locked since the app started (ask at once), rather than idle or Lock now (wait for the owner).
+  const [lockedAtStart, setLockedAtStart] = useState(false);
   const [lockAvailable, setLockAvailable] = useState(false);
   const lockOn = settings.lock_mode !== "off";
   useEffect(() => {
     api.lockStatus().then(
       (s) => {
         setLocked(s.locked);
+        setLockedAtStart(s.locked);
         setLockAvailable(s.available);
       },
       () => {},
@@ -305,7 +311,15 @@ export default function App() {
       setView("main");
     }
   }, [locked, settings.lock_disconnect, sessionId]);
-  const lockScreen = locked && <LockScreen onUnlocked={() => setLocked(false)} />;
+  const lockScreen = locked && (
+    <LockScreen
+      askNow={lockedAtStart}
+      onUnlocked={() => {
+        setLocked(false);
+        setLockedAtStart(false);
+      }}
+    />
+  );
 
   // Risky statements waiting for the user's go-ahead.
   const [risk, setRisk] = useState<{ findings: Finding[]; answer: (run: boolean) => void } | null>(null);
@@ -952,7 +966,10 @@ export default function App() {
             connecting={connecting}
             doubleClick={settings.connect_on_double_click}
             onConnect={connect}
-            onEdit={setEditing}
+            onEdit={(c) =>
+              // The list has no passwords; this reads them (from the keychain).
+              api.getConnection(c.id).then(setEditing, (e) => setNotice({ text: describeError(e), kind: "error" }))
+            }
             onNew={() => setEditing({ ...newProfile(), kind: undefined })}
             onToggleFavorite={toggleFavorite}
             onDuplicate={(c) =>
@@ -999,6 +1016,7 @@ export default function App() {
           if (!lastError) return;
           setBug({ reason: lastError.reason, details: lastError.details });
           setLastError(null);
+          api.clearCrashInfo().catch(() => {});
         }}
       />
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}

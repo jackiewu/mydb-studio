@@ -251,10 +251,15 @@ impl Server {
         let wanted = required(args, "connection")?;
         let profile = {
             let store = self.store.lock().unwrap();
-            store
+            match store
                 .list_connections()?
                 .into_iter()
                 .find(|p| p.id == wanted || p.name.eq_ignore_ascii_case(&wanted))
+            {
+                // With its passwords this time.
+                Some(found) => store.get_connection(&found.id)?,
+                None => None,
+            }
         }
         .filter(|p| p.mcp_allowed())
         .ok_or_else(|| {

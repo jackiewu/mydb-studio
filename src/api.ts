@@ -580,7 +580,9 @@ export function describeError(e: unknown): string {
 }
 
 export const api = {
+  /** Without passwords; {@link api.getConnection} has them. */
   listConnections: () => invoke<ConnectionProfile[]>("list_connections"),
+  getConnection: (id: string) => invoke<ConnectionProfile>("get_connection", { id }),
   saveConnection: (profile: ConnectionProfile) =>
     invoke<ConnectionProfile>("save_connection", { profile }),
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
@@ -600,6 +602,7 @@ export const api = {
   lockApp: () => invoke<void>("lock_app"),
   unlockApp: () => invoke<void>("unlock_app"),
   verifyOwner: (reason: string) => invoke<void>("verify_owner", { reason }),
+  ownerVerified: () => invoke<boolean>("owner_verified"),
   aiContext: (sessionId: string | null, sql: string, error: string | null, explain: string | null) =>
     invoke<AiContext>("ai_context", { sessionId, sql, error, explain }),
   aiChat: (context: AiContext, messages: ChatMessage[], onEvent: (e: AiEvent) => void) => {
@@ -663,7 +666,8 @@ export const api = {
   redisExecute: (sessionId: string, text: string, record: boolean) =>
     invoke<RedisOutcome>("redis_execute", { sessionId, text, record }),
   readTextFile: (path: string) => invoke<string>("read_text_file", { path }),
-  takeCrashInfo: () => invoke<CrashInfo | null>("take_crash_info"),
+  crashInfo: () => invoke<CrashInfo | null>("crash_info"),
+  clearCrashInfo: () => invoke<void>("clear_crash_info"),
   bugReportBody: (what: string, details: string) => invoke<string>("bug_report_body", { what, details }),
   openBugReport: (title: string, body: string) => invoke<void>("open_bug_report", { title, body }),
 };
