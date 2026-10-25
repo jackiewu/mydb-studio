@@ -17,7 +17,8 @@ pub fn split_statements(sql: &str) -> Vec<String> {
         // `DELIMITER xx` is a client command and only valid at the start of a line.
         if at_line_start && !has_code {
             let rest = &sql[i..];
-            if rest.len() >= 10 && rest[..10].eq_ignore_ascii_case("delimiter ") {
+            // Compared as bytes: slicing the str at 10 could split a character.
+            if rest.len() >= 10 && rest.as_bytes()[..10].eq_ignore_ascii_case(b"delimiter ") {
                 let line_end = rest.find('\n').unwrap_or(rest.len());
                 let new_delim = rest[10..line_end].trim();
                 if !new_delim.is_empty() {
@@ -166,6 +167,15 @@ mod tests {
                 "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2;\nEND",
                 "CALL p()"
             ]
+        );
+    }
+
+    #[test]
+    fn non_ascii_at_line_start() {
+        // The `DELIMITER` check used to slice inside a multi-byte character.
+        assert_eq!(
+            split("-- 本月各客戶的訂單\nSELECT 1;\n中文欄位;"),
+            ["SELECT 1", "中文欄位"]
         );
     }
 }
