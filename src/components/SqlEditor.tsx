@@ -12,6 +12,7 @@ import { statementAt } from "../editor/statements";
 import { allStatements, runTarget, statementMarks, type RunTarget } from "../editor/statementMarks";
 import type { EditorTheme } from "../editor/themes";
 import { openMenu } from "../contextMenu";
+import { advisorLint } from "../editor/advisorLint";
 import { copyText } from "../copy";
 
 /** Lets the app insert text into the editor. */
@@ -54,6 +55,12 @@ interface Props {
   onRunTargetChange?: (target: RunTarget) => void;
   /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
   onExplain?: (sql: string) => void;
+  /** The automatic LIMIT in effect (0 when off); hides advice it covers. */
+  autoLimit?: number;
+  /** Opens the snippet editor with `body` as a new snippet. */
+  onSaveSnippet?: (body: string) => void;
+  /** ⌘I: opens the AI drawer about the selection or the statement at the cursor. */
+  onAskAi?: (sql: string) => void;
 }
 
 function language(
@@ -130,6 +137,12 @@ export function SqlEditor(props: Props) {
       handlers.current.onExplain?.(selectionOr(v));
       return true;
     };
+    const askAi = (v: EditorView) => {
+      const { from, to } = v.state.selection.main;
+      const selected = v.state.sliceDoc(from, to);
+      handlers.current.onAskAi?.((selected.trim() ? selected : runTarget(v.state).text).trim());
+      return true;
+    };
     const contextMenu = (e: MouseEvent, v: EditorView) => {
       // Right-clicking outside the selection moves the cursor there first.
       const at = v.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -151,6 +164,15 @@ export function SqlEditor(props: Props) {
           ? [{ label: `執行全部（${target.total} 句）`, hint: "⌘⇧↵", onClick: () => runAll(v) }]
           : []),
         { label: "Explain", hint: "⌘E", disabled: target.count === 0, onClick: () => explain(v) },
+        ...(handlers.current.onAskAi
+          ? [
+              {
+                label: `✨ AI 分析${target.count > 1 ? `（${target.count} 句）` : ""}`,
+                hint: "⌘I",
+                onClick: () => askAi(v),
+              },
+            ]
+          : []),
         "sep",
         {
           label: "剪下",
@@ -180,6 +202,11 @@ export function SqlEditor(props: Props) {
           disabled: target.count === 0,
           onClick: () => copyText(target.text.trim()),
         },
+        {
+          label: selected ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
+          disabled: !selected.trim() && target.count === 0,
+          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() ? selected : target.text).trim()),
+        },
       ]);
       return true;
     };
@@ -202,12 +229,14 @@ export function SqlEditor(props: Props) {
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
         statementMarks(),
+        advisorLint(() => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
         EditorView.domEventHandlers({ contextmenu: contextMenu }),
         Prec.highest(
           keymap.of([
             { key: "Mod-Enter", run },
             { key: "Mod-Shift-Enter", run: runAll },
             { key: "Mod-e", run: explain },
+            { key: "Mod-i", run: askAi },
           ]),
         ),
         EditorView.updateListener.of((u) => {

@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { api, describeError, type ConnectionProfile, type SshAuth, type SslMode } from "../api";
+import { useRef, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { api, describeError, type ConnectionProfile, type SslConfig, type SshAuth, type SslMode } from "../api";
 
 interface Props {
   initial: ConnectionProfile;
@@ -17,6 +18,40 @@ const SSL_MODES: { value: SslMode; label: string }[] = [
   { value: "verify_identity", label: "加密，驗證 CA 與主機名稱" },
 ];
 
+type Cloud = NonNullable<SslConfig["cloud"]>;
+
+const CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
+  {
+    value: "aws",
+    label: "AWS RDS / Aurora",
+    mode: "verify_identity",
+    hint: "已套用 app 內建的 AWS RDS CA（所有區域）。「主機」請填 RDS 的 endpoint（xxx.rds.amazonaws.com），不要填 IP，否則主機名稱驗證會失敗。",
+  },
+  {
+    value: "gcp",
+    label: "Google Cloud SQL",
+    mode: "verify_ca",
+    hint: "到 Cloud SQL 主控台 → 連線 → 安全性，下載伺服器 CA（server-ca.pem），在下面選這個檔案。用 IP 連線所以不驗證主機名稱。如果執行個體要求用戶端憑證，再選 client-cert.pem 和 client-key.pem。",
+  },
+  {
+    value: "azure",
+    label: "Azure Database for MySQL",
+    mode: "verify_identity",
+    hint: "Azure 的憑證由 DigiCert 簽發，app 內建的根憑證就能驗證，CA 欄位留空即可。「主機」填 xxx.mysql.database.azure.com。",
+  },
+];
+
+/** The cloud a host name points at, to suggest its settings. */
+function cloudOf(host: string): Cloud | null {
+  const h = host.trim().toLowerCase();
+  if (h.endsWith(".rds.amazonaws.com") || h.endsWith(".rds.amazonaws.com.cn")) return "aws";
+  if (h.endsWith(".database.azure.com")) return "azure";
+  return null;
+}
+
+/** The parts of a profile that decide which server and login a list is for. */
+const loginKey = (p: ConnectionProfile) => JSON.stringify([p.host, p.port, p.user, p.password, p.ssl, p.ssh]);
+
 export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) {
   const [p, setP] = useState<ConnectionProfile>(initial);
   const [tab, setTab] = useState<Tab>("general");
@@ -30,6 +65,59 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
     setP((old) => (old.ssh ? { ...old, ssh: { ...old.ssh, ...patch } } : old));
   const setAuth = (auth: SshAuth) => setSsh({ auth });
 
+  // Databases on the server, offered for the default database.
+  const [databases, setDatabases] = useState<{ key: string; names: string[]; error?: string } | null>(null);
+  const loading = useRef<string | null>(null);
+  const loadDatabases = async (force = false) => {
+    const key = loginKey(p);
+    if (!p.host.trim() || !p.user.trim() || loading.current === key) return;
+    if (!force && databases?.key === key) return;
+    loading.current = key;
+    try {
+      const names = await api.listServerDatabases(p);
+      setDatabases({ key, names });
+    } catch (e) {
+      setDatabases({ key, names: [], error: describeError(e) });
+    } finally {
+      loading.current = null;
+    }
+  };
+  const dbList = databases?.key === loginKey(p) ? databases : null;
+  const [dbOpen, setDbOpen] = useState(false);
+  const typed = (p.database ?? "").trim().toLowerCase();
+  const allNames = dbList?.names ?? [];
+  // Everything while the field holds a full name, otherwise what matches.
+  const dbChoices =
+    !typed || allNames.some((n) => n.toLowerCase() === typed)
+      ? allNames
+      : allNames.filter((n) => n.toLowerCase().includes(typed));
+
+  const applyCloud = async (cloud: Cloud | null) => {
+    if (!cloud) return setSsl({ cloud: null });
+    const preset = CLOUDS.find((c) => c.value === cloud)!;
+    const ca_path =
+      cloud === "aws"
+        ? await api.awsRdsCaPath().catch(() => p.ssl.ca_path ?? null)
+        : cloud === "azure"
+          ? null
+          : p.ssl.ca_path?.includes("aws-rds-global-bundle")
+            ? null
+            : (p.ssl.ca_path ?? null);
+    setSsl({ cloud, mode: preset.mode, ca_path });
+  };
+  const suggestedCloud = !p.ssl.cloud ? cloudOf(p.host) : null;
+
+  const pickFile = async (field: "ca_path" | "cert_path" | "key_path") => {
+    const picked = await openDialog({
+      multiple: false,
+      filters: [
+        { name: "憑證 / 金鑰", extensions: ["pem", "crt", "cer", "key", "der"] },
+        { name: "所有檔案", extensions: ["*"] },
+      ],
+    });
+    if (typeof picked === "string") setSsl({ [field]: picked });
+  };
+
   const test = async () => {
     setBusy(true);
     setStatus(null);
@@ -37,6 +125,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
       const info = await api.testConnection(p);
       const extras = [info.tls && "TLS", p.ssh && "SSH"].filter(Boolean).join("、");
       setStatus({ ok: true, text: `連線成功：${info.server_version}${extras ? `（${extras}）` : ""}` });
+      loadDatabases();
     } catch (e) {
       setStatus({ ok: false, text: describeError(e) });
     } finally {
@@ -93,15 +182,69 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             密碼
             <input type="password" value={p.password ?? ""} onChange={(e) => set({ password: e.target.value })} />
           </label>
-          <label>
-            預設資料庫（選填）
-            <input value={p.database ?? ""} onChange={(e) => set({ database: e.target.value })} />
-          </label>
+          <div className="field-group db-field">
+            <span>預設資料庫（選填）</span>
+            <div className="input-with-button">
+              <input
+                value={p.database ?? ""}
+                placeholder="點一下載入伺服器上的資料庫，或直接輸入"
+                onFocus={() => {
+                  setDbOpen(true);
+                  loadDatabases();
+                }}
+                onBlur={() => setTimeout(() => setDbOpen(false), 150)}
+                onChange={(e) => (set({ database: e.target.value }), setDbOpen(true))}
+              />
+              <button type="button" className="small" onClick={() => loadDatabases(true)} title="重新讀取資料庫清單">
+                ↻
+              </button>
+            </div>
+            {dbOpen && dbChoices.length > 0 && (
+              <ul className="db-suggest">
+                {dbChoices.map((n) => (
+                  <li key={n}>
+                    <button
+                      type="button"
+                      className={n === p.database ? "active" : undefined}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => (set({ database: n }), setDbOpen(false))}
+                    >
+                      {n}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {dbList?.error && <span className="field-note bad">讀不到資料庫清單：{dbList.error}</span>}
+            {dbList && !dbList.error && (
+              <span className="field-note">伺服器上有 {dbList.names.length} 個資料庫，點輸入框就能選。</span>
+            )}
+          </div>
         </div>
       )}
 
       {tab === "ssl" && (
         <div className="fields">
+          <label>
+            雲端服務
+            <select value={p.ssl.cloud ?? ""} onChange={(e) => applyCloud((e.target.value || null) as Cloud | null)}>
+              <option value="">自己架設 / 其他</option>
+              {CLOUDS.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {suggestedCloud && (
+            <p className="hint">
+              主機看起來是 {CLOUDS.find((c) => c.value === suggestedCloud)!.label}。
+              <button type="button" className="link" onClick={() => applyCloud(suggestedCloud)}>
+                套用建議設定
+              </button>
+            </p>
+          )}
+          {p.ssl.cloud && <p className="hint">{CLOUDS.find((c) => c.value === p.ssl.cloud)?.hint}</p>}
           <label>
             模式
             <select value={p.ssl.mode} onChange={(e) => setSsl({ mode: e.target.value as SslMode })}>
@@ -116,19 +259,34 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <>
               <label>
                 CA 憑證路徑
-                <input
-                  value={p.ssl.ca_path ?? ""}
-                  placeholder="/path/to/ca.pem（不填則使用系統內建根憑證）"
-                  onChange={(e) => setSsl({ ca_path: e.target.value })}
-                />
+                <div className="input-with-button">
+                  <input
+                    value={p.ssl.ca_path ?? ""}
+                    placeholder="/path/to/ca.pem（不填則使用內建的公開根憑證）"
+                    onChange={(e) => setSsl({ ca_path: e.target.value })}
+                  />
+                  <button type="button" className="small" onClick={() => pickFile("ca_path")}>
+                    選擇…
+                  </button>
+                </div>
               </label>
               <label>
                 用戶端憑證路徑（選填）
-                <input value={p.ssl.cert_path ?? ""} onChange={(e) => setSsl({ cert_path: e.target.value })} />
+                <div className="input-with-button">
+                  <input value={p.ssl.cert_path ?? ""} onChange={(e) => setSsl({ cert_path: e.target.value })} />
+                  <button type="button" className="small" onClick={() => pickFile("cert_path")}>
+                    選擇…
+                  </button>
+                </div>
               </label>
               <label>
                 用戶端私鑰路徑（選填）
-                <input value={p.ssl.key_path ?? ""} onChange={(e) => setSsl({ key_path: e.target.value })} />
+                <div className="input-with-button">
+                  <input value={p.ssl.key_path ?? ""} onChange={(e) => setSsl({ key_path: e.target.value })} />
+                  <button type="button" className="small" onClick={() => pickFile("key_path")}>
+                    選擇…
+                  </button>
+                </div>
               </label>
             </>
           )}

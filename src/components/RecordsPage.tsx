@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ask } from "../ask";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -132,7 +133,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   };
 
   const remove = async () => {
-    if (!confirm(`刪除選取的 ${selected.size} 筆紀錄？刪除後無法復原。`)) return;
+    if (!(await ask(`刪除選取的 ${selected.size} 筆紀錄？刪除後無法復原。`, "刪除"))) return;
     await api.deleteRecords([...selected]);
     if (detail && selected.has(detail.id)) setDetail(null);
     setSelected(new Set());

@@ -20,6 +20,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 tauri-plugin-dialog = "2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-clipboard-manager = "2"
+
+# Connection passwords go to the macOS Keychain / Windows Credential Manager.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

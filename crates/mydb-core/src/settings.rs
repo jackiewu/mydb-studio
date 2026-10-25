@@ -19,6 +19,23 @@ pub struct AppSettings {
     pub show_system_databases: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
+    /// Ask before running statements that can destroy data.
+    pub confirm_dangerous: bool,
+    /// LIMIT added to queries that have none; 0 turns it off.
+    pub auto_limit: u64,
+    /// AI suggestions from a local model (off until set up).
+    pub ai_enabled: bool,
+    /// `llama-server` to use; empty finds it on PATH or in Homebrew.
+    pub ai_llama_server: String,
+    /// The `.gguf` model file the app starts when AI is first used.
+    pub ai_model_path: String,
+    /// Use an already running OpenAI-compatible server instead of starting one.
+    pub ai_use_external: bool,
+    pub ai_server_url: String,
+    /// Stop the model after this many idle minutes.
+    pub ai_idle_minutes: u32,
+    /// CPU threads the model may use; 0 picks half of them.
+    pub ai_threads: u32,
 }
 
 impl Default for AppSettings {
@@ -30,6 +47,15 @@ impl Default for AppSettings {
             record_by_default: false,
             show_system_databases: false,
             schema_autocomplete: true,
+            confirm_dangerous: true,
+            auto_limit: 1000,
+            ai_enabled: false,
+            ai_llama_server: String::new(),
+            ai_model_path: String::new(),
+            ai_use_external: false,
+            ai_server_url: "http://127.0.0.1:39282".into(),
+            ai_idle_minutes: 10,
+            ai_threads: 0,
         }
     }
 }
@@ -59,4 +85,15 @@ pub struct PinnedTab {
     /// Order among the connection's pinned tabs.
     #[serde(default)]
     pub position: i64,
+    /// False for a draft: an unpinned tab kept only so a crash doesn't
+    /// lose it. Drafts are dropped when the user closes them.
+    #[serde(default = "yes")]
+    pub pinned: bool,
+    /// The .sql file the tab was opened from or saved to.
+    #[serde(default)]
+    pub file_path: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }

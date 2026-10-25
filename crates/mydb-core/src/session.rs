@@ -66,6 +66,10 @@ pub struct StatementResult {
     pub last_insert_id: Option<u64>,
     pub warnings: u16,
     pub info: String,
+    /// The LIMIT the app added to this query, when it added one; `sql` is
+    /// the statement as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_added: Option<u64>,
 }
 
 /// Everything about one run of the editor contents. On error, `results`
@@ -163,6 +167,17 @@ impl Session {
     /// Runs `sql` (one or more statements) and collects every result set,
     /// keeping at most `max_rows` rows of each.
     pub async fn execute(&self, sql: &str, max_rows: usize) -> ExecutionOutcome {
+        self.execute_limited(sql, max_rows, None).await
+    }
+
+    /// Like [`Session::execute`], adding `LIMIT auto_limit` to queries that
+    /// have none (see [`crate::advisor::add_limit`]).
+    pub async fn execute_limited(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        auto_limit: Option<u64>,
+    ) -> ExecutionOutcome {
         let started_at = Utc::now();
         let timer = Instant::now();
         let mut results = Vec::new();
@@ -174,7 +189,15 @@ impl Session {
             Err(e) => Some(e),
             Ok((conn, r)) => {
                 reconnected = r;
-                let res = run(conn, sql, max_rows, &mut results, &mut failed_statement).await;
+                let res = run(
+                    conn,
+                    sql,
+                    max_rows,
+                    auto_limit,
+                    &mut results,
+                    &mut failed_statement,
+                )
+                .await;
                 if results.iter().any(|r| is_use(&r.sql))
                     && let Ok(db) = conn
                         .query_first::<Option<String>, _>("SELECT DATABASE()")
@@ -251,6 +274,22 @@ impl Session {
                 },
             )
             .collect())
+    }
+
+    /// `SHOW CREATE TABLE` for `table` (a view works too), in `database` or
+    /// the current one.
+    pub async fn show_create_table(&self, database: Option<&str>, table: &str) -> Result<String> {
+        let quote = |n: &str| format!("`{}`", n.replace('`', "``"));
+        let name = match database {
+            Some(db) => format!("{}.{}", quote(db), quote(table)),
+            None => quote(table),
+        };
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let row: Option<mysql_async::Row> = conn
+            .query_first(format!("SHOW CREATE TABLE {name}"))
+            .await?;
+        Ok(row.and_then(|r| r.get::<String, _>(1)).unwrap_or_default())
     }
 
     /// Switches to `database`, as `USE` would. It stays selected after an
@@ -381,6 +420,7 @@ async fn run(
     conn: &mut Conn,
     sql: &str,
     max_rows: usize,
+    auto_limit: Option<u64>,
     out: &mut Vec<StatementResult>,
     failed: &mut Option<String>,
 ) -> Result<()> {
@@ -389,7 +429,10 @@ async fn run(
     for stmt in split_statements(sql) {
         *failed = Some(stmt.clone());
         let timer = Instant::now();
-        let mut result = conn.query_iter(stmt.as_str()).await?;
+        let limited = auto_limit.and_then(|n| crate::advisor::add_limit(&stmt, n));
+        let mut result = conn
+            .query_iter(limited.as_deref().unwrap_or(stmt.as_str()))
+            .await?;
         // A statement can still yield several result sets (e.g. CALL).
         loop {
             let columns: Vec<ColumnInfo> = result
@@ -424,6 +467,7 @@ async fn run(
                 last_insert_id: result.last_insert_id(),
                 warnings: result.warnings(),
                 info: result.info().into_owned(),
+                limit_added: limited.as_ref().and(auto_limit),
             });
             if result.is_empty() {
                 break;

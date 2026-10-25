@@ -376,3 +376,21 @@ async fn use_database_survives_reconnect_and_lists_columns() {
     assert_eq!(session.current_database().as_deref(), Some("demo"));
     session.execute("DROP TABLE demo.mydb_cols", 1).await;
 }
+
+#[tokio::test]
+async fn automatic_limit_caps_plain_queries() {
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    let sql = "SELECT COLLATION_NAME FROM information_schema.COLLATIONS; SELECT COLLATION_NAME FROM information_schema.COLLATIONS LIMIT 20; SELECT 1";
+    let out = session.execute_limited(sql, 100, Some(5)).await;
+    assert!(out.error.is_none(), "{:?}", out.error);
+    let r = &out.results;
+    assert_eq!((r[0].total_rows, r[0].limit_added), (5, Some(5)));
+    assert_eq!(
+        r[0].sql,
+        "SELECT COLLATION_NAME FROM information_schema.COLLATIONS"
+    );
+    assert_eq!((r[1].total_rows, r[1].limit_added), (20, None));
+    assert_eq!(r[2].limit_added, None);
+    session.close().await.unwrap();
+}

@@ -4,9 +4,11 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
+use crate::secrets::{self, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
@@ -87,6 +89,21 @@ ORDER BY size_mb DESC;');",
         updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX pinned_tabs_connection ON pinned_tabs (connection_id, position);",
+    // 6: AI conversations
+    "CREATE TABLE ai_chats (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        title           TEXT NOT NULL,
+        connection_id   TEXT,
+        connection_name TEXT NOT NULL DEFAULT '',
+        context         TEXT NOT NULL,
+        messages        TEXT NOT NULL,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX ai_chats_updated ON ai_chats (updated_at);",
+    // 7: every tab is kept while open (unpinned ones as drafts), with its file
+    "ALTER TABLE pinned_tabs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE pinned_tabs ADD COLUMN file_path TEXT;",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -120,6 +137,8 @@ fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, 
 
 pub struct Store {
     db: Connection,
+    /// Where passwords go instead of `db`, when set.
+    secrets: Option<std::cell::RefCell<Secrets>>,
 }
 
 impl Store {
@@ -134,9 +153,60 @@ impl Store {
     fn init(db: Connection) -> Result<Self> {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
-        let mut store = Self { db };
+        // Overwrite deleted content, so a replaced profile (or anything
+        // else removed) doesn't linger in free pages.
+        db.pragma_update(None, "secure_delete", "ON")?;
+        let mut store = Self { db, secrets: None };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Keeps passwords in `vault` from now on, moving any saved in the
+    /// database there.
+    pub fn use_vault(&mut self, vault: Box<dyn SecretVault>) -> Result<()> {
+        self.secrets = Some(std::cell::RefCell::new(Secrets::new(vault)));
+        let mut stmt = self.db.prepare("SELECT profile FROM connections")?;
+        let saved: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        let mut moved = false;
+        for json in saved {
+            let profile: ConnectionProfile = serde_json::from_str(&json)?;
+            if !secrets::strip(&profile).1.is_empty() {
+                self.save_connection(&profile)?;
+                moved = true;
+            }
+        }
+        // Rewrite the file once so passwords saved before the vault are
+        // gone from free pages and the WAL too.
+        let scrubbed: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'vault_scrubbed'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if moved || scrubbed.is_none() {
+            self.db.execute_batch(
+                "VACUUM;
+                 PRAGMA wal_checkpoint(TRUNCATE);
+                 INSERT INTO settings (key, value) VALUES ('vault_scrubbed', '1')
+                   ON CONFLICT(key) DO NOTHING;",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `profile` with its passwords from the vault.
+    fn with_secrets(&self, mut profile: ConnectionProfile) -> ConnectionProfile {
+        if let Some(s) = &self.secrets
+            && let Some(found) = s.borrow_mut().get(&profile.id)
+        {
+            secrets::fill(&mut profile, &found);
+        }
+        profile
     }
 
     fn migrate(&mut self) -> Result<()> {
@@ -166,7 +236,7 @@ impl Store {
             let (json, last_used_at) = row?;
             let mut profile: ConnectionProfile = serde_json::from_str(&json)?;
             profile.last_used_at = last_used_at;
-            out.push(profile);
+            out.push(self.with_secrets(profile));
         }
         out.sort_by(|a, b| {
             b.favorite
@@ -202,11 +272,20 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+        let profile: Option<ConnectionProfile> =
+            json.map(|j| serde_json::from_str(&j)).transpose()?;
+        Ok(profile.map(|p| self.with_secrets(p)))
     }
 
     /// Inserts or replaces a profile by id.
     pub fn save_connection(&self, profile: &ConnectionProfile) -> Result<()> {
+        // Passwords go to the vault; the database keeps them only when
+        // there is no vault or it can't be used.
+        let (stripped, found) = secrets::strip(profile);
+        let profile = match &self.secrets {
+            Some(s) if s.borrow_mut().put(&profile.id, found) => &stripped,
+            _ => profile,
+        };
         self.db.execute(
             "INSERT INTO connections (id, name, profile) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET
@@ -349,6 +428,9 @@ impl Store {
     pub fn delete_connection(&self, id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
+        if let Some(s) = &self.secrets {
+            s.borrow_mut().put(id, Default::default());
+        }
         Ok(())
     }
 
@@ -415,10 +497,98 @@ impl Store {
             .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
+    /// Inserts a conversation with id 0, otherwise updates it. Returns its id.
+    pub fn save_ai_chat(&self, chat: &AiChat) -> Result<i64> {
+        let context = serde_json::to_string(&chat.context)?;
+        let messages = serde_json::to_string(&chat.messages)?;
+        if chat.id == 0 {
+            self.db.execute(
+                "INSERT INTO ai_chats (title, connection_id, connection_name, context, messages)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    chat.title,
+                    chat.connection_id,
+                    chat.connection_name,
+                    context,
+                    messages
+                ],
+            )?;
+            Ok(self.db.last_insert_rowid())
+        } else {
+            self.db.execute(
+                "UPDATE ai_chats SET title = ?2, context = ?3, messages = ?4,
+                 updated_at = datetime('now') WHERE id = ?1",
+                params![chat.id, chat.title, context, messages],
+            )?;
+            Ok(chat.id)
+        }
+    }
+
+    /// Conversations, newest first.
+    pub fn list_ai_chats(&self, limit: usize) -> Result<Vec<AiChatSummary>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, title, connection_name, updated_at, messages FROM ai_chats
+             ORDER BY updated_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            let messages: String = r.get(4)?;
+            Ok(AiChatSummary {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                connection_name: r.get(2)?,
+                updated_at: r.get(3)?,
+                message_count: serde_json::from_str::<Vec<serde_json::Value>>(&messages)
+                    .map_or(0, |m| m.len()),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn get_ai_chat(&self, id: i64) -> Result<Option<AiChat>> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT id, title, connection_id, connection_name, context, messages, updated_at
+                 FROM ai_chats WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, title, connection_id, connection_name, context, messages, updated_at)) = row
+        else {
+            return Ok(None);
+        };
+        Ok(Some(AiChat {
+            id,
+            title,
+            connection_id,
+            connection_name,
+            context: serde_json::from_str(&context).unwrap_or_default(),
+            messages: serde_json::from_str(&messages)?,
+            updated_at,
+        }))
+    }
+
+    pub fn delete_ai_chat(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM ai_chats WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// Pinned tabs of a connection, in tab order.
     pub fn list_pinned_tabs(&self, connection_id: &str) -> Result<Vec<PinnedTab>> {
         let mut stmt = self.db.prepare(
-            "SELECT id, connection_id, title, sql, position FROM pinned_tabs
+            "SELECT id, connection_id, title, sql, position, pinned, file_path FROM pinned_tabs
              WHERE connection_id = ?1 ORDER BY position, id",
         )?;
         let rows = stmt.query_map([connection_id], |r| {
@@ -428,6 +598,8 @@ impl Store {
                 title: r.get(2)?,
                 sql: r.get(3)?,
                 position: r.get(4)?,
+                pinned: r.get(5)?,
+                file_path: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -438,18 +610,43 @@ impl Store {
         let mut saved = tab.clone();
         if tab.id == 0 {
             self.db.execute(
-                "INSERT INTO pinned_tabs (connection_id, title, sql, position) VALUES (?1, ?2, ?3, ?4)",
-                params![tab.connection_id, tab.title, tab.sql, tab.position],
+                "INSERT INTO pinned_tabs (connection_id, title, sql, position, pinned, file_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    tab.connection_id,
+                    tab.title,
+                    tab.sql,
+                    tab.position,
+                    tab.pinned,
+                    tab.file_path
+                ],
             )?;
             saved.id = self.db.last_insert_rowid();
         } else {
             self.db.execute(
-                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, updated_at = datetime('now')
+                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, pinned = ?5,
+                 file_path = ?6, updated_at = datetime('now')
                  WHERE id = ?1",
-                params![tab.id, tab.title, tab.sql, tab.position],
+                params![
+                    tab.id,
+                    tab.title,
+                    tab.sql,
+                    tab.position,
+                    tab.pinned,
+                    tab.file_path
+                ],
             )?;
         }
         Ok(saved)
+    }
+
+    /// Drops a connection's unpinned (draft) tabs, once the user let them go.
+    pub fn delete_draft_tabs(&self, connection_id: &str) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM pinned_tabs WHERE connection_id = ?1 AND pinned = 0",
+            [connection_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_pinned_tab(&self, id: i64) -> Result<()> {
@@ -679,6 +876,36 @@ mod tests {
     }
 
     #[test]
+    fn ai_chats_are_kept() {
+        use crate::ai::{AiContext, ChatMessage};
+        let store = Store::open_in_memory().unwrap();
+        let mut chat = AiChat {
+            id: 0,
+            title: "為什麼慢".into(),
+            connection_id: Some("c1".into()),
+            connection_name: "本機".into(),
+            context: AiContext {
+                sql: "SELECT 1".into(),
+                ..Default::default()
+            },
+            messages: vec![ChatMessage::new("user", "為什麼慢")],
+            updated_at: String::new(),
+        };
+        chat.id = store.save_ai_chat(&chat).unwrap();
+        chat.messages.push(ChatMessage::new("assistant", "加索引"));
+        store.save_ai_chat(&chat).unwrap();
+        let list = store.list_ai_chats(10).unwrap();
+        assert_eq!((list.len(), list[0].message_count), (1, 2));
+        let loaded = store.get_ai_chat(chat.id).unwrap().unwrap();
+        assert_eq!(
+            (loaded.messages, loaded.context),
+            (chat.messages, chat.context)
+        );
+        store.delete_ai_chat(chat.id).unwrap();
+        assert!(store.get_ai_chat(chat.id).unwrap().is_none());
+    }
+
+    #[test]
     fn snippets_start_seeded_and_can_be_edited() {
         let store = Store::open_in_memory().unwrap();
         let seeded = store.list_snippets().unwrap();
@@ -704,6 +931,96 @@ mod tests {
     }
 
     #[test]
+    fn passwords_live_in_the_vault() {
+        use crate::profile::{SshAuth, SshConfig};
+        use crate::secrets::MemoryVault;
+        let mut store = Store::open_in_memory().unwrap();
+        // Saved before there was a vault: moved over when one is set.
+        let mut p = ConnectionProfile::new("prod", "db", "app");
+        p.password = Some("s3cret".into());
+        p.ssh = Some(SshConfig {
+            host: "bastion".into(),
+            port: 22,
+            user: "me".into(),
+            auth: SshAuth::Password {
+                password: "sshpw".into(),
+            },
+            known_host_fingerprint: None,
+        });
+        store.save_connection(&p).unwrap();
+        let vault = MemoryVault::default();
+        store.use_vault(Box::new(vault.clone())).unwrap();
+
+        let raw: String = store
+            .db
+            .query_row("SELECT profile FROM connections", [], |r| r.get(0))
+            .unwrap();
+        assert!(!raw.contains("s3cret") && !raw.contains("sshpw"), "{raw}");
+        let kept = vault.0.lock().unwrap().clone().unwrap();
+        assert!(kept.contains("s3cret") && kept.contains("sshpw"));
+
+        // Reading fills them back in, so a copy carries them too.
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap(), p);
+        assert_eq!(
+            store.list_connections().unwrap()[0].password.as_deref(),
+            Some("s3cret")
+        );
+        let copy = ConnectionProfile {
+            id: "copy".into(),
+            ..store.get_connection(&p.id).unwrap().unwrap()
+        };
+        store.save_connection(&copy).unwrap();
+        assert_eq!(
+            store
+                .get_connection("copy")
+                .unwrap()
+                .unwrap()
+                .password
+                .as_deref(),
+            Some("s3cret")
+        );
+
+        // Clearing the password removes it; deleting drops the rest.
+        let mut cleared = p.clone();
+        cleared.password = Some(String::new());
+        store.save_connection(&cleared).unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+        store.delete_connection(&p.id).unwrap();
+        store.delete_connection("copy").unwrap();
+        assert_eq!(vault.0.lock().unwrap().as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn moved_passwords_leave_no_trace_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("mydb-vault-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.db");
+        let mut p = ConnectionProfile::new("prod", "db", "app");
+        p.password = Some("Zq7-unique-secret".into());
+        Store::open(&path).unwrap().save_connection(&p).unwrap();
+
+        let mut store = Store::open(&path).unwrap();
+        store
+            .use_vault(Box::new(crate::secrets::MemoryVault::default()))
+            .unwrap();
+        // A later password change must not linger either.
+        p.password = Some("Zq7-second-secret".into());
+        store.save_connection(&p).unwrap();
+        // Read the files while the app still has them open (WAL included).
+
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("Zq7-"),
+                "password left in the database files"
+            );
+        }
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn pinned_tabs_per_connection() {
         let store = Store::open_in_memory().unwrap();
         let tab = |conn: &str, title: &str, position| PinnedTab {
@@ -712,6 +1029,8 @@ mod tests {
             title: title.into(),
             sql: format!("SELECT '{title}';"),
             position,
+            pinned: true,
+            file_path: None,
         };
         let b = store.save_pinned_tab(&tab("c1", "b", 1)).unwrap();
         let a = store.save_pinned_tab(&tab("c1", "a", 0)).unwrap();
@@ -735,6 +1054,23 @@ mod tests {
         store.delete_pinned_tab(b.id).unwrap();
         assert_eq!(titles("c1"), ["a"]);
         assert_eq!(titles("c2"), ["other"]);
+
+        // Drafts come back after a crash and go once let go.
+        let draft = PinnedTab {
+            pinned: false,
+            file_path: Some("/tmp/q.sql".into()),
+            ..tab("c1", "draft", 2)
+        };
+        store.save_pinned_tab(&draft).unwrap();
+        assert_eq!(titles("c1"), ["a", "draft"]);
+        assert_eq!(
+            store.list_pinned_tabs("c1").unwrap()[1]
+                .file_path
+                .as_deref(),
+            Some("/tmp/q.sql")
+        );
+        store.delete_draft_tabs("c1").unwrap();
+        assert_eq!(titles("c1"), ["a"]);
     }
 
     #[test]

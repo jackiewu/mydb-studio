@@ -7,7 +7,12 @@
   ],
   "permissions": [
     "core:default",
+    "core:window:allow-destroy",
     "dialog:allow-save",
+    "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text"
   ]
