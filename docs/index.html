@@ -106,16 +106,10 @@ h1 { font-size: clamp(30px, 6vw, 50px); line-height: 1.15; margin: 0 0 16px; let
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; padding: 0; list-style: none; }
 .chips li { font-size: 13px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 10px; background: var(--surface); }
 
-/* Screenshot placeholder */
+/* Screenshots */
 .window { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; box-shadow: 0 20px 50px -24px rgba(0,0,0,.25); }
 .window-bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
 .window-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border); }
-.shot {
-  aspect-ratio: 16 / 10; display: grid; place-items: center; text-align: center; color: var(--muted);
-  background: repeating-linear-gradient(135deg, transparent 0 14px, color-mix(in srgb, var(--border) 45%, transparent) 14px 15px);
-  font-size: 14px; padding: 16px;
-}
-.shot strong { display: block; font-size: 16px; color: var(--text); margin-bottom: 4px; }
 
 /* Sections */
 section { padding: 64px 0; }
@@ -140,7 +134,9 @@ h2 { font-size: clamp(26px, 4vw, 32px); margin: 0 0 8px; line-height: 1.3; }
 .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .gallery figure { margin: 0; }
 .gallery figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; text-align: center; }
-.gallery .shot { border: 1px dashed var(--border); border-radius: 10px; background-color: var(--surface); }
+.shot-img { display: block; width: 100%; height: auto; }
+.gallery a { display: block; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); transition: border-color .15s; }
+.gallery a:hover { border-color: var(--accent); }
 
 .stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .stack .card h3 { font-size: 15px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
@@ -238,9 +234,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
           <li>Rust</li><li>Tauri 2</li><li>React</li><li>CodeMirror</li><li>llama.cpp</li><li>MCP</li>
         </ul>
       </div>
-      <div class="window" role="img" aria-label="主畫面截圖待補">
+      <div class="window">
         <div class="window-bar"><i></i><i></i><i></i></div>
-        <div class="shot"><div><strong>截圖待補</strong>主畫面：連線、SQL 編輯器與結果表格</div></div>
+        <img class="shot-img" src="img/main.webp" width="1600" height="1000" alt="MyDB Studio 主畫面：左側資料庫與資料表，右側 SQL 編輯器與查詢結果">
       </div>
     </div>
   </div>
@@ -371,11 +367,11 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: s
   <section id="screens">
     <div class="wrap">
       <h2>畫面</h2>
-      <p class="sub">正式截圖整理中，先保留位置。</p>
+      <p class="sub">以示範資料截圖，點圖片可以看大圖。</p>
       <div class="gallery">
-        <figure><div class="shot"><div><strong>截圖待補</strong>SQL 編輯器與 Explain</div></div><figcaption>SQL 編輯器</figcaption></figure>
-        <figure><div class="shot"><div><strong>截圖待補</strong>指標、變數與權限</div></div><figcaption>伺服器管理</figcaption></figure>
-        <figure><div class="shot"><div><strong>截圖待補</strong>key 分組與型別檢視</div></div><figcaption>Redis</figcaption></figure>
+        <figure><a href="img/explain.webp"><img class="shot-img" src="img/explain.webp" width="1600" height="1000" loading="lazy" alt="Explain 結果：標出全表掃描，並建議不要用函式包住 WHERE 的欄位"></a><figcaption>SQL 編輯器與 Explain 建議</figcaption></figure>
+        <figure><a href="img/server.webp"><img class="shot-img" src="img/server.webp" width="1600" height="1000" loading="lazy" alt="伺服器管理：使用者清單與資料庫權限勾選"></a><figcaption>伺服器管理：使用者與權限</figcaption></figure>
+        <figure><a href="img/redis.webp"><img class="shot-img" src="img/redis.webp" width="1600" height="1000" loading="lazy" alt="Redis：key 依前綴分組，檢視 hash 內容"></a><figcaption>Redis：key 分組與型別檢視</figcaption></figure>
       </div>
     </div>
   </section>
