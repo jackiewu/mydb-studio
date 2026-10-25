@@ -197,7 +197,7 @@ impl Store {
                 .secrets
                 .as_ref()
                 .and_then(|s| s.borrow_mut().get(&profile.id));
-            if kept.is_some_and(|k| k.destination.is_some() && k.destination != found.destination) {
+            if kept.is_some_and(|k| k.destination != found.destination) {
                 self.write_connection(&stripped)?;
             } else {
                 self.save_connection(&profile)?;

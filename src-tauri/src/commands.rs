@@ -803,6 +803,8 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
+    // Settings include where AI prompts go and what program runs the model.
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     state
         .lock

@@ -21,7 +21,8 @@ const PANIC_LOG: &str = "last-panic.txt";
 fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
     let flag = dir.join(RUNNING_FLAG);
     let log = dir.join(PANIC_LOG);
-    let unclean_exit = flag.exists();
+    // A clean exit empties the flag (see `run`).
+    let unclean_exit = std::fs::metadata(&flag).is_ok_and(|m| m.len() > 0);
     let panic = std::fs::read_to_string(&log).ok();
     let _ = std::fs::remove_file(&log);
     // Held for the whole run: the MCP server checks it to tell whether the
@@ -202,10 +203,14 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 state.ai.kill_now();
-                // With the app gone, the MCP server goes by the lock
-                // settings (see mydb_mcp::Server::locked).
+                // Emptied, not removed: another copy of the app may be
+                // waiting for its lock, and must get the same file the MCP
+                // server checks.
                 if let Ok(dir) = app.path().app_data_dir() {
-                    let _ = std::fs::remove_file(dir.join(RUNNING_FLAG));
+                    let _ = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(dir.join(RUNNING_FLAG))
+                        .and_then(|f| f.set_len(0));
                 }
             }
         });

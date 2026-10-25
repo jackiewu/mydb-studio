@@ -612,10 +612,14 @@ impl AiRuntime {
             return Ok(content.to_string());
         }
 
+        let started = std::time::Instant::now();
         let mut pending = Vec::<u8>::new();
         loop {
             if self.cancel.load(Ordering::SeqCst) != epoch {
                 return Ok(answer);
+            }
+            if started.elapsed() > MAX_ANSWER_TIME {
+                return Err(config_err("AI 回答太久，已停止。"));
             }
             let chunk = tokio::time::timeout(wait, resp.next_chunk())
                 .await
@@ -643,6 +647,9 @@ impl AiRuntime {
                     if let Some(piece) = v["choices"][0]["delta"]["content"].as_str()
                         && !piece.is_empty()
                     {
+                        if answer.len() + piece.len() > MAX_BODY {
+                            return Err(config_err("AI 回應太長。"));
+                        }
                         answer.push_str(piece);
                         on_token(piece);
                     }
@@ -693,6 +700,8 @@ fn parse_url(url: &str) -> std::io::Result<Target> {
 const MAX_CHUNK: usize = 1 << 20;
 const MAX_BODY: usize = 32 << 20;
 const MAX_LINE: u64 = 16 << 10;
+/// The longest one answer may stream for.
+const MAX_ANSWER_TIME: Duration = Duration::from_secs(15 * 60);
 
 /// Reads one line of at most [`MAX_LINE`] bytes; a longer one is an error.
 async fn read_line(reader: &mut BufReader<TcpStream>, line: &mut String) -> std::io::Result<usize> {
