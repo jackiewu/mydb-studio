@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
+use mydb_core::ddl;
 use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
@@ -936,6 +937,128 @@ pub async fn admin_apply(
 ) -> Result<Vec<String>> {
     state.lock.ensure_unlocked()?;
     admin::apply(&*state.session(&session_id).await?, &change).await
+}
+
+#[tauri::command]
+pub async fn schema_meta(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ddl::SchemaMeta> {
+    state.lock.ensure_unlocked()?;
+    ddl::meta(&*state.session(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn database_options(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> Result<ddl::DatabaseOptions> {
+    state.lock.ensure_unlocked()?;
+    ddl::database_options(&*state.session(&session_id).await?, &database).await
+}
+
+#[tauri::command]
+pub async fn table_design(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    table: String,
+) -> Result<ddl::TableDesign> {
+    state.lock.ensure_unlocked()?;
+    ddl::table_design(&*state.session(&session_id).await?, &database, &table).await
+}
+
+/// `SHOW CREATE TABLE` (or VIEW) text.
+#[tauri::command]
+pub async fn show_create_table(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    table: String,
+) -> Result<String> {
+    state.lock.ensure_unlocked()?;
+    state
+        .session(&session_id)
+        .await?
+        .show_create_table(Some(&database), &table)
+        .await
+}
+
+#[tauri::command]
+pub async fn schema_objects(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> Result<ddl::ObjectList> {
+    state.lock.ensure_unlocked()?;
+    ddl::objects(&*state.session(&session_id).await?, &database).await
+}
+
+#[tauri::command]
+pub async fn object_definition(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    kind: ddl::ObjectKind,
+    name: String,
+) -> Result<ddl::ObjectDefinition> {
+    state.lock.ensure_unlocked()?;
+    ddl::definition(&*state.session(&session_id).await?, &database, kind, &name).await
+}
+
+/// The statements a schema change would run, for the user to confirm.
+#[tauri::command]
+pub async fn schema_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: ddl::SchemaChange,
+) -> Result<ddl::DdlPlan> {
+    state.lock.ensure_unlocked()?;
+    ddl::plan(&*state.session(&session_id).await?, &change).await
+}
+
+#[derive(Serialize)]
+pub struct SchemaApplied {
+    /// What ran, including a restore after a failed re-create.
+    statements: Vec<String>,
+    error: Option<CoreError>,
+    record_id: Option<i64>,
+    /// The session's database afterwards, which a change may have selected.
+    current_database: Option<String>,
+}
+
+/// Runs a schema change. Every run is recorded, whether or not recording is
+/// on, with the definition it replaced in the note.
+#[tauri::command]
+pub async fn schema_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: ddl::SchemaChange,
+) -> Result<SchemaApplied> {
+    state.lock.ensure_unlocked()?;
+    let session = state.session(&session_id).await?;
+    let run = ddl::apply(&session, &change).await?;
+    let p = session.profile();
+    let mut rec = ExecutionRecord::from_outcome(
+        RecordContext {
+            connection_id: &p.id,
+            connection_name: &p.name,
+            server: p.server_label(),
+            server_version: &session.info().server_version,
+            database: run.database.clone().or_else(|| session.current_database()),
+        },
+        &run.sql,
+        &run.outcome,
+    );
+    rec.note = run.note;
+    let record_id = state.store.lock().unwrap().insert_record(&rec).ok();
+    Ok(SchemaApplied {
+        statements: run.outcome.results.iter().map(|r| r.sql.clone()).collect(),
+        error: run.outcome.error,
+        record_id,
+        current_database: session.current_database(),
+    })
 }
 
 /// Stops the statement (or Redis command) running on this session, if any.

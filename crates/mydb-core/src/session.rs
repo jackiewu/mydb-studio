@@ -488,18 +488,113 @@ impl Session {
             .map(|c| c.name_str().into_owned())
             .collect();
         let rows = result
-            .map(|row: Row| {
-                row.unwrap()
-                    .into_iter()
-                    .map(|v| match v {
-                        Value::NULL => None,
-                        Value::Bytes(b) => Some(String::from_utf8_lossy(&b).into_owned()),
-                        other => Some(other.as_sql(true).trim_matches('\'').to_string()),
-                    })
-                    .collect()
-            })
+            .map(|row: Row| row.unwrap().into_iter().map(text_cell).collect())
             .await?;
         Ok(TextRows { columns, rows })
+    }
+
+    /// Like [`Session::query_text`], with `?` placeholders bound to
+    /// `params`. For information_schema lookups by name.
+    pub async fn query_params(&self, sql: &str, params: &[&str]) -> Result<TextRows> {
+        let mut guard = self.link.lock().await;
+        let (conn, _) = self.live(&mut guard).await?;
+        let params: Vec<Value> = params.iter().map(|p| Value::from(*p)).collect();
+        let mut result = conn.exec_iter(sql, params).await?;
+        let columns = result
+            .columns_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+        let rows = result
+            .map(|row: Row| row.unwrap().into_iter().map(text_cell).collect())
+            .await?;
+        Ok(TextRows { columns, rows })
+    }
+
+    /// Runs schema changes one statement at a time, each sent whole so a
+    /// routine body needs no `DELIMITER`. With `database`, they run there
+    /// and the database selected before is put back afterwards (when there
+    /// was none, `database` stays selected). Stops at the first error.
+    pub async fn run_ddl(&self, database: Option<&str>, statements: &[String]) -> ExecutionOutcome {
+        let started_at = Utc::now();
+        let timer = Instant::now();
+        let mut results = Vec::new();
+        let mut failed_statement = None;
+        let mut reconnected = false;
+        let mut guard = self.link.lock().await;
+        let _busy = self.start_run();
+
+        let error = match self.live(&mut guard).await {
+            Err(e) => Some(e),
+            Ok((conn, r)) => {
+                reconnected = r;
+                let before = self.current_database();
+                let quote = |n: &str| format!("USE `{}`", n.replace('`', "``"));
+                let mut error = None;
+                if let Some(db) = database
+                    && before.as_deref() != Some(db)
+                    && let Err(e) = conn.query_drop(quote(db)).await
+                {
+                    error = Some(e.into());
+                }
+                if error.is_none() {
+                    for sql in statements {
+                        let step = Instant::now();
+                        match conn.query_iter(sql.as_str()).await {
+                            Ok(result) => {
+                                let stats = (
+                                    result.affected_rows(),
+                                    result.warnings(),
+                                    result.info().into_owned(),
+                                );
+                                if let Err(e) = result.drop_result().await {
+                                    failed_statement = Some(sql.clone());
+                                    error = Some(e.into());
+                                    break;
+                                }
+                                results.push(StatementResult {
+                                    sql: sql.clone(),
+                                    duration_ms: step.elapsed().as_secs_f64() * 1000.0,
+                                    columns: Vec::new(),
+                                    rows: Vec::new(),
+                                    total_rows: 0,
+                                    truncated: false,
+                                    affected_rows: stats.0,
+                                    last_insert_id: None,
+                                    warnings: stats.1,
+                                    info: stats.2,
+                                    limit_added: None,
+                                });
+                            }
+                            Err(e) => {
+                                failed_statement = Some(sql.clone());
+                                error = Some(e.into());
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(db) = database {
+                    match before.as_deref() {
+                        Some(prev) if prev != db => {
+                            let _ = conn.query_drop(quote(prev)).await;
+                        }
+                        Some(_) => {}
+                        None => *self.current_db.lock().unwrap() = Some(db.to_string()),
+                    }
+                }
+                error
+            }
+        };
+        ExecutionOutcome {
+            started_at,
+            duration_ms: timer.elapsed().as_secs_f64() * 1000.0,
+            results,
+            error,
+            failed_statement,
+            reconnected,
+            cancelled: false,
+        }
     }
 
     /// Runs `statements` in order, stopping at the first error. Returns how
@@ -636,6 +731,15 @@ async fn open_link(
         },
         info,
     ))
+}
+
+/// A cell as text, as [`Session::query_text`] returns it.
+fn text_cell(v: Value) -> Option<String> {
+    match v {
+        Value::NULL => None,
+        Value::Bytes(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+        other => Some(other.as_sql(true).trim_matches('\'').to_string()),
+    }
 }
 
 /// Whether a statement (as split, so line comments are already gone) is

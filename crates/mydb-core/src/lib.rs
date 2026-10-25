@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod advisor;
 pub mod ai;
+pub mod ddl;
 pub mod error;
 pub mod export;
 pub mod profile;

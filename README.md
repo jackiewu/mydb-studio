@@ -15,6 +15,7 @@ MySQL / MariaDB 與 Redis 桌面用戶端，用 Rust（Tauri 2）開發。目標
 - 報表：勾選紀錄，產生 Markdown、HTML 或 CSV 報表 ✅
 - 錯誤修正建議：內建 MySQL/MariaDB 錯誤碼字典，必要時再交給 AI 分析（規劃中）
 - 🖥 伺服器：版本、運行時間、連線數、快取命中率等重要指標；狀態與系統變數搜尋；執行中的查詢（可中止）；使用者新增、改密碼、鎖定、刪除；全域／資料庫／資料表權限勾選與預設組合，套用前先預覽 GRANT／REVOKE ✅
+- 🗂 結構：建立／刪除資料庫、改字元集與定序（可一併 CONVERT 所有資料表）；資料表設計器編輯欄位、索引、外鍵與資料表選項，合併成一句 ALTER TABLE 預覽後執行；檢視、預存程序、函式、觸發器、事件直接編輯 CREATE 語句（MariaDB 用 CREATE OR REPLACE，MySQL 先刪除再建立、失敗自動還原）；event_scheduler 開關；刪除要輸入名稱確認；每次變更都存進執行紀錄，備註附上變更前的定義 ✅
 - MCP server：讓 AI 工具（例如 Claude）用存好的 MySQL／MariaDB 連線查詢 ✅
 - Redis（第一版）：連線支援 TLS（含 AWS ElastiCache、GCP Memorystore）與 SSH 通道；左側 db0～db15 的 key 依冒號前綴分組，只用 `SCAN` 分批載入；依型別唯讀檢視值（大型集合分頁）；指令列一行一個指令；`KEYS`、`FLUSHALL` 等危險指令先確認；指令寫進執行紀錄，`AUTH` 的密碼一律遮蔽 ✅
 

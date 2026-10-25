@@ -36,6 +36,7 @@ import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
 import { RedisServerPage } from "./components/server/RedisServerPage";
 import { ServerPage } from "./components/server/ServerPage";
+import { SchemaPage, type SchemaTarget } from "./components/schema/SchemaPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { Splitter, usePaneSize } from "./components/Splitter";
@@ -72,7 +73,9 @@ export default function App() {
   const [editorHeight, setEditorHeight] = usePaneSize("mydb.editorHeight");
   const splitRef = useRef<HTMLDivElement>(null);
   const [running, setRunning] = useState(false);
-  const [view, setView] = useState<"main" | "records" | "server">("main");
+  const [view, setView] = useState<"main" | "records" | "server" | "schema">("main");
+  // Where the schema page opens, set from the tree.
+  const [schemaTarget, setSchemaTarget] = useState<SchemaTarget | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
@@ -669,6 +672,10 @@ export default function App() {
             onShowSystemChange={(show) => updateSettings({ ...settings, show_system_databases: show })}
             onUseDatabase={switchDatabase}
             onOpenTable={openTable}
+            onManage={(database, table) => {
+              setSchemaTarget({ database, table, nonce: Date.now() });
+              setView("schema");
+            }}
           />
           )}
         </aside>
@@ -704,6 +711,15 @@ export default function App() {
             </label>
             )}
             <span className="spacer" />
+            {!isRedis && (
+              <button
+                className={view === "schema" ? "active" : undefined}
+                onClick={() => setView(view === "schema" ? "main" : "schema")}
+                title="資料庫、資料表結構與索引、檢視、預存程序、觸發器、事件"
+              >
+                🗂 結構
+              </button>
+            )}
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
@@ -711,7 +727,7 @@ export default function App() {
             >
               🖥 伺服器
             </button>
-            {view === "server" ? (
+            {view === "server" || view === "schema" ? (
               <button className="primary" onClick={() => setView("main")}>
                 ← 回到編輯器
               </button>
@@ -808,10 +824,31 @@ export default function App() {
             }}
           />
         )}
+        {session && view === "schema" && !isRedis && (
+          <SchemaPage
+            key={session.session_id}
+            sessionId={session.session_id}
+            mariadb={isMaria}
+            databases={schema.databases}
+            showSystem={settings.show_system_databases}
+            currentDb={currentDb}
+            target={schemaTarget}
+            theme={editorTheme(settings.editor_theme, systemDark)}
+            fontSize={settings.editor_font_size}
+            onChanged={(db) => {
+              setCurrentDb(db);
+              schema.reload();
+            }}
+            onOpenSql={(sql) => {
+              setView("main");
+              tabs.add(sql);
+            }}
+          />
+        )}
         {session ? (
           <div
             className="split"
-            hidden={view === "server"}
+            hidden={view === "server" || view === "schema"}
             ref={splitRef}
             style={editorHeight ? { gridTemplateRows: `${editorHeight}px minmax(0, 1fr)` } : undefined}
           >

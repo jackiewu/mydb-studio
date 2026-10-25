@@ -14,6 +14,8 @@ interface Props {
   onUseDatabase: (database: string) => void;
   /** Called when a table is clicked. */
   onOpenTable: (database: string, table: string) => void;
+  /** Opens the schema page on a database, or the designer of a table. */
+  onManage: (database: string, table?: string) => void;
 }
 
 /** `text` with the part matching `filter` marked. */
@@ -41,7 +43,7 @@ function size(bytes?: number | null) {
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
-export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, onUseDatabase, onOpenTable }: Props) {
+export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, onUseDatabase, onOpenTable, onManage }: Props) {
   const { databases: dbs, tables, error } = schema;
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [filterText, setFilterText] = useState("");
@@ -143,6 +145,8 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                     },
                     { label: isOpen ? "收合" : "展開", disabled: onlyTables, onClick: () => expand(d.name, !isOpen) },
                     "sep",
+                    { label: "管理結構（資料表、程序、事件…）", onClick: () => onManage(d.name) },
+                    "sep",
                     { label: "複製名稱", onClick: () => copyText(d.name) },
                     "sep",
                     { label: "重新整理清單", onClick: reload },
@@ -177,6 +181,9 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                             const full = `${quoteIdent(d.name)}.${quoteIdent(t.name)}`;
                             openMenu(e, [
                               { label: "查詢前 100 筆", onClick: () => onOpenTable(d.name, t.name) },
+                              ...(t.kind === "BASE TABLE"
+                                ? [{ label: "設計資料表（欄位、索引）…", onClick: () => onManage(d.name, t.name) }]
+                                : []),
                               "sep",
                               { label: "複製名稱", onClick: () => copyText(t.name) },
                               { label: `複製完整名稱（${d.name}.${t.name}）`, onClick: () => copyText(full) },
