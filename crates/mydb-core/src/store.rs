@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::Result;
 use crate::profile::ConnectionProfile;
 use crate::records::{ExecutionRecord, RecordFilter};
+use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
 const MIGRATIONS: &[&str] = &[
@@ -42,6 +43,50 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX executions_started_at ON executions (started_at);
     CREATE INDEX executions_connection ON executions (connection_id, started_at);",
+    // 4: preferences and snippets, with a few starter snippets
+    "CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE snippets (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        prefix     TEXT NOT NULL,
+        body       TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO snippets (name, prefix, body) VALUES
+      ('查詢資料', 'sel', 'SELECT *
+FROM ${table}
+WHERE ${condition}
+LIMIT 100;'),
+      ('計算筆數', 'cnt', 'SELECT COUNT(*) FROM ${table};'),
+      ('新增資料', 'ins', 'INSERT INTO ${table} (${columns})
+VALUES (${values});'),
+      ('更新資料', 'upd', 'UPDATE ${table}
+SET ${column} = ${value}
+WHERE ${id_column} = ${id};'),
+      ('刪除資料', 'del', 'DELETE FROM ${table}
+WHERE ${condition};'),
+      ('資料表結構', 'ddl', 'SHOW CREATE TABLE ${table};'),
+      ('索引', 'idx', 'SHOW INDEX FROM ${table};'),
+      ('執行中的查詢', 'proc', 'SHOW FULL PROCESSLIST;'),
+      ('資料表大小', 'size', 'SELECT TABLE_NAME,
+       ROUND((DATA_LENGTH + INDEX_LENGTH) / 1024 / 1024, 1) AS size_mb,
+       TABLE_ROWS AS rows_estimate
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE()
+ORDER BY size_mb DESC;');",
+    // 5: pinned editor tabs
+    "CREATE TABLE pinned_tabs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        sql           TEXT NOT NULL,
+        position      INTEGER NOT NULL DEFAULT 0,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX pinned_tabs_connection ON pinned_tabs (connection_id, position);",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -306,6 +351,112 @@ impl Store {
             .execute("DELETE FROM connections WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    /// Saved preferences, or the defaults if none were saved.
+    pub fn get_settings(&self) -> Result<AppSettings> {
+        let json: Option<String> = self
+            .db
+            .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(match json {
+            Some(j) => serde_json::from_str(&j)?,
+            None => AppSettings::default(),
+        })
+    }
+
+    pub fn save_settings(&self, settings: &AppSettings) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO settings (key, value) VALUES ('app', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [serde_json::to_string(settings)?],
+        )?;
+        Ok(())
+    }
+
+    /// All snippets, by prefix.
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id, name, prefix, body FROM snippets ORDER BY prefix, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Snippet {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                prefix: r.get(2)?,
+                body: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Inserts a snippet with id 0, otherwise updates it. Returns it with its id.
+    pub fn save_snippet(&self, snippet: &Snippet) -> Result<Snippet> {
+        let mut saved = snippet.clone();
+        if snippet.id == 0 {
+            self.db.execute(
+                "INSERT INTO snippets (name, prefix, body) VALUES (?1, ?2, ?3)",
+                params![snippet.name, snippet.prefix, snippet.body],
+            )?;
+            saved.id = self.db.last_insert_rowid();
+        } else {
+            self.db.execute(
+                "UPDATE snippets SET name = ?2, prefix = ?3, body = ?4, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![snippet.id, snippet.name, snippet.prefix, snippet.body],
+            )?;
+        }
+        Ok(saved)
+    }
+
+    pub fn delete_snippet(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM snippets WHERE id = ?1", [id])?;
+        Ok(())
+    }
+    /// Pinned tabs of a connection, in tab order.
+    pub fn list_pinned_tabs(&self, connection_id: &str) -> Result<Vec<PinnedTab>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, connection_id, title, sql, position FROM pinned_tabs
+             WHERE connection_id = ?1 ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map([connection_id], |r| {
+            Ok(PinnedTab {
+                id: r.get(0)?,
+                connection_id: r.get(1)?,
+                title: r.get(2)?,
+                sql: r.get(3)?,
+                position: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Inserts a tab with id 0, otherwise updates it. Returns it with its id.
+    pub fn save_pinned_tab(&self, tab: &PinnedTab) -> Result<PinnedTab> {
+        let mut saved = tab.clone();
+        if tab.id == 0 {
+            self.db.execute(
+                "INSERT INTO pinned_tabs (connection_id, title, sql, position) VALUES (?1, ?2, ?3, ?4)",
+                params![tab.connection_id, tab.title, tab.sql, tab.position],
+            )?;
+            saved.id = self.db.last_insert_rowid();
+        } else {
+            self.db.execute(
+                "UPDATE pinned_tabs SET title = ?2, sql = ?3, position = ?4, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![tab.id, tab.title, tab.sql, tab.position],
+            )?;
+        }
+        Ok(saved)
+    }
+
+    pub fn delete_pinned_tab(&self, id: i64) -> Result<()> {
+        self.db
+            .execute("DELETE FROM pinned_tabs WHERE id = ?1", [id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +652,89 @@ mod tests {
 
         store.delete_records(&[a, c]).unwrap();
         assert_eq!(ids(RecordFilter::default()), [b]);
+    }
+
+    #[test]
+    fn settings_default_then_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_settings().unwrap(), AppSettings::default());
+        let s = AppSettings {
+            editor_theme: "dracula".into(),
+            max_rows: 200,
+            ..Default::default()
+        };
+        store.save_settings(&s).unwrap();
+        assert_eq!(store.get_settings().unwrap(), s);
+        // Unknown or missing fields from another version still load.
+        store
+            .db
+            .execute(
+                "UPDATE settings SET value = '{\"editor_font_size\": 16, \"gone\": 1}'",
+                [],
+            )
+            .unwrap();
+        let loaded = store.get_settings().unwrap();
+        assert_eq!(loaded.editor_font_size, 16);
+        assert_eq!(loaded.max_rows, crate::DEFAULT_MAX_ROWS);
+    }
+
+    #[test]
+    fn snippets_start_seeded_and_can_be_edited() {
+        let store = Store::open_in_memory().unwrap();
+        let seeded = store.list_snippets().unwrap();
+        assert!(seeded.iter().any(|s| s.prefix == "sel"));
+
+        let mut mine = store
+            .save_snippet(&Snippet {
+                id: 0,
+                name: "最近訂單".into(),
+                prefix: "aaa".into(),
+                body: "SELECT * FROM orders ORDER BY id DESC LIMIT ${n};".into(),
+            })
+            .unwrap();
+        assert!(mine.id > 0);
+        assert_eq!(store.list_snippets().unwrap()[0], mine);
+
+        mine.body = "SELECT 1;".into();
+        store.save_snippet(&mine).unwrap();
+        assert_eq!(store.list_snippets().unwrap()[0].body, "SELECT 1;");
+
+        store.delete_snippet(mine.id).unwrap();
+        assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn pinned_tabs_per_connection() {
+        let store = Store::open_in_memory().unwrap();
+        let tab = |conn: &str, title: &str, position| PinnedTab {
+            id: 0,
+            connection_id: conn.into(),
+            title: title.into(),
+            sql: format!("SELECT '{title}';"),
+            position,
+        };
+        let b = store.save_pinned_tab(&tab("c1", "b", 1)).unwrap();
+        let a = store.save_pinned_tab(&tab("c1", "a", 0)).unwrap();
+        store.save_pinned_tab(&tab("c2", "other", 0)).unwrap();
+
+        let titles = |c: &str| -> Vec<String> {
+            store
+                .list_pinned_tabs(c)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.title)
+                .collect()
+        };
+        assert_eq!(titles("c1"), ["a", "b"]);
+
+        let mut a2 = a.clone();
+        a2.sql = "SELECT 42;".into();
+        store.save_pinned_tab(&a2).unwrap();
+        assert_eq!(store.list_pinned_tabs("c1").unwrap()[0].sql, "SELECT 42;");
+
+        store.delete_pinned_tab(b.id).unwrap();
+        assert_eq!(titles("c1"), ["a"]);
+        assert_eq!(titles("c2"), ["other"]);
     }
 
     #[test]

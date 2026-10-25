@@ -34,6 +34,9 @@ pub struct ReportOptions {
     /// Rows of each preview to include.
     #[serde(default = "default_rows")]
     pub max_result_rows: usize,
+    /// Leave out server addresses and accounts; see [`redact`].
+    #[serde(default = "yes")]
+    pub hide_connection: bool,
 }
 
 fn yes() -> bool {
@@ -84,6 +87,15 @@ fn rows(r: &ExecutionRecord) -> String {
         (n, 0) => format!("回傳 {n}"),
         (0, n) => format!("影響 {n}"),
         (q, a) => format!("影響 {a}，回傳 {q}"),
+    }
+}
+
+/// Server address (when known) and version.
+fn server_info(r: &ExecutionRecord) -> String {
+    if r.server.is_empty() {
+        r.server_version.clone()
+    } else {
+        format!("{}，{}", r.server, r.server_version)
     }
 }
 
@@ -179,12 +191,11 @@ fn markdown(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &st
 
     for r in records {
         out.push_str(&format!(
-            "\n---\n\n## #{} · {}\n\n- 連線：{}（{}，{}）\n- 耗時：{}，影響 {} 筆，回傳 {} 筆\n",
+            "\n---\n\n## #{} · {}\n\n- 連線：{}（{}）\n- 耗時：{}，影響 {} 筆，回傳 {} 筆\n",
             r.id,
             when(&r.started_at),
             target(r),
-            r.server,
-            r.server_version,
+            server_info(r),
             ms(r.duration_ms),
             r.affected_rows,
             r.returned_rows
@@ -283,13 +294,12 @@ fn html(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &str) -
 
     for r in records {
         body.push_str(&format!(
-            "<section id=\"r{}\"><h2>#{} · {}</h2><p class=\"meta\">{}（{}，{}）· 耗時 {} · 影響 {} 筆 · 回傳 {} 筆</p>",
+            "<section id=\"r{}\"><h2>#{} · {}</h2><p class=\"meta\">{}（{}）· 耗時 {} · 影響 {} 筆 · 回傳 {} 筆</p>",
             r.id,
             r.id,
             esc(&when(&r.started_at)),
             esc(&target(r)),
-            esc(&r.server),
-            esc(&r.server_version),
+            esc(&server_info(r)),
             ms(r.duration_ms),
             r.affected_rows,
             r.returned_rows
@@ -385,6 +395,13 @@ code {{ font-size: 12px; }}
 .note {{ border-left: 3px solid #2f6fde; padding-left: 10px; }}
 .error {{ border-left: 3px solid #c43c3c; padding: 6px 10px; background: #fdf3f3; margin: 8px 0; }}
 section {{ border-top: 1px solid #dcdfe4; }}
+@media print {{
+  body {{ margin: 0; max-width: none; font-size: 12px; }}
+  section {{ break-before: auto; }}
+  h2, h3 {{ break-after: avoid; }}
+  tr, pre, .error {{ break-inside: avoid; }}
+  a {{ color: inherit; text-decoration: none; }}
+}}
 </style>
 </head>
 <body>
@@ -394,6 +411,182 @@ section {{ border-top: 1px solid #dcdfe4; }}
 "#,
         title = esc(title(opts)),
     )
+}
+
+// ---------- Hiding connection details ----------
+
+/// What one saved connection could reveal in a report.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionSecrets {
+    pub id: String,
+    /// The connection's current name, used in place of the recorded one.
+    pub name: String,
+    /// Database and SSH hosts.
+    pub hosts: Vec<String>,
+    /// Database and SSH accounts.
+    pub users: Vec<String>,
+}
+
+const HIDDEN: &str = "***";
+
+/// Removes where records ran before they go into a report:
+///
+/// - the server address is dropped;
+/// - the connection is shown by its current name, or as 「連線 N」 when that
+///   name is itself an address such as `user@host`;
+/// - hosts, `user@` accounts and IPv4 addresses in SQL, errors and notes
+///   become `***`.
+///
+/// Result rows are left alone: they are data the user chose to include.
+pub fn redact(records: &mut [ExecutionRecord], known: &[ConnectionSecrets]) {
+    let mut aliases: Vec<String> = Vec::new();
+    for r in records.iter_mut() {
+        let profile = known
+            .iter()
+            .find(|k| Some(&k.id) == r.connection_id.as_ref());
+        let mut hosts: Vec<String> = profile.map(|p| p.hosts.clone()).unwrap_or_default();
+        let mut users: Vec<String> = profile.map(|p| p.users.clone()).unwrap_or_default();
+        // The recorded `user@host:port`, which also covers deleted connections.
+        if let Some((user, rest)) = r.server.rsplit_once('@') {
+            users.push(user.to_string());
+            hosts.push(rest.rsplit_once(':').map_or(rest, |(h, _)| h).to_string());
+        }
+        hosts.retain(|h| !h.trim().is_empty());
+        users.retain(|u| !u.trim().is_empty());
+
+        let name = profile.map_or(r.connection_name.as_str(), |p| p.name.as_str());
+        r.connection_name = if name.trim().is_empty()
+            || name.contains('@')
+            || hosts.iter().any(|h| name.contains(h.as_str()))
+        {
+            let key = r
+                .connection_id
+                .clone()
+                .unwrap_or_else(|| r.connection_name.clone());
+            let n = match aliases.iter().position(|a| *a == key) {
+                Some(i) => i + 1,
+                None => {
+                    aliases.push(key);
+                    aliases.len()
+                }
+            };
+            format!("連線 {n}")
+        } else {
+            name.to_string()
+        };
+        r.server.clear();
+
+        let hide = |text: &str| hide_in(text, &hosts, &users);
+        r.sql = hide(&r.sql);
+        r.note = hide(&r.note);
+        r.error_message = r.error_message.as_deref().map(|m| hide_ipv4(&hide(m)));
+        r.failed_statement = r.failed_statement.as_deref().map(hide);
+        for s in &mut r.statements {
+            s.sql = hide(&s.sql);
+            s.info = hide_ipv4(&hide(&s.info));
+        }
+    }
+}
+
+fn hide_in(text: &str, hosts: &[String], users: &[String]) -> String {
+    let mut out = text.to_string();
+    // Longest first, so `db.example.com` goes before `example.com`.
+    let mut hosts: Vec<&String> = hosts.iter().collect();
+    hosts.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    for h in hosts {
+        out = replace_whole(&out, h, HIDDEN, true);
+    }
+    for u in users {
+        for q in ["", "'", "`", "\""] {
+            out = replace_whole(
+                &out,
+                &format!("{q}{u}{q}@"),
+                &format!("{q}{HIDDEN}{q}@"),
+                false,
+            );
+        }
+    }
+    out
+}
+
+/// Replaces `needle` where it is not part of a longer name, so a host
+/// called `db` leaves `db_name` alone.
+fn replace_whole(text: &str, needle: &str, with: &str, check_after: bool) -> String {
+    let name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '$');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = 0;
+    for (at, _) in text.match_indices(needle) {
+        if at < rest {
+            continue;
+        }
+        let end = at + needle.len();
+        let before = text[..at].chars().next_back();
+        let after = text[end..].chars().next();
+        let first = needle.chars().next();
+        if (first.is_some_and(name) && before.is_some_and(name))
+            || (check_after && after.is_some_and(name))
+        {
+            continue;
+        }
+        out.push_str(&text[rest..at]);
+        out.push_str(with);
+        rest = end;
+    }
+    out.push_str(&text[rest..]);
+    out
+}
+
+/// Replaces dotted IPv4 addresses, such as the client address in
+/// "Access denied for user 'x'@'10.0.0.5'".
+fn hide_ipv4(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut copied = 0;
+    while i < b.len() {
+        let starts = b[i].is_ascii_digit()
+            && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'.'));
+        if starts && let Some(len) = ipv4_len(&b[i..]) {
+            out.push_str(&text[copied..i]);
+            out.push_str(HIDDEN);
+            i += len;
+            copied = i;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// Length of the IPv4 address at the start of `b`, if there is one.
+fn ipv4_len(b: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    for part in 0..4 {
+        if part > 0 {
+            if b.get(i) != Some(&b'.') {
+                return None;
+            }
+            i += 1;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() && i - start < 3 {
+            i += 1;
+        }
+        if i == start
+            || std::str::from_utf8(&b[start..i])
+                .ok()?
+                .parse::<u8>()
+                .is_err()
+        {
+            return None;
+        }
+    }
+    let next = b.get(i);
+    if next.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'.') {
+        return None;
+    }
+    Some(i)
 }
 
 // ---------- CSV ----------
@@ -482,6 +675,61 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn hiding_connection_details() {
+        let mut records = sample();
+        records[0].server = "dev@34.150.28.17:3306".into();
+        records[0].connection_name = "dev@34.150.28.17".into();
+        records[0].sql = "SELECT db_name FROM t WHERE host = '34.150.28.17';".into();
+        records[0].error_message =
+            Some("Access denied for user 'dev'@'10.1.2.3' (using password: YES)".into());
+        records[1].connection_id = Some("c2".into());
+        records[1].connection_name = "old name".into();
+        let known = vec![
+            ConnectionSecrets {
+                id: "c1".into(),
+                name: "dev@34.150.28.17".into(),
+                hosts: vec!["34.150.28.17".into(), "db".into()],
+                users: vec!["dev".into()],
+            },
+            ConnectionSecrets {
+                id: "c2".into(),
+                name: "fgpay 正式".into(),
+                hosts: vec!["db.internal".into()],
+                users: vec!["app".into()],
+            },
+        ];
+        redact(&mut records, &known);
+        let r = &records[0];
+        assert_eq!(r.connection_name, "連線 1");
+        assert_eq!(r.server, "");
+        assert_eq!(r.sql, "SELECT db_name FROM t WHERE host = '***';");
+        assert_eq!(
+            r.error_message.as_deref(),
+            Some("Access denied for user '***'@'***' (using password: YES)")
+        );
+        assert_eq!(records[1].connection_name, "fgpay 正式");
+
+        let mut o = opts(ReportFormat::Markdown);
+        o.hide_connection = true;
+        let md = render(&records, &o, "2026-10-24T03:00:00+00:00");
+        assert!(!md.contains("34.150"), "{md}");
+        assert!(!md.contains("dev@"), "{md}");
+        assert!(md.contains("（10.11.6-MariaDB）"), "{md}");
+    }
+
+    #[test]
+    fn ipv4_only_whole_addresses() {
+        assert_eq!(
+            hide_ipv4("from 10.0.0.5 and v1.2.3.4"),
+            "from *** and v1.2.3.4"
+        );
+        assert_eq!(
+            hide_ipv4("1.2.3.4.5 999.1.1.1 1.2.3"),
+            "1.2.3.4.5 999.1.1.1 1.2.3"
+        );
+    }
+
+    #[test]
     fn row_counts_read_by_kind_of_statement() {
         let mut r = sample().remove(0);
         for (returned, affected, text) in [
@@ -564,6 +812,7 @@ mod tests {
             title: Some("月報".into()),
             include_results: true,
             max_result_rows: 20,
+            hide_connection: false,
         }
     }
 

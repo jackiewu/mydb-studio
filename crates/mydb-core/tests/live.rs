@@ -331,3 +331,48 @@ async fn execution_becomes_a_record() {
         1
     );
 }
+
+#[tokio::test]
+async fn use_database_survives_reconnect_and_lists_columns() {
+    let profile = profile_or_skip!();
+    let session = Session::connect(&profile).await.unwrap();
+    session
+        .execute(
+            "CREATE TABLE IF NOT EXISTS demo.mydb_cols (
+                id BIGINT UNSIGNED PRIMARY KEY,
+                name VARCHAR(40) NULL COMMENT '名稱'
+             )",
+            1,
+        )
+        .await;
+
+    session.use_database("demo").await.unwrap();
+    assert_eq!(session.current_database().as_deref(), Some("demo"));
+    let before = connection_id(&session).await;
+    kill_from_outside(&profile, &before).await;
+    let out = session.execute("SELECT DATABASE()", 1).await;
+    assert!(out.reconnected);
+    assert_eq!(out.results[0].rows[0][0], serde_json::json!("demo"));
+
+    let all = session.list_all_tables().await.unwrap();
+    assert!(all.contains(&("demo".into(), "mydb_cols".into())));
+    assert!(!all.iter().any(|(db, _)| db == "information_schema"));
+
+    let cols: Vec<_> = session
+        .list_columns("demo")
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.table == "mydb_cols")
+        .collect();
+    assert_eq!(cols.len(), 2);
+    assert_eq!(cols[0].name, "id");
+    assert_eq!(cols[0].key, "PRI");
+    assert!(cols[0].column_type.contains("unsigned"));
+    assert!(!cols[0].nullable && cols[1].nullable);
+    assert_eq!(cols[1].comment, "名稱");
+
+    assert!(session.use_database("no_such_db_xyz").await.is_err());
+    assert_eq!(session.current_database().as_deref(), Some("demo"));
+    session.execute("DROP TABLE demo.mydb_cols", 1).await;
+}

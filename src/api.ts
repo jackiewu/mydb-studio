@@ -48,6 +48,7 @@ export interface OpenedSession {
   session_id: string;
   connection_id: string;
   info: SessionInfo;
+  current_database?: string | null;
 }
 
 export interface ColumnInfo {
@@ -86,6 +87,8 @@ export interface ExecutionOutcome {
   reconnected: boolean;
   /** Set when recording was on for this run. */
   record_id?: number | null;
+  /** The database in use after the run (a USE may have changed it). */
+  current_database?: string | null;
 }
 
 export interface RecordedStatement {
@@ -137,6 +140,8 @@ export interface ReportOptions {
   title?: string | null;
   include_results: boolean;
   max_result_rows: number;
+  /** Leave out hosts, accounts and IP addresses. */
+  hide_connection: boolean;
 }
 
 export interface DatabaseInfo {
@@ -151,6 +156,53 @@ export interface TableInfo {
   rows_estimate?: number | null;
   size_bytes?: number | null;
   comment: string;
+}
+
+export interface ColumnDef {
+  table: string;
+  name: string;
+  column_type: string;
+  /** PRI, UNI, MUL or empty. */
+  key: string;
+  nullable: boolean;
+  comment: string;
+}
+
+export interface AppSettings {
+  /** Editor theme id from EDITOR_THEMES; "auto" follows the system. */
+  editor_theme: string;
+  editor_font_size: number;
+  max_rows: number;
+  record_by_default: boolean;
+  show_system_databases: boolean;
+  schema_autocomplete: boolean;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  editor_theme: "auto",
+  editor_font_size: 13,
+  max_rows: 1000,
+  record_by_default: false,
+  show_system_databases: false,
+  schema_autocomplete: true,
+};
+
+export interface Snippet {
+  /** 0 until saved. */
+  id: number;
+  name: string;
+  prefix: string;
+  /** SQL; ${name} marks a field to fill in. */
+  body: string;
+}
+
+export interface PinnedTab {
+  /** 0 until saved. */
+  id: number;
+  connection_id: string;
+  title: string;
+  sql: string;
+  position: number;
 }
 
 export function newProfile(): ConnectionProfile {
@@ -197,7 +249,7 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
-  execute: (sessionId: string, sql: string, record = false, maxRows?: number) =>
+  execute: (sessionId: string, sql: string, record = false, maxRows?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, record }),
   listDatabases: (sessionId: string) => invoke<DatabaseInfo[]>("list_databases", { sessionId }),
   listTables: (sessionId: string, database: string) =>
@@ -208,7 +260,22 @@ export const api = {
   deleteRecords: (ids: number[]) => invoke<void>("delete_records", { ids }),
   generateReport: (ids: number[], options: ReportOptions) =>
     invoke<string>("generate_report", { ids, options }),
+  /** Opens an HTML report in a print window, where it can be saved as PDF. */
+  printReport: (html: string) => invoke<void>("print_report", { html }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
+  useDatabase: (sessionId: string, database: string) =>
+    invoke<void>("use_database", { sessionId, database }),
+  listAllTables: (sessionId: string) => invoke<[string, string][]>("list_all_tables", { sessionId }),
+  listColumns: (sessionId: string, database: string) =>
+    invoke<ColumnDef[]>("list_columns", { sessionId, database }),
+  getSettings: () => invoke<AppSettings>("get_settings"),
+  saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
+  listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
+  deleteSnippet: (id: number) => invoke<void>("delete_snippet", { id }),
+  listPinnedTabs: (connectionId: string) => invoke<PinnedTab[]>("list_pinned_tabs", { connectionId }),
+  savePinnedTab: (tab: PinnedTab) => invoke<PinnedTab>("save_pinned_tab", { tab }),
+  deletePinnedTab: (id: number) => invoke<void>("delete_pinned_tab", { id }),
 };
 
 /** Quotes an identifier with backticks. */

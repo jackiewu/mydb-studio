@@ -31,8 +31,6 @@
     --row-alt: #22252d;
     --code-bg: #262a33;
   }
-  .cm-editor { background: var(--panel); color: var(--text); }
-  .cm-gutters { background: var(--panel) !important; border-color: var(--border) !important; }
 }
 
 * { box-sizing: border-box; }
@@ -56,7 +54,7 @@ button.small { padding: 2px 8px; font-size: 12px; }
 button.ghost { border-color: transparent; background: transparent; }
 button.link { border: none; background: none; color: var(--accent); padding: 0 4px; }
 
-input, select {
+input, select, textarea {
   font: inherit;
   color: var(--text);
   background: var(--bg);
@@ -358,3 +356,121 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .record-detail table.grid th:first-child { width: 28px; }
 .record-detail table.grid th:nth-child(n + 3) { width: 64px; }
 .record-detail .sql-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Current database */
+.tree-db.current .tree-name { font-weight: 600; color: var(--accent); }
+.current-mark { font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--accent); color: var(--accent-text); }
+.db-picker { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.db-picker select { font-size: 13px; padding: 2px 4px; max-width: 220px; }
+
+/* Settings and snippets */
+.settings-dialog { width: 520px; max-height: 90vh; overflow: auto; background: var(--panel); border-radius: 10px; padding: 20px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25); }
+.settings-dialog h2, .snippet-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.settings-dialog .fields { min-height: 0; }
+.theme-swatch { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.theme-swatch button { text-align: left; font-size: 12px; }
+.theme-swatch button.active { border-color: var(--accent); color: var(--accent); }
+.snippet-dialog {
+  width: min(860px, 92vw);
+  height: min(600px, 88vh);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+.snippet-body { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.snippet-list { width: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin: 0; padding: 4px; list-style: none; }
+.snippet-list button { width: 100%; text-align: left; border: none; background: none; padding: 5px 8px; display: flex; gap: 8px; align-items: baseline; }
+.snippet-list button.active { background: var(--code-bg); }
+.snippet-list code { color: var(--accent); min-width: 44px; }
+.snippet-list .name { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snippet-edit { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.snippet-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.snippet-edit textarea { flex: 1; min-height: 200px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; resize: none; }
+.snippet-edit .grow-label { flex: 1; }
+.field-group { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.snippet-edit .row { display: flex; gap: 10px; }
+.snippet-edit .grow { flex: 1; }
+.hint code { background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
+.topbar > * { flex-shrink: 0; white-space: nowrap; }
+.topbar > strong { flex-shrink: 1; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+.topbar > .badge:first-of-type { flex-shrink: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; }
+.topbar > .spacer { flex-shrink: 1; }
+
+/* Result selection and copy */
+.copy-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.copy-bar select { width: auto; font-size: 12px; padding: 2px 6px; }
+.copy-bar .flash { color: var(--good); }
+.copy-bar .grid-search { width: 180px; font-size: 12px; padding: 2px 8px; }
+.copy-bar .no-match { color: var(--bad); }
+.grid mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: inherit; border-radius: 2px; }
+.check-inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.check-inline input { width: auto; }
+.grid-wrap:focus { outline: none; }
+.grid.selectable { user-select: none; cursor: cell; }
+.grid.selectable th, .grid.selectable .rownum { cursor: pointer; }
+.grid td.sel { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
+.grid th.sel, .grid td.rownum.sel { background: color-mix(in srgb, var(--accent) 35%, var(--code-bg)); }
+.menu-backdrop { position: fixed; inset: 0; z-index: 50; }
+.context-menu {
+  position: fixed;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+}
+.context-menu button { width: 100%; text-align: left; border: none; background: none; padding: 5px 10px; border-radius: 4px; }
+.context-menu button:hover { background: var(--accent); color: var(--accent-text); }
+.context-menu label { padding: 5px 10px; }
+.context-menu .sep { border-top: 1px solid var(--border); margin: 4px 0; }
+.plan-notes { padding: 6px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--border); }
+.plan-notes .bad { color: var(--bad); }
+.plan-notes .warn { color: var(--warn); }
+.plan-notes .ok { color: var(--good); }
+.grid td.bad { color: var(--bad); font-weight: 600; }
+.grid td.warn { color: var(--warn); font-weight: 600; }
+.result-tabs .tab-no { color: var(--muted); }
+.results.empty p { margin: 0 0 6px; }
+
+/* Editor tabs */
+.editor-pane { min-height: 0; display: flex; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--panel); }
+.editor-pane .editor { flex: 1; min-height: 0; border-bottom: none; }
+.tab-bar { display: flex; align-items: stretch; gap: 2px; padding: 4px 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
+.tab { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 4px; font-size: 12px; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--code-bg); color: var(--muted); cursor: pointer; max-width: 240px; white-space: nowrap; }
+.tab.active { background: var(--panel); color: var(--text); }
+.tab-title { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.tab button { border: none; background: none; padding: 0 2px; font-size: 12px; line-height: 1; color: inherit; }
+.tab .pin { opacity: 0.25; filter: grayscale(1); }
+.tab .pin:hover { opacity: 0.7; }
+.tab.pinned .pin { opacity: 1; filter: none; }
+.tab .close { opacity: 0.5; font-size: 14px; }
+.tab .close:hover { opacity: 1; color: var(--bad); }
+.tab-rec { color: var(--warn); font-size: 9px; }
+.tab-add { border: none; background: none; padding: 0 8px; color: var(--muted); }
+.schema-filter { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.schema-filter input { padding: 4px 8px; font-size: 12px; }
+.tree mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 2px; }
+
+/* Click-to-copy SQL in the records page. */
+.copyable { cursor: copy; }
+.copyable:hover { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.row-actions { display: flex; gap: 8px; }
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
+  padding: 6px 14px; border-radius: 6px; font-size: 13px;
+  background: var(--text); color: var(--bg); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+.context-menu button { display: flex; gap: 16px; align-items: center; color: var(--text); }
+.context-menu button:hover { background: var(--accent); color: var(--accent-text); }
+.context-menu button .hint { margin-left: auto; color: var(--muted); font-size: 11px; }
+.context-menu button:hover .hint { color: inherit; }
+.context-menu button:disabled { opacity: 0.45; background: none; color: var(--text); cursor: default; }
+.context-menu button.danger-item { color: var(--bad); }
+.context-menu button.danger-item:hover { background: var(--bad); color: #fff; }
