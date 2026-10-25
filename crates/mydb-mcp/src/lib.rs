@@ -40,11 +40,12 @@ pub struct Server {
     store: Mutex<Store>,
     /// Open sessions by connection id, reused across calls.
     sessions: tokio::sync::Mutex<HashMap<String, Arc<Session>>>,
-    /// Present while MyDB Studio is locked; then every tool is refused.
-    lock_flag: Option<PathBuf>,
+    /// The app data folder, to follow the app lock; see [`Server::locked`].
+    lock_dir: Option<PathBuf>,
 }
 
 /// A tool failure, shown to the AI as the tool's result.
+#[derive(Debug)]
 struct ToolError(String);
 
 impl From<CoreError> for ToolError {
@@ -60,14 +61,38 @@ impl Server {
         Self {
             store: Mutex::new(store),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
-            lock_flag: None,
+            lock_dir: None,
         }
     }
 
-    /// Refuses all tools while `flag` exists (the app is locked).
-    pub fn with_lock_flag(mut self, flag: PathBuf) -> Self {
-        self.lock_flag = Some(flag);
+    /// Follows the app lock, using the app's flag files in `dir`.
+    pub fn with_lock_dir(mut self, dir: PathBuf) -> Self {
+        self.lock_dir = Some(dir);
         self
+    }
+
+    /// Whether to refuse every tool because of the app lock. While the app
+    /// runs, it says (with [`mydb_core::LOCK_FLAG`]). When it doesn't, the
+    /// settings do: locked if the app asks to be unlocked on start. A crash
+    /// or force quit can't leave it unlocked, since a dead app's running
+    /// flag counts as not running. Unreadable settings count as locked.
+    fn locked(&self) -> bool {
+        let Some(dir) = &self.lock_dir else {
+            return false;
+        };
+        let Ok(settings) = self.store.lock().unwrap().get_settings() else {
+            return true;
+        };
+        if !settings.lock_enabled() {
+            return false;
+        }
+        let app_pid = std::fs::read_to_string(dir.join(mydb_core::RUNNING_FLAG))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        match app_pid {
+            Some(pid) if process_alive(pid) => dir.join(mydb_core::LOCK_FLAG).exists(),
+            _ => settings.lock_on_start,
+        }
     }
 
     /// Reads JSON-RPC messages, one per line, until `input` ends.
@@ -121,7 +146,7 @@ impl Server {
     async fn call(&self, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
-        let locked = self.lock_flag.as_ref().is_some_and(|f| f.exists());
+        let locked = self.locked();
         let result = match name {
             _ if locked => Err(ToolError(
                 "MyDB Studio is locked. Ask the user to unlock it, then try again.".into(),
@@ -226,16 +251,25 @@ impl Server {
     async fn explain_query(&self, args: &Value) -> ToolResult {
         let (profile, session) = self.open(args).await?;
         let sql = required(args, "sql")?;
-        let stmt = mydb_core::split_statements(&sql)
-            .into_iter()
-            .next()
-            .ok_or_else(|| ToolError("sql is empty".into()))?;
+        let stmt = explain_target(&sql)?;
         if let Some(db) = str_arg(args, "database") {
             session.use_database(&db).await?;
         }
         let explain = format!("EXPLAIN {stmt}");
-        // EXPLAIN never runs the statement, so it is fine on read-only connections.
+        // EXPLAIN doesn't run the statement; on read-only connections it
+        // still only takes reads, in a read-only transaction, in case the
+        // server sees the statement differently.
+        let read_only = profile.mcp == McpAccess::ReadOnly;
+        if read_only {
+            // The server refuses EXPLAIN of a change in a read-only
+            // transaction anyway; say why up front.
+            check_read_only(&stmt)?;
+            transaction(&session, "START TRANSACTION READ ONLY").await?;
+        }
         let outcome = session.execute(&explain, MAX_ROWS).await;
+        if read_only {
+            transaction(&session, "ROLLBACK").await?;
+        }
         self.record(&profile, &session, &explain, &outcome);
         if let Some(e) = outcome.error {
             return Err(e.into());
@@ -272,6 +306,15 @@ impl Server {
             Some(s) => s.clone(),
             None => {
                 let s = Arc::new(Session::connect(&profile).await?);
+                // Trust on first use, as the app does: remember the SSH
+                // host key so a different one is refused next time.
+                let pinned = s.profile();
+                if let (Some(ssh), Some(was)) = (&pinned.ssh, &profile.ssh)
+                    && was.known_host_fingerprint.is_none()
+                    && ssh.known_host_fingerprint.is_some()
+                {
+                    self.store.lock().unwrap().save_connection(pinned)?;
+                }
                 sessions.insert(profile.id.clone(), s.clone());
                 s
             }
@@ -314,7 +357,30 @@ impl Server {
     }
 }
 
+/// The one statement to explain. Refuses more than one, anything the
+/// server would run as more than one (see
+/// [`advisor::has_hidden_statements`]), and `ANALYZE`, which runs it.
+fn explain_target(sql: &str) -> Result<String, ToolError> {
+    let mut statements = mydb_core::split_statements(sql);
+    if statements.len() > 1 {
+        return Err(ToolError("explain_query takes one statement".into()));
+    }
+    let stmt = statements
+        .pop()
+        .ok_or_else(|| ToolError("sql is empty".into()))?;
+    let first = stmt.split_whitespace().next().unwrap_or("");
+    if advisor::has_hidden_statements(&stmt) || first.eq_ignore_ascii_case("ANALYZE") {
+        return Err(ToolError(
+            "explain_query takes a plain statement, without `;`, executable comments or ANALYZE"
+                .into(),
+        ));
+    }
+    Ok(stmt)
+}
+
 /// Refuses anything but plain reads, statement by statement.
+/// [`advisor::is_plain_read`] also refuses a statement that would run as
+/// several, as one bundled with `DELIMITER` would.
 fn check_read_only(sql: &str) -> Result<(), ToolError> {
     let statements = mydb_core::split_statements(sql);
     if statements.is_empty() {
@@ -496,7 +562,7 @@ fn tools() -> Value {
         },
         {
             "name": "explain_query",
-            "description": "Show the execution plan of a statement (EXPLAIN, without running it) plus MyDB Studio's checks for full scans and risky statements.",
+            "description": "Show the execution plan of one statement (EXPLAIN, without running it) plus MyDB Studio's checks for full scans and risky statements. On read-only connections only reads can be explained.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -512,13 +578,29 @@ fn tools() -> Value {
 }
 
 /// Serves MCP on stdin/stdout until stdin closes.
-pub async fn serve_stdio(store: Store, lock_flag: Option<PathBuf>) -> std::io::Result<()> {
+pub async fn serve_stdio(store: Store, lock_dir: Option<PathBuf>) -> std::io::Result<()> {
     let mut server = Server::new(store);
-    if let Some(flag) = lock_flag {
-        server = server.with_lock_flag(flag);
+    if let Some(dir) = lock_dir {
+        server = server.with_lock_dir(dir);
     }
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     server.serve(stdin, tokio::io::stdout()).await
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 only checks; EPERM means it exists but isn't ours.
+    pid > 0
+        && (unsafe { libc::kill(pid, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -538,6 +620,36 @@ mod tests {
         cache.mcp = McpAccess::ReadWrite;
         store.save_connection(&cache).unwrap();
         Server::new(store)
+    }
+
+    #[test]
+    fn read_only_refuses_bundled_and_hidden_statements() {
+        assert!(check_read_only("SELECT 1; SHOW TABLES").is_ok());
+        for sql in [
+            // DELIMITER makes the whole line one "statement" for the check.
+            "DELIMITER $$\nSELECT 1; COMMIT; DROP TABLE t$$",
+            "SELECT * /*!50000 INTO OUTFILE '/tmp/x' */ FROM t",
+            "SELECT 1 --x\nINTO OUTFILE '/tmp/x'",
+        ] {
+            assert!(check_read_only(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn explain_takes_one_plain_statement() {
+        assert_eq!(
+            explain_target("DELETE FROM t WHERE a = 1").unwrap(),
+            "DELETE FROM t WHERE a = 1"
+        );
+        for sql in [
+            "SELECT 1; DELETE FROM t",
+            "DELIMITER $$\nSELECT 1; DELETE FROM t$$",
+            "ANALYZE SELECT 1",
+            "SELECT /*! 1; DELETE FROM t */",
+            "",
+        ] {
+            assert!(explain_target(sql).is_err(), "{sql}");
+        }
     }
 
     async fn ask(s: &Server, msg: Value) -> Value {
@@ -613,26 +725,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locked_app_refuses_every_tool() {
+    async fn follows_the_app_lock_even_after_a_crash() {
         let dir = std::env::temp_dir().join(format!("mydb-mcp-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let flag = dir.join(mydb_core::LOCK_FLAG);
-        let s = server().with_lock_flag(flag.clone());
+        let s = server().with_lock_dir(dir.clone());
         let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_connections","arguments":{}}});
+        let refused = |out: &Value| {
+            out["result"]["isError"] == true
+                && out["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("locked")
+        };
 
-        std::fs::write(&flag, "").unwrap();
-        let out = ask(&s, list.clone()).await;
-        assert_eq!(out["result"]["isError"], true);
-        assert!(
-            out["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("locked")
-        );
+        // Lock off: always allowed.
+        assert!(!refused(&ask(&s, list.clone()).await));
 
-        std::fs::remove_file(&flag).unwrap();
-        let out = ask(&s, list).await;
-        assert!(out["result"]["isError"].is_null());
+        let mut settings = s.store.lock().unwrap().get_settings().unwrap();
+        settings.lock_mode = "system".into();
+        settings.lock_on_start = true;
+        s.store.lock().unwrap().save_settings(&settings).unwrap();
+        let running = dir.join(mydb_core::RUNNING_FLAG);
+        let lock = dir.join(mydb_core::LOCK_FLAG);
+
+        // The app runs (this process stands in): its lock flag decides.
+        std::fs::write(&running, std::process::id().to_string()).unwrap();
+        std::fs::write(&lock, "").unwrap();
+        assert!(refused(&ask(&s, list.clone()).await));
+        std::fs::remove_file(&lock).unwrap();
+        assert!(!refused(&ask(&s, list.clone()).await));
+
+        // The app crashed while unlocked: no lock flag, but it isn't
+        // running, so lock on start applies.
+        std::fs::write(&running, "999999999").unwrap();
+        assert!(refused(&ask(&s, list.clone()).await));
+        std::fs::remove_file(&running).unwrap();
+        assert!(refused(&ask(&s, list.clone()).await));
+
+        settings.lock_on_start = false;
+        s.store.lock().unwrap().save_settings(&settings).unwrap();
+        assert!(!refused(&ask(&s, list).await));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

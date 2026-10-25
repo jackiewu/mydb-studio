@@ -75,7 +75,10 @@ impl<W: Write> RowWriter<W> {
         self.columns = columns.to_vec();
         let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
         match self.options.format {
-            ExportFormat::Tsv if self.options.header => write!(self.out, "{}", names.join("\t")),
+            ExportFormat::Tsv if self.options.header => {
+                let cells: Vec<String> = names.iter().map(|n| defuse_formula(n)).collect();
+                write!(self.out, "{}", cells.join("\t"))
+            }
             ExportFormat::Csv if self.options.header => {
                 let cells: Vec<String> = names.iter().map(|n| csv_text(n)).collect();
                 write!(self.out, "{}", cells.join(","))
@@ -226,7 +229,7 @@ fn tsv_cell(v: &Value) -> String {
     // Tabs and newlines would break the grid when pasted.
     let mut out = String::new();
     let mut in_break = false;
-    for c in text(v).chars() {
+    for c in defuse_formula(&text(v)).chars() {
         if matches!(c, '\t' | '\r' | '\n') {
             if !in_break {
                 out.push(' ');
@@ -247,7 +250,20 @@ fn csv_cell(v: &Value) -> String {
     csv_text(&text(v))
 }
 
+/// `s`, made safe to open in a spreadsheet: text that starts like a formula
+/// (`=`, `+`, `-`, `@`, tab, CR) gets a leading `'`, so Excel or Numbers show
+/// it instead of running it. Numbers such as `-5` are left alone.
+pub fn defuse_formula(s: &str) -> String {
+    let risky = s.starts_with(['=', '+', '-', '@', '\t', '\r']);
+    if risky && s.trim().parse::<f64>().is_err() {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    }
+}
+
 fn csv_text(s: &str) -> String {
+    let s = &defuse_formula(s);
     if s.contains([',', '"', '\r', '\n']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
@@ -337,6 +353,20 @@ pub fn json_value(v: &Value, col: &ColumnInfo) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn formulas_are_defused_numbers_are_not() {
+        assert_eq!(defuse_formula("=HYPERLINK(\"x\")"), "'=HYPERLINK(\"x\")");
+        assert_eq!(defuse_formula("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(
+            defuse_formula("-2+3+cmd|' /C calc'!A0"),
+            "'-2+3+cmd|' /C calc'!A0"
+        );
+        assert_eq!(defuse_formula("-5.25"), "-5.25");
+        assert_eq!(defuse_formula("+1e3"), "+1e3");
+        assert_eq!(defuse_formula("a=b"), "a=b");
+        assert_eq!(csv_text("=1+1"), "'=1+1");
+    }
 
     fn cols() -> Vec<ColumnInfo> {
         [

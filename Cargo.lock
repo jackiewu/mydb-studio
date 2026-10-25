@@ -2789,6 +2789,7 @@ dependencies = [
 name = "mydb-mcp"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mydb-core",
  "serde",
  "serde_json",

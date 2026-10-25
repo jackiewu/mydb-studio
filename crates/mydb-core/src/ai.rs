@@ -680,6 +680,10 @@ fn parse_url(url: &str) -> std::io::Result<Target> {
     })
 }
 
+/// Largest chunk and whole body accepted from the local model server.
+const MAX_CHUNK: usize = 1 << 20;
+const MAX_BODY: usize = 32 << 20;
+
 struct HttpResponse {
     status: u16,
     chunked: bool,
@@ -770,6 +774,10 @@ impl HttpResponse {
             self.done = true;
             return Ok(None);
         }
+        // The size comes from the other end: don't let it pick the allocation.
+        if size > MAX_CHUNK {
+            return Err(std::io::Error::other("回應的分塊太大"));
+        }
         let mut buf = vec![0; size];
         self.reader.read_exact(&mut buf).await?;
         line.clear();
@@ -781,6 +789,9 @@ impl HttpResponse {
         let mut all = Vec::new();
         while let Some(c) = self.next_chunk().await? {
             all.extend(c);
+            if all.len() > MAX_BODY {
+                return Err(std::io::Error::other("回應太大"));
+            }
         }
         Ok(all)
     }

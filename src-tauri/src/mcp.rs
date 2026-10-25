@@ -11,9 +11,13 @@ use mydb_core::Store;
 const IDENTIFIER: &str = "com.jackiewu.mydbstudio";
 
 /// The folder Tauri's `app_data_dir` points at, worked out without Tauri.
-/// `MYDB_STUDIO_DATA_DIR` overrides it (for tests).
+/// In debug builds `MYDB_STUDIO_DATA_DIR` overrides it, for tests. Release
+/// builds ignore it: another folder's database could point saved
+/// connections at other servers.
 pub fn data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("MYDB_STUDIO_DATA_DIR") {
+    if cfg!(debug_assertions)
+        && let Some(dir) = std::env::var_os("MYDB_STUDIO_DATA_DIR")
+    {
         return Some(dir.into());
     }
     let home = || std::env::var_os("HOME").map(PathBuf::from);
@@ -57,10 +61,7 @@ pub fn main() -> i32 {
             return 1;
         }
     };
-    match runtime.block_on(mydb_mcp::serve_stdio(
-        store,
-        Some(dir.join(mydb_core::LOCK_FLAG)),
-    )) {
+    match runtime.block_on(mydb_mcp::serve_stdio(store, Some(dir))) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("mydb-studio --mcp: {e}");

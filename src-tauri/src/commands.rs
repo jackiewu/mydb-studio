@@ -90,6 +90,7 @@ pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionProf
 /// One connection with its passwords, for editing.
 #[tauri::command]
 pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<ConnectionProfile> {
+    state.lock.ensure_unlocked()?;
     state.connection(&id)
 }
 
@@ -177,6 +178,7 @@ pub async fn open_session(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<OpenedSession> {
+    state.lock.ensure_unlocked()?;
     let mut profile = state.connection(&connection_id)?;
     let session = connect(&profile).await?;
     let info = session.info().clone();
@@ -278,6 +280,7 @@ pub async fn execute(
     auto_limit: Option<u64>,
     record: Option<bool>,
 ) -> Result<ExecuteResponse> {
+    state.lock.ensure_unlocked()?;
     let session = state.session(&session_id).await?;
     let outcome = session
         .execute_limited(
@@ -326,11 +329,13 @@ pub fn list_records(
     state: State<'_, AppState>,
     filter: RecordFilter,
 ) -> Result<Vec<ExecutionRecord>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().list_records(&filter)
 }
 
 #[tauri::command]
 pub fn get_record(state: State<'_, AppState>, id: i64) -> Result<Option<ExecutionRecord>> {
+    state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().get_record(id)
 }
 
@@ -350,6 +355,7 @@ pub fn generate_report(
     ids: Vec<i64>,
     options: ReportOptions,
 ) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     let mut records = store.get_records(&ids)?;
     if options.hide_connection {
@@ -658,6 +664,7 @@ pub async fn ai_chat(
     messages: Vec<ChatMessage>,
     on_event: Channel<AiEvent>,
 ) -> Result<String> {
+    state.lock.ensure_unlocked()?;
     let settings = state.store.lock().unwrap().get_settings()?;
     if !settings.ai_enabled {
         return Err(CoreError::Config {
@@ -851,6 +858,7 @@ pub async fn server_users(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<admin::UserAccount>> {
+    state.lock.ensure_unlocked()?;
     admin::users(&*state.session(&session_id).await?).await
 }
 
@@ -861,6 +869,7 @@ pub async fn user_grants(
     user: String,
     host: String,
 ) -> Result<Vec<admin::Grant>> {
+    state.lock.ensure_unlocked()?;
     admin::grants(&*state.session(&session_id).await?, &user, &host).await
 }
 
@@ -872,6 +881,7 @@ pub async fn admin_plan(
     session_id: String,
     change: admin::AdminChange,
 ) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     let session = state.session(&session_id).await?;
     admin::plan(&change, admin::dialect(&session).await?, true)
 }
@@ -884,6 +894,7 @@ pub async fn admin_apply(
     session_id: String,
     change: admin::AdminChange,
 ) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
     admin::apply(&*state.session(&session_id).await?, &change).await
 }
 
@@ -982,6 +993,7 @@ pub async fn redis_scan(
     cursor: String,
     pattern: String,
 ) -> Result<ScanPage> {
+    state.lock.ensure_unlocked()?;
     state
         .redis(&session_id)
         .await?
@@ -1007,6 +1019,7 @@ pub async fn redis_read_value(
     key: KeyName,
     from: String,
 ) -> Result<ValuePage> {
+    state.lock.ensure_unlocked()?;
     state
         .redis(&session_id)
         .await?
@@ -1039,6 +1052,7 @@ pub async fn redis_execute(
     text: String,
     record: Option<bool>,
 ) -> Result<RedisExecuteResponse> {
+    state.lock.ensure_unlocked()?;
     let session = state.redis(&session_id).await?;
     let outcome = session.execute(&text).await;
     let record_id = if record.unwrap_or(false) {
@@ -1062,6 +1076,7 @@ pub async fn export_query(
     options: ExportOptions,
     path: String,
 ) -> Result<u64> {
+    state.lock.ensure_unlocked()?;
     if !advisor::is_plain_read(&sql) {
         return Err(CoreError::Config {
             message: "只能匯出查詢（SELECT、SHOW 等）的結果，這句會修改資料或鎖定資料列。".into(),

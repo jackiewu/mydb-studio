@@ -8,7 +8,7 @@ use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
 use crate::profile::{ConnectionKind, ConnectionProfile};
 use crate::records::{ExecutionRecord, RecordFilter};
-use crate::secrets::{self, SecretVault, Secrets};
+use crate::secrets::{self, ConnectionSecrets, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
 
 /// Schema migrations, applied in order. Never edit a shipped entry; append.
@@ -205,13 +205,28 @@ impl Store {
         Ok(())
     }
 
-    /// `profile` with its passwords from the vault.
+    /// `profile` with its passwords from the vault, if they were saved for
+    /// the servers it points at.
     fn with_secrets(&self, mut profile: ConnectionProfile) -> ConnectionProfile {
-        if let Some(s) = &self.secrets
-            && let Some(found) = s.borrow_mut().get(&profile.id)
-        {
-            secrets::fill(&mut profile, &found);
+        let Some(s) = &self.secrets else {
+            return profile;
+        };
+        let mut s = s.borrow_mut();
+        let Some(found) = s.get(&profile.id) else {
+            return profile;
+        };
+        if !found.fits(&profile) {
+            return profile;
         }
+        if found.destination.is_none() {
+            // Saved before secrets knew their destination: bind them now.
+            let bound = ConnectionSecrets {
+                destination: Some(secrets::destination(&profile)),
+                ..found.clone()
+            };
+            s.put(&profile.id, bound);
+        }
+        secrets::fill(&mut profile, &found);
         profile
     }
 
@@ -965,6 +980,54 @@ mod tests {
 
         store.delete_snippet(mine.id).unwrap();
         assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn passwords_only_go_where_they_were_saved_for() {
+        let mut store = Store::open_in_memory().unwrap();
+        let vault = crate::secrets::MemoryVault::default();
+        store.use_vault(Box::new(vault.clone())).unwrap();
+        let mut p = ConnectionProfile::new("prod", "db.example", "app");
+        p.password = Some("s3cret".into());
+        store.save_connection(&p).unwrap();
+
+        // The database is changed behind the app's back to point elsewhere.
+        let mut planted = p.clone();
+        planted.host = "attacker.example".into();
+        planted.password = None;
+        store
+            .db
+            .execute(
+                "UPDATE connections SET profile = ?1",
+                [serde_json::to_string(&planted).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(store.get_connection(&p.id).unwrap().unwrap().password, None);
+
+        // Secrets saved before they knew their destination still work, and
+        // get bound on first use.
+        *vault.0.lock().unwrap() = Some(format!(r#"{{"{}":{{"password":"old"}}}}"#, p.id));
+        let mut fresh = Store::open_in_memory().unwrap();
+        fresh.save_connection(&planted).unwrap();
+        fresh.use_vault(Box::new(vault.clone())).unwrap();
+        assert_eq!(
+            fresh
+                .get_connection(&p.id)
+                .unwrap()
+                .unwrap()
+                .password
+                .as_deref(),
+            Some("old")
+        );
+        assert!(
+            vault
+                .0
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap()
+                .contains("attacker.example")
+        );
     }
 
     #[test]

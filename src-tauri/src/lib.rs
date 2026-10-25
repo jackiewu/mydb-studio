@@ -13,8 +13,7 @@ use tauri::Manager;
 
 pub use commands::AppState;
 
-/// Present while the app runs; left behind when it doesn't exit normally.
-const RUNNING_FLAG: &str = "running.flag";
+use mydb_core::RUNNING_FLAG;
 const PANIC_LOG: &str = "last-panic.txt";
 
 /// Finds how the previous run ended, and sets up this run's tracking: the
@@ -187,14 +186,8 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 state.ai.kill_now();
-                // Stay locked for AI tools until the next start unlocks.
-                let relock = state
-                    .store
-                    .lock()
-                    .unwrap()
-                    .get_settings()
-                    .is_ok_and(|s| s.lock_enabled() && s.lock_on_start);
-                state.lock.set_locked(relock);
+                // With the app gone, the MCP server goes by the lock
+                // settings (see mydb_mcp::Server::locked).
                 if let Ok(dir) = app.path().app_data_dir() {
                     let _ = std::fs::remove_file(dir.join(RUNNING_FLAG));
                 }

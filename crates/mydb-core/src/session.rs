@@ -138,7 +138,7 @@ impl Session {
     pub async fn connect(profile: &ConnectionProfile) -> Result<Self> {
         let (link, info) = open_link(profile, None).await?;
         Ok(Self {
-            profile: profile.clone(),
+            profile: profile.with_pinned_host_key(info.ssh_host_fingerprint.as_deref()),
             link: Mutex::new(Some(link)),
             thread_id: AtomicU32::new(info.connection_id),
             info,

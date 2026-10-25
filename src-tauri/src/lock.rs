@@ -40,6 +40,17 @@ impl LockState {
         self.locked.load(Ordering::SeqCst)
     }
 
+    /// Refuses commands that show or change data while locked, so the lock
+    /// isn't only the screen covering the window.
+    pub fn ensure_unlocked(&self) -> Result<()> {
+        if self.is_locked() {
+            return Err(CoreError::Config {
+                message: "MyDB Studio 已鎖定，請先解鎖。".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::SeqCst);
         if locked {

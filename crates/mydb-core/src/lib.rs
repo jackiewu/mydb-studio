@@ -29,6 +29,6 @@ pub use session::{
     AnySession, ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
     StatementResult, TableInfo, TextRows,
 };
-pub use settings::{AppSettings, LOCK_FLAG, PinnedTab, Snippet};
+pub use settings::{AppSettings, LOCK_FLAG, PinnedTab, RUNNING_FLAG, Snippet};
 pub use split::split_statements;
 pub use store::Store;

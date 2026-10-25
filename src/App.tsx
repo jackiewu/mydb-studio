@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ask } from "./ask";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -314,15 +315,23 @@ export default function App() {
       setView("main");
     }
   }, [locked, settings.lock_disconnect, sessionId]);
-  const lockScreen = locked && (
-    <LockScreen
-      askNow={lockedAtStart}
-      onUnlocked={() => {
-        setLocked(false);
-        setLockedAtStart(false);
-      }}
-    />
-  );
+  // Everything under the lock screen is inert: no focus, clicks or keys.
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (root) root.inert = locked;
+  }, [locked]);
+  const lockScreen =
+    locked &&
+    createPortal(
+      <LockScreen
+        askNow={lockedAtStart}
+        onUnlocked={() => {
+          setLocked(false);
+          setLockedAtStart(false);
+        }}
+      />,
+      document.body,
+    );
 
   // Risky statements waiting for the user's go-ahead.
   const [risk, setRisk] = useState<{ findings: Finding[]; answer: (run: boolean) => void } | null>(null);

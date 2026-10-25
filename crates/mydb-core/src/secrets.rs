@@ -27,9 +27,39 @@ pub struct ConnectionSecrets {
     pub ssh_password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_passphrase: Option<String>,
+    /// Where these secrets were saved for (see [`destination`]). They are
+    /// only handed to a profile that still points there, so a changed (or
+    /// planted) database can't send them to another server. `None` for
+    /// secrets saved before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+}
+
+/// The servers a profile's secrets go to: the database (or Redis) server
+/// and the SSH jump host.
+pub fn destination(profile: &ConnectionProfile) -> String {
+    let at = |user: &str, host: &str, port: u16| {
+        format!("{}@{}:{port}", user.trim(), host.trim().to_lowercase())
+    };
+    let mut d = format!(
+        "{:?} {}",
+        profile.kind,
+        at(&profile.user, &profile.host, profile.port)
+    );
+    if let Some(ssh) = &profile.ssh {
+        d.push_str(&format!(" via {}", at(&ssh.user, &ssh.host, ssh.port)));
+    }
+    d
 }
 
 impl ConnectionSecrets {
+    /// Whether these may be given to `profile`.
+    pub fn fits(&self, profile: &ConnectionProfile) -> bool {
+        self.destination
+            .as_ref()
+            .is_none_or(|d| *d == destination(profile))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.password.is_none() && self.ssh_password.is_none() && self.ssh_passphrase.is_none()
     }
@@ -44,6 +74,7 @@ pub fn strip(profile: &ConnectionProfile) -> (ConnectionProfile, ConnectionSecre
     let mut p = profile.clone();
     let mut s = ConnectionSecrets {
         password: p.password.take().filter(|x| !x.is_empty()),
+        destination: Some(destination(profile)),
         ..Default::default()
     };
     if let Some(ssh) = p.ssh.as_mut() {

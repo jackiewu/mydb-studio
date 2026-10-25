@@ -374,6 +374,9 @@ pub fn add_limit(stmt: &str, n: u64) -> Option<String> {
 /// `INTO`, locking clauses or a data-changing part (`WITH … DELETE`). Used
 /// before running a statement again, e.g. to export all of its rows.
 pub fn is_plain_read(stmt: &str) -> bool {
+    if has_hidden_statements(stmt) {
+        return false;
+    }
     let toks = tokens(stmt);
     let top: Vec<&Tok> = toks
         .iter()
@@ -402,6 +405,73 @@ pub fn is_plain_read(stmt: &str) -> bool {
         ]
         .iter()
         .any(|w| top.iter().any(|t| is_word(t, w)))
+}
+
+/// Whether the server would run more of `stmt` than a reader sees: a
+/// `/*! … */` (or MariaDB `/*M! … */`) executable comment, which the server
+/// runs as code, or a `;` that starts another statement (possible after a
+/// `DELIMITER` change). Checks that look at one statement refuse these,
+/// since it may run as several or hide a clause.
+pub fn has_hidden_statements(stmt: &str) -> bool {
+    let mut chars = stmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            ';' => return true,
+            '\'' | '"' | '`' => {
+                while let Some(d) = chars.next() {
+                    if d == '\\' && c != '`' {
+                        chars.next();
+                    } else if d == c {
+                        if chars.peek() == Some(&c) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '#' => {
+                for d in chars.by_ref() {
+                    if d == '\n' {
+                        break;
+                    }
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                let mut ahead = chars.clone();
+                ahead.next();
+                if ahead
+                    .peek()
+                    .is_none_or(|c| c.is_whitespace() || c.is_control())
+                {
+                    for d in chars.by_ref() {
+                        if d == '\n' {
+                            break;
+                        }
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut ahead = chars.clone();
+                if ahead.peek() == Some(&'M') {
+                    ahead.next();
+                }
+                if ahead.peek() == Some(&'!') {
+                    return true;
+                }
+                let mut prev = ' ';
+                for d in chars.by_ref() {
+                    if prev == '*' && d == '/' {
+                        break;
+                    }
+                    prev = d;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // ---------- Pre-run checks ----------
@@ -462,7 +532,15 @@ fn tokens_cased(sql: &str, upper: bool) -> Vec<(Tok, usize)> {
                     }
                 }
             }
-            '-' if chars.peek() == Some(&'-') => {
+            // `--` starts a comment only before a space; `1--1` is arithmetic.
+            '-' if chars.peek() == Some(&'-') && {
+                let mut ahead = chars.clone();
+                ahead.next();
+                ahead
+                    .peek()
+                    .is_none_or(|c| c.is_whitespace() || c.is_control())
+            } =>
+            {
                 for d in chars.by_ref() {
                     if d == '\n' {
                         break;
@@ -1081,6 +1159,8 @@ mod tests {
             "DESCRIBE t",
             "EXPLAIN SELECT 1",
             "(SELECT 1) UNION (SELECT 2)",
+            "SELECT 'a;b', `c;d` FROM t -- ;",
+            "SELECT 1 /* ; */ FROM t",
         ] {
             assert!(is_plain_read(yes), "{yes}");
         }
@@ -1092,6 +1172,12 @@ mod tests {
             "EXPLAIN ANALYZE DELETE FROM t",
             "CALL p()",
             "",
+            // What the server runs but a comment-stripping check would miss.
+            "SELECT * /*!50000 INTO OUTFILE '/tmp/x' */ FROM t",
+            "SELECT * /*M! INTO OUTFILE '/tmp/x' */ FROM t",
+            "SELECT 1 --x\nINTO OUTFILE '/tmp/x'",
+            // Several statements in one, as after a DELIMITER change.
+            "SELECT 1; COMMIT; DROP TABLE t",
         ] {
             assert!(!is_plain_read(no), "{no}");
         }
