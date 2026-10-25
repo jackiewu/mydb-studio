@@ -263,6 +263,25 @@ export default function App() {
     }
   };
 
+  const stop = () => {
+    if (session) api.cancelQuery(session.session_id).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
+  };
+
+  // ⌘/Ctrl+. stops the running query.
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  useEffect(() => {
+    if (!running) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ".") {
+        e.preventDefault();
+        stopRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [running]);
+
   const toggleFavorite = async (c: ConnectionProfile) => {
     await api.setFavorite(c.id, !c.favorite);
     await reload();
@@ -549,6 +568,11 @@ export default function App() {
                     全部（{runTarget?.total} 句）
                   </button>
                 )}
+                {running && (
+                  <button className="danger" onClick={stop} title="停止執行中的查詢（⌘／Ctrl + .）">
+                    ■ 停止
+                  </button>
+                )}
                 <button
                   className="primary"
                   disabled={running || runTarget?.count === 0}
@@ -694,6 +718,7 @@ export default function App() {
             <ResultsPanel
               outcome={tab?.outcome ?? null}
               onRunWithoutLimit={(sql) => run(sql, undefined, true)}
+              sessionId={session.session_id}
               onAskAi={askAi}
             />
           </div>

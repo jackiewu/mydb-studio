@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -27,6 +28,12 @@ pub struct Session {
     info: SessionInfo,
     /// Database chosen with `USE`, restored after a reconnect.
     current_db: std::sync::Mutex<Option<String>>,
+    /// Server thread id of the live connection, which changes on reconnect.
+    thread_id: AtomicU32,
+    /// A statement is running (holding the link).
+    busy: AtomicBool,
+    /// [`Session::cancel`] was called during the current run.
+    cancelled: AtomicBool,
 }
 
 struct Link {
@@ -84,6 +91,8 @@ pub struct ExecutionOutcome {
     pub failed_statement: Option<String>,
     /// The connection had been lost and was re-established before running.
     pub reconnected: bool,
+    /// The user stopped the run; `error` says where.
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,8 +140,11 @@ impl Session {
         Ok(Self {
             profile: profile.clone(),
             link: Mutex::new(Some(link)),
+            thread_id: AtomicU32::new(info.connection_id),
             info,
             current_db: std::sync::Mutex::new(None),
+            busy: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
         })
     }
 
@@ -165,7 +177,8 @@ impl Session {
             // Drop the dead link (and its tunnel) before opening a new one.
             *link = None;
             let db = self.current_db.lock().unwrap().clone();
-            let (new_link, _) = open_link(&self.profile, db).await?;
+            let (new_link, info) = open_link(&self.profile, db).await?;
+            self.thread_id.store(info.connection_id, Ordering::SeqCst);
             *link = Some(new_link);
         }
         Ok((&mut link.as_mut().unwrap().conn, !alive))
@@ -191,6 +204,7 @@ impl Session {
         let mut failed_statement = None;
         let mut reconnected = false;
         let mut guard = self.link.lock().await;
+        let _busy = self.start_run();
 
         let error = match self.live(&mut guard).await {
             Err(e) => Some(e),
@@ -201,6 +215,7 @@ impl Session {
                     sql,
                     max_rows,
                     auto_limit,
+                    &self.cancelled,
                     &mut results,
                     &mut failed_statement,
                 )
@@ -224,6 +239,83 @@ impl Session {
             error,
             failed_statement,
             reconnected,
+            cancelled: self.cancelled.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Marks a run as started until the guard drops.
+    fn start_run(&self) -> BusyGuard<'_> {
+        self.cancelled.store(false, Ordering::SeqCst);
+        self.busy.store(true, Ordering::SeqCst);
+        BusyGuard(&self.busy)
+    }
+
+    /// Stops the statement that is running, if any, with `KILL QUERY` sent
+    /// over a second connection (the first one is busy waiting for the
+    /// result). Later statements of the same run are skipped. Returns
+    /// whether something was running.
+    pub async fn cancel(&self) -> Result<bool> {
+        if !self.busy.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        self.cancelled.store(true, Ordering::SeqCst);
+        let (mut link, _) = open_link(&self.profile, None).await?;
+        let id = self.thread_id.load(Ordering::SeqCst);
+        let killed = link.conn.query_drop(format!("KILL QUERY {id}")).await;
+        let _ = link.conn.disconnect().await;
+        match killed {
+            // 1094: the statement had just finished.
+            Err(mysql_async::Error::Server(e)) if e.code == 1094 => Ok(true),
+            Err(e) => Err(e.into()),
+            Ok(()) => Ok(true),
+        }
+    }
+
+    /// Runs one query and hands its columns, then each row, to the
+    /// callbacks, without keeping rows in memory. For exports; can be
+    /// stopped with [`Session::cancel`]. Returns the number of rows.
+    pub async fn stream_rows(
+        &self,
+        sql: &str,
+        on_columns: impl FnOnce(&[ColumnInfo]) -> std::io::Result<()>,
+        on_row: impl FnMut(Vec<serde_json::Value>) -> std::io::Result<()>,
+    ) -> Result<u64> {
+        let mut guard = self.link.lock().await;
+        let _busy = self.start_run();
+        let streamed = self.stream_on(&mut guard, sql, on_columns, on_row).await;
+        match streamed {
+            Err(_) if self.cancelled.load(Ordering::SeqCst) => Err(CoreError::Cancelled),
+            other => other,
+        }
+    }
+
+    async fn stream_on(
+        &self,
+        link: &mut Option<Link>,
+        sql: &str,
+        on_columns: impl FnOnce(&[ColumnInfo]) -> std::io::Result<()>,
+        mut on_row: impl FnMut(Vec<serde_json::Value>) -> std::io::Result<()>,
+    ) -> Result<u64> {
+        let (conn, _) = self.live(link).await?;
+        let mut result = conn.query_iter(sql).await?;
+        on_columns(&column_infos(&result))?;
+        let mut count = 0u64;
+        let mut failed: Option<std::io::Error> = None;
+        result
+            .for_each(|row: Row| {
+                if failed.is_none() {
+                    count += 1;
+                    if let Err(e) = on_row(row.unwrap().into_iter().map(to_json).collect()) {
+                        failed = Some(e);
+                    }
+                }
+            })
+            .await?;
+        // Any further result sets must be read before the connection is reused.
+        result.drop_result().await?;
+        match failed {
+            Some(e) => Err(e.into()),
+            None => Ok(count),
         }
     }
 
@@ -403,6 +495,30 @@ impl Session {
     }
 }
 
+struct BusyGuard<'a>(&'a AtomicBool);
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn column_infos<P: mysql_async::prelude::Protocol>(
+    result: &mysql_async::QueryResult<'_, '_, P>,
+) -> Vec<ColumnInfo> {
+    result
+        .columns_ref()
+        .iter()
+        .map(|c| ColumnInfo {
+            name: c.name_str().into_owned(),
+            table: c.table_str().into_owned(),
+            type_name: format!("{:?}", c.column_type())
+                .trim_start_matches("MYSQL_TYPE_")
+                .to_string(),
+        })
+        .collect()
+}
+
 /// Opens the tunnel (if any) and the MySQL connection. `database` overrides
 /// the profile's default database.
 async fn open_link(
@@ -470,6 +586,7 @@ async fn run(
     sql: &str,
     max_rows: usize,
     auto_limit: Option<u64>,
+    cancelled: &AtomicBool,
     out: &mut Vec<StatementResult>,
     failed: &mut Option<String>,
 ) -> Result<()> {
@@ -477,6 +594,9 @@ async fn run(
     // and an error points at the statement that caused it.
     for stmt in split_statements(sql) {
         *failed = Some(stmt.clone());
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(CoreError::Cancelled);
+        }
         let timer = Instant::now();
         let limited = auto_limit.and_then(|n| crate::advisor::add_limit(&stmt, n));
         let mut result = conn
@@ -484,17 +604,7 @@ async fn run(
             .await?;
         // A statement can still yield several result sets (e.g. CALL).
         loop {
-            let columns: Vec<ColumnInfo> = result
-                .columns_ref()
-                .iter()
-                .map(|c| ColumnInfo {
-                    name: c.name_str().into_owned(),
-                    table: c.table_str().into_owned(),
-                    type_name: format!("{:?}", c.column_type())
-                        .trim_start_matches("MYSQL_TYPE_")
-                        .to_string(),
-                })
-                .collect();
+            let columns = column_infos(&result);
             let mut rows = Vec::new();
             let mut total_rows = 0u64;
             result

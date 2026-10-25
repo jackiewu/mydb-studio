@@ -6,6 +6,7 @@ pub mod admin;
 pub mod advisor;
 pub mod ai;
 pub mod error;
+pub mod export;
 pub mod profile;
 pub mod records;
 pub mod report;

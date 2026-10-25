@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
+use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::{
     AppSettings, ColumnDef, ConnectionProfile, CoreError, DEFAULT_MAX_ROWS, DatabaseInfo,
@@ -252,7 +253,11 @@ pub async fn execute(
     } else {
         None
     };
-    let advice = outcome.error.as_ref().and_then(advisor::error_advice);
+    let advice = outcome
+        .error
+        .as_ref()
+        .filter(|_| !outcome.cancelled)
+        .and_then(advisor::error_advice);
     Ok(ExecuteResponse {
         advice,
         findings: advisor::check_sql(&sql)
@@ -812,4 +817,48 @@ pub async fn admin_apply(
     change: admin::AdminChange,
 ) -> Result<Vec<String>> {
     admin::apply(&*state.session(&session_id).await?, &change).await
+}
+
+/// Stops the statement running on this session, if any.
+#[tauri::command]
+pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<bool> {
+    state.session(&session_id).await?.cancel().await
+}
+
+/// Runs `sql` again and writes every row to `path`, without the row limit of
+/// the result grid. Only statements that just read are allowed, since the
+/// statement runs a second time. Returns the number of rows written; a
+/// failed or stopped export leaves no file behind.
+#[tauri::command]
+pub async fn export_query(
+    state: State<'_, AppState>,
+    session_id: String,
+    sql: String,
+    options: ExportOptions,
+    path: String,
+) -> Result<u64> {
+    if !advisor::is_plain_read(&sql) {
+        return Err(CoreError::Config {
+            message: "只能匯出查詢（SELECT、SHOW 等）的結果，這句會修改資料或鎖定資料列。".into(),
+        });
+    }
+    let session = state.session(&session_id).await?;
+    let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
+    let writer = Mutex::new(Some(RowWriter::new(file, options)));
+    let streamed = session
+        .stream_rows(
+            &sql,
+            |columns| writer.lock().unwrap().as_mut().unwrap().begin(columns),
+            |row| writer.lock().unwrap().as_mut().unwrap().row(&row),
+        )
+        .await;
+    let finished = streamed.and_then(|_| {
+        let w = writer.lock().unwrap().take().unwrap();
+        Ok(w.finish()?)
+    });
+    if finished.is_err() {
+        drop(writer);
+        let _ = std::fs::remove_file(&path);
+    }
+    finished
 }

@@ -8,6 +8,9 @@ interface Pos {
   c: number;
 }
 
+// Statements safe to run a second time for an export (checked again in Rust).
+const READ_ONLY = /^\s*(\/\*[\s\S]*?\*\/\s*)*(select|with|show|desc|describe|explain|table|values|\()/i;
+
 // Remembered across results so a chosen format sticks.
 let lastFormat: CopyFormat = "tsv";
 let lastHeader = false;
@@ -23,8 +26,11 @@ let lastHeader = false;
 export function ResultGrid({
   result,
   cellLevel,
+  sessionId,
 }: {
   result: StatementResult;
+  /** When set, rows the grid did not load can be exported by running the query again. */
+  sessionId?: string;
   /** Highlights cells, e.g. the problems in an EXPLAIN. */
   cellLevel?: (row: number, col: number) => "bad" | "warn" | undefined;
 }) {
@@ -128,6 +134,31 @@ export function ResultGrid({
     }
   };
 
+  // Rows exist beyond what was loaded: the grid's cap, or the automatic LIMIT.
+  const more = result.truncated || result.limit_added != null;
+  const canExportAll = !!sessionId && more && READ_ONLY.test(result.sql);
+  const [exporting, setExporting] = useState(false);
+
+  const exportAll = async () => {
+    if (!sessionId) return;
+    const ext = fileExtension(format);
+    const path = await save({
+      defaultPath: `${columns[0]?.table || "result"}.${ext}`,
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+    });
+    if (!path) return;
+    setExporting(true);
+    setFlash("匯出中…（會重新執行查詢）");
+    try {
+      const n = await api.exportQuery(sessionId, result.sql, { format, header, table: null }, path);
+      setFlash(`已匯出全部 ${n.toLocaleString()} 列`);
+    } catch (e) {
+      setFlash((e as { kind?: string })?.kind === "cancelled" ? "已停止匯出，沒有留下檔案" : describeError(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "c") {
@@ -209,9 +240,25 @@ export function ResultGrid({
         <button className="small" onClick={() => copy()} title="⌘/Ctrl + C">
           複製{range ? "選取" : needle ? "符合的列" : "全部"}
         </button>
-        <button className="small" onClick={saveFile}>
+        <button className="small" onClick={saveFile} title="存下已載入的列">
           存檔…
         </button>
+        {canExportAll &&
+          (exporting ? (
+            <button className="small danger" onClick={() => sessionId && api.cancelQuery(sessionId)}>
+              ■ 停止匯出
+            </button>
+          ) : (
+            <button
+              className="small"
+              onClick={exportAll}
+              title={`畫面上只載入 ${result.rows.length.toLocaleString()} 列。重新執行這句查詢${
+                result.limit_added != null ? "（不加自動 LIMIT）" : ""
+              }，把所有結果直接寫進檔案。`}
+            >
+              匯出全部…
+            </button>
+          ))}
       </div>
       <div
         className="grid-wrap"
