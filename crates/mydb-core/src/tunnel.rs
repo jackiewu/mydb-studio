@@ -170,6 +170,31 @@ impl SshTunnel {
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .map(str::to_string);
+        // Try the socket once now: a wrong path or a server that forbids
+        // socket forwarding would otherwise only show as a closed connection.
+        if let Some(path) = &socket_path {
+            match session.channel_open_direct_streamlocal(path.clone()).await {
+                Ok(channel) => {
+                    let _ = channel.close().await;
+                }
+                Err(e) => {
+                    let why = match e {
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::ConnectFailed,
+                        ) => "no such socket, or no permission to use it".to_string(),
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::AdministrativelyProhibited,
+                        ) => "the SSH server does not allow socket forwarding \
+                              (AllowStreamLocalForwarding)"
+                            .to_string(),
+                        e => e.to_string(),
+                    };
+                    return Err(CoreError::Ssh {
+                        message: format!("cannot open the socket {path} on {}: {why}", cfg.host),
+                    });
+                }
+            }
+        }
 
         let fwd_session = session.clone();
         let accept_task = tokio::spawn(async move {

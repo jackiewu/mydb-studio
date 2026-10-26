@@ -771,6 +771,15 @@ function tlsHint(message: string) {
   return "";
 }
 
+/** Plain words for SSH failures that have a usual fix. */
+function sshHint(message: string) {
+  if (/cannot open the socket .*no such socket/i.test(message))
+    return "\n跳板機上找不到這個 socket 檔，或 SSH 使用者沒有權限使用它。請在主機上執行 sudo mariadb -e \"SELECT @@socket\" 確認路徑。";
+  if (/AllowStreamLocalForwarding/.test(message))
+    return "\nSSH 伺服器不允許轉送 socket，需要在 /etc/ssh/sshd_config 設定 AllowStreamLocalForwarding yes。";
+  return "";
+}
+
 /** Plain words for what gcloud says when an IAP tunnel won't open. */
 function iapHint(message: string) {
   if (/gcloud not found|cannot run gcloud/i.test(message))
@@ -813,6 +822,8 @@ export function describeError(e: unknown): string {
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
     case "connection":
       return `連線中斷：${err.message}${tlsHint(err.message)}`;
+    case "ssh":
+      return `${err.message}${sshHint(err.message)}`;
     case "iap":
       return `GCP IAP 通道開不起來：${err.message}${iapHint(err.message)}`;
     case "not_connected":

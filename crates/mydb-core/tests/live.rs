@@ -201,6 +201,13 @@ async fn ssh_to_the_server_socket_logs_in_as_localhost() {
     let who = out.results[0].rows[0][0].as_str().unwrap().to_string();
     assert!(who.ends_with("@localhost"), "{who}");
     session.close().await.unwrap();
+
+    // A wrong path is reported when connecting, not as a closed connection.
+    profile.ssh.as_mut().unwrap().socket_path = Some("/nonexistent/mysql.sock".into());
+    let Err(CoreError::Ssh { message }) = Session::connect(&profile).await else {
+        panic!("expected an SSH error");
+    };
+    assert!(message.contains("no such socket"), "{message}");
 }
 
 #[tokio::test]
