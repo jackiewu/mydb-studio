@@ -174,9 +174,39 @@ pub fn find_gcloud(configured: Option<&str>) -> Result<PathBuf> {
         .iter()
         .flat_map(|dir| GCLOUD_NAMES.iter().map(move |n| dir.join(n)))
         .find(|p| p.is_file())
+        .or_else(gcloud_from_login_shell)
         .ok_or_else(|| CoreError::Iap {
             message: "gcloud not found on PATH or in the usual install locations".into(),
         })
+}
+
+/// Where the user's own shell finds gcloud. An SDK unpacked anywhere adds
+/// itself to PATH from the shell's rc file, which a Finder-launched app
+/// never reads.
+#[cfg(unix)]
+fn gcloud_from_login_shell() -> Option<PathBuf> {
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(shell)
+            .args(["-ilc", "command -v gcloud"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        let _ = tx.send(out);
+    });
+    // An rc file that hangs must not hang the connect.
+    let out = rx.recv_timeout(Duration::from_secs(5)).ok()?.ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .map(|l| PathBuf::from(l.trim()))
+        .find(|p| p.is_absolute() && p.is_file())
+}
+
+#[cfg(not(unix))]
+fn gcloud_from_login_shell() -> Option<PathBuf> {
+    None
 }
 
 fn search_dirs() -> Vec<PathBuf> {
