@@ -17,6 +17,9 @@ use crate::tunnel::Tunnel;
 /// count is still reported.
 pub const DEFAULT_MAX_ROWS: usize = 1000;
 
+/// How long connecting and the first query may take.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// An open connection, possibly running through an SSH or GCP IAP tunnel.
 ///
 /// If the server drops the connection (for example after `wait_timeout`),
@@ -713,8 +716,20 @@ async fn open_link(
         opts = opts.ssl_opts(ssl_opts(profile)?);
     }
 
-    let mut conn = Conn::new(opts).await?;
-    let server_version: Option<String> = conn.query_first("SELECT VERSION()").await?;
+    // A tunnel can accept the connection while nothing answers behind it,
+    // and the driver would then wait for the greeting forever.
+    let (conn, server_version) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let mut conn = Conn::new(opts).await?;
+        let version: Option<String> = conn.query_first("SELECT VERSION()").await?;
+        Ok::<_, CoreError>((conn, version))
+    })
+    .await
+    .map_err(|_| CoreError::Connection {
+        message: format!(
+            "no answer from the server within {}s",
+            CONNECT_TIMEOUT.as_secs()
+        ),
+    })??;
     let info = SessionInfo {
         server_version: server_version.unwrap_or_default(),
         connection_id: conn.id(),

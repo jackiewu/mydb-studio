@@ -79,6 +79,9 @@ impl Tunnel {
     }
 }
 
+/// How long reaching the SSH server and its handshake may take.
+const SSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 pub struct SshTunnel {
     local_port: u16,
     /// Fingerprint of the jump host key seen on this connect.
@@ -101,25 +104,30 @@ impl SshTunnel {
             ..Default::default()
         });
 
-        let mut session =
-            match client::connect(config, (cfg.host.as_str(), cfg.port), handler).await {
-                Ok(s) => s,
-                Err(e) => {
-                    // A rejected host key surfaces as a generic russh error, so
-                    // report the mismatch explicitly when we know about it.
-                    if let (Some(expected), Some(actual)) =
-                        (&cfg.known_host_fingerprint, seen.lock().unwrap().clone())
-                        && *expected != actual
-                    {
-                        return Err(CoreError::HostKeyMismatch {
-                            host: cfg.host.clone(),
-                            expected: expected.clone(),
-                            actual,
-                        });
-                    }
-                    return Err(e.into());
+        let mut session = match tokio::time::timeout(
+            SSH_TIMEOUT,
+            client::connect(config, (cfg.host.as_str(), cfg.port), handler),
+        )
+        .await
+        .unwrap_or(Err(russh::Error::ConnectionTimeout))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                // A rejected host key surfaces as a generic russh error, so
+                // report the mismatch explicitly when we know about it.
+                if let (Some(expected), Some(actual)) =
+                    (&cfg.known_host_fingerprint, seen.lock().unwrap().clone())
+                    && *expected != actual
+                {
+                    return Err(CoreError::HostKeyMismatch {
+                        host: cfg.host.clone(),
+                        expected: expected.clone(),
+                        actual,
+                    });
                 }
-            };
+                return Err(e.into());
+            }
+        };
 
         let auth =
             match &cfg.auth {
