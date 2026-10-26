@@ -779,6 +779,8 @@ function iapHint(message: string) {
     return "\n帳號沒有使用 IAP 通道的權限。需要在專案或 VM 上有「IAP-secured Tunnel User」角色。";
   if (/4003|failed to connect to backend/i.test(message))
     return "\nIAP 連不到 VM 上的這個埠。請確認防火牆允許 35.235.240.0/20 連到該埠，且服務有在 VM 上監聽。";
+  if (/4010|destination read failed/i.test(message))
+    return "\nIAP 已連到 VM，但 VM 上這個埠沒有回應。常見原因是資料庫的 bind-address 是 127.0.0.1（IAP 從 VM 內部 IP 連入），或埠號填錯。可以改用「SSH 通道」搭配 IAP，主機填 127.0.0.1，就不用改伺服器設定。";
   if (/Underspecified resource|\[--zone\]/i.test(message))
     return "\n請在「GCP IAP」頁填 VM 所在的 zone（例如 asia-east1-b）。";
   if (/was not found|notFound|does not exist/i.test(message))
