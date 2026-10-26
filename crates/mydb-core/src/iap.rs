@@ -46,6 +46,8 @@ impl IapTunnel {
             instance,
             &remote_port.to_string(),
             &format!("--local-host-port=127.0.0.1:{local_port}"),
+            // IAP's own refusal (e.g. [4010: …]) is only logged at info.
+            "--verbosity=info",
         ]);
         for (flag, value) in [("--zone", &cfg.zone), ("--project", &cfg.project)] {
             if !value.trim().is_empty() {
@@ -56,6 +58,7 @@ impl IapTunnel {
         // shell script that looks for Python on it.
         cmd.env("PATH", child_path(&gcloud))
             .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
+            .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -108,7 +111,7 @@ impl IapTunnel {
                 message: format!(
                     "gcloud did not open the tunnel within {}s. {}",
                     READY_TIMEOUT.as_secs(),
-                    output.join("\n")
+                    failure_message(&output, None)
                 )
                 .trim()
                 .to_string(),
@@ -145,12 +148,13 @@ fn is_tunnel_error(line: &str) -> bool {
     })
 }
 
-/// What gcloud said before giving up: its `ERROR:` and what follows, or
-/// else everything but its progress lines and the NumPy tip.
+/// What gcloud said before giving up: IAP's refusal or gcloud's `ERROR:`
+/// and what follows, without progress lines, info logging and the NumPy
+/// tip.
 fn failure_message(output: &[String], code: Option<i32>) -> String {
     let from = output
         .iter()
-        .position(|l| l.starts_with("ERROR:"))
+        .position(|l| l.starts_with("ERROR:") || is_tunnel_error(l))
         .unwrap_or(0);
     let noise = [
         "Picking local unused port",
@@ -163,6 +167,17 @@ fn failure_message(output: &[String], code: Option<i32>) -> String {
         .iter()
         .map(|l| l.trim())
         .filter(|l| !noise.iter().any(|n| l.contains(n)))
+        .filter_map(|l| match l.strip_prefix("INFO:") {
+            // `INFO: [-1] Received WebSocket Close message [4010: …]`
+            Some(rest) if is_tunnel_error(l) => Some(
+                rest.trim_start()
+                    .trim_start_matches(|c: char| c != ']')
+                    .trim_start_matches(']')
+                    .trim_start(),
+            ),
+            Some(_) => None,
+            None => Some(l),
+        })
         .collect();
     match (useful.is_empty(), code) {
         (false, _) => useful.join("\n"),
@@ -311,7 +326,7 @@ mod tests {
             args.trim(),
             format!(
                 "compute start-iap-tunnel db-vm 3306 --local-host-port=127.0.0.1:{port} \
-                 --zone=asia-east1-b --project=my-proj"
+                 --verbosity=info --zone=asia-east1-b --project=my-proj"
             )
         );
         let pid = tunnel.child.id().unwrap() as i32;
@@ -354,6 +369,17 @@ mod tests {
             failure_message(&out, Some(1)),
             "ERROR: (gcloud.compute.start-iap-tunnel) Could not fetch resource:\n\
              - Request is missing required authentication credential."
+        );
+        let refused: Vec<String> = [
+            "Testing if tunnel connection works.",
+            "INFO: [-1] Connecting with URL ['wss://tunnel.cloudproxy.app/v4/connect?port=3306']",
+            "INFO: [-1] Received WebSocket Close message [4010: 'destination read failed'].",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(
+            failure_message(&refused, None),
+            "Received WebSocket Close message [4010: 'destination read failed']."
         );
         assert_eq!(
             failure_message(&out[..2], Some(1)),
