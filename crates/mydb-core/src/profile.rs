@@ -23,6 +23,11 @@ pub struct ConnectionProfile {
     pub ssl: SslConfig,
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Reach the server through a Google Cloud IAP tunnel to a VM. Alone,
+    /// `port` is the port on the VM; with `ssh`, IAP carries the SSH
+    /// connection and `host`/`port` are as seen from the VM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iap: Option<IapConfig>,
     /// Starred connections sort first on the home screen and sidebar.
     #[serde(default)]
     pub favorite: bool,
@@ -98,6 +103,7 @@ impl ConnectionProfile {
             database: None,
             ssl: SslConfig::default(),
             ssh: None,
+            iap: None,
             favorite: false,
             last_used_at: None,
             mcp: McpAccess::default(),
@@ -182,6 +188,22 @@ pub struct SshConfig {
     pub known_host_fingerprint: Option<String>,
 }
 
+/// A Compute Engine VM reached with `gcloud compute start-iap-tunnel`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct IapConfig {
+    /// VM instance name.
+    pub instance: String,
+    /// Empty: gcloud's configured default zone.
+    #[serde(default)]
+    pub zone: String,
+    /// Empty: gcloud's configured default project.
+    #[serde(default)]
+    pub project: String,
+    /// Full path to gcloud, when it isn't found on its own.
+    #[serde(default)]
+    pub gcloud_path: Option<String>,
+}
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -241,9 +263,21 @@ mod tests {
             },
             known_host_fingerprint: None,
         });
+        p.iap = Some(IapConfig {
+            instance: "db-vm".into(),
+            zone: "asia-east1-b".into(),
+            project: "my-proj".into(),
+            gcloud_path: None,
+        });
         let json = serde_json::to_string(&p).unwrap();
         let back: ConnectionProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+        // Profiles without IAP are written as before.
+        assert!(
+            !serde_json::to_string(&ConnectionProfile::new("x", "h", "u"))
+                .unwrap()
+                .contains("iap")
+        );
     }
 
     #[test]

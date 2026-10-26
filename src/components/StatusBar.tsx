@@ -126,6 +126,11 @@ export function StatusBar({
             {session.info.server_version}
           </span>
           {session.info.tls && <span className="good">TLS</span>}
+          {profile.iap && (
+            <span className="good" title={`經由 GCP IAP 連到 VM ${profile.iap.instance}`}>
+              IAP
+            </span>
+          )}
           {profile.ssh && (
             <span className="good" title={`經由 SSH ${profile.ssh.user}@${profile.ssh.host}`}>
               SSH

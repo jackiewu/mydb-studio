@@ -67,6 +67,14 @@ fn describe(profile: &ConnectionProfile, with_tls_files: bool) -> String {
             path(&profile.ssl.key_path),
         ));
     }
+    if let Some(iap) = &profile.iap {
+        d.push_str(&format!(
+            " iap={}/{}/{}",
+            iap.project.trim(),
+            iap.zone.trim(),
+            iap.instance.trim()
+        ));
+    }
     if let Some(ssh) = &profile.ssh {
         d.push_str(&format!(
             " via {} key={}",

@@ -8,6 +8,7 @@ pub mod ai;
 pub mod ddl;
 pub mod error;
 pub mod export;
+pub mod iap;
 pub mod profile;
 pub mod records;
 pub mod redis;
@@ -22,7 +23,7 @@ pub mod tunnel;
 
 pub use error::{CoreError, Result};
 pub use profile::{
-    ConnectionKind, ConnectionProfile, McpAccess, SshAuth, SshConfig, SslConfig, SslMode,
+    ConnectionKind, ConnectionProfile, IapConfig, McpAccess, SshAuth, SshConfig, SslConfig, SslMode,
 };
 pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatement};
 pub use redis::RedisSession;

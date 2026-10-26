@@ -8,6 +8,7 @@ import {
   serverLabel,
   type ConnectionKind,
   type ConnectionProfile,
+  type IapConfig,
   type McpAccess,
   type SslConfig,
   type SshAuth,
@@ -21,7 +22,7 @@ interface Props {
   onDelete?: () => void;
 }
 
-type Tab = "general" | "ssl" | "ssh";
+type Tab = "general" | "ssl" | "ssh" | "iap";
 
 const SSL_MODES: { value: SslMode; label: string }[] = [
   { value: "disabled", label: "不加密" },
@@ -79,7 +80,7 @@ function cloudOf(host: string, kind: ConnectionKind): Cloud | null {
 }
 
 /** The parts of a profile that decide which server and login a list is for. */
-const loginKey = (p: ConnectionProfile) => JSON.stringify([p.host, p.port, p.user, p.password, p.ssl, p.ssh]);
+const loginKey = (p: ConnectionProfile) => JSON.stringify([p.host, p.port, p.user, p.password, p.ssl, p.ssh, p.iap]);
 
 export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) {
   // A new connection starts by picking what kind of server it is.
@@ -97,6 +98,16 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
   const setSsh = (patch: Partial<NonNullable<ConnectionProfile["ssh"]>>) =>
     setP((old) => (old.ssh ? { ...old, ssh: { ...old.ssh, ...patch } } : old));
   const setAuth = (auth: SshAuth) => setSsh({ auth });
+  // Through IAP the VM name stands in for the host it replaces: the
+  // database's host alone, the SSH host with SSH.
+  const setIap = (patch: Partial<IapConfig>) =>
+    setP((old) => {
+      if (!old.iap) return old;
+      const iap = { ...old.iap, ...patch };
+      const name = iap.instance.trim();
+      return old.ssh ? { ...old, iap, ssh: { ...old.ssh, host: name } } : { ...old, iap, host: name };
+    });
+  const iapOnly = !!p.iap && !p.ssh;
 
   // Databases on the server, offered for the default database.
   const [databases, setDatabases] = useState<{ key: string; names: string[]; error?: string } | null>(null);
@@ -161,7 +172,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
     setStatus(null);
     try {
       const info = await api.testConnection(p);
-      const extras = [info.tls && "TLS", p.ssh && "SSH"].filter(Boolean).join("、");
+      const extras = [info.tls && "TLS", p.iap && "IAP", p.ssh && "SSH"].filter(Boolean).join("、");
       setStatus({ ok: true, text: `連線成功：${info.server_version}${extras ? `（${extras}）` : ""}` });
       if (!redis) loadDatabases();
     } catch (e) {
@@ -221,9 +232,9 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
         )}
       </h2>
       <div className="tabs">
-        {(["general", "ssl", "ssh"] as Tab[]).map((t) => (
+        {(["general", "ssl", "ssh", "iap"] as Tab[]).map((t) => (
           <button type="button" key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-            {t === "general" ? "一般" : t === "ssl" ? (redis ? "TLS" : "SSL/TLS") : "SSH 通道"}
+            {t === "general" ? "一般" : t === "ssl" ? (redis ? "TLS" : "SSL/TLS") : t === "ssh" ? "SSH 通道" : "GCP IAP"}
           </button>
         ))}
       </div>
@@ -235,12 +246,21 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <input value={p.name} placeholder={serverLabel(p)} onChange={(e) => set({ name: e.target.value })} />
           </label>
           <div className="row">
+            {iapOnly ? (
+              <div className="field-group grow">
+                <span>主機</span>
+                <span className="field-note">
+                  經由 GCP IAP 連到 VM「{p.iap!.instance || "（未填）"}」，到「GCP IAP」頁修改。
+                </span>
+              </div>
+            ) : (
             <label className="grow">
               主機
               <input required value={p.host} onChange={(e) => set({ host: e.target.value })} />
             </label>
+            )}
             <label className="port">
-              埠號
+              {iapOnly ? "VM 上的埠號" : "埠號"}
               <input
                 type="number"
                 required
@@ -429,10 +449,19 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                 {redis ? "127.0.0.1:6379 或 ElastiCache 的 endpoint" : "127.0.0.1:3306"}。使用 TLS 時會用這個主機名稱驗證憑證。
               </p>
               <div className="row">
+                {p.iap ? (
+                  <div className="field-group grow">
+                    <span>SSH 主機</span>
+                    <span className="field-note">
+                      經由 GCP IAP 連到 VM「{p.iap.instance || "（未填）"}」的 SSH，到「GCP IAP」頁修改。
+                    </span>
+                  </div>
+                ) : (
                 <label className="grow">
                   SSH 主機
                   <input required value={p.ssh.host} onChange={(e) => setSsh({ host: e.target.value })} />
                 </label>
+                )}
                 <label className="port">
                   埠號
                   <input
@@ -507,6 +536,75 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                   <span>尚未記錄，第一次連線時會自動記住</span>
                 )}
               </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === "iap" && (
+        <div className="fields">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={!!p.iap}
+              onChange={(e) =>
+                setP((old) => {
+                  if (!e.target.checked) return { ...old, iap: null };
+                  const iap: IapConfig = { instance: "", zone: "", project: "", gcloud_path: null };
+                  return old.ssh ? { ...old, iap, ssh: { ...old.ssh, host: "" } } : { ...old, iap, host: "" };
+                })
+              }
+            />
+            透過 GCP IAP 通道連線（Compute Engine VM）
+          </label>
+          {p.iap && (
+            <>
+              <p className="hint">
+                連線時 app 會在背景執行 <code>gcloud compute start-iap-tunnel</code>，斷線時自動關閉，不用自己開終端機。
+                {p.ssh
+                  ? `有開「SSH 通道」，所以 IAP 會連到 VM 的 SSH 埠（${p.ssh.port}），再從 VM 連到「一般」頁的主機和埠號，例如 Cloud SQL 的私人 IP。`
+                  : `${redis ? "Redis" : "資料庫"}要裝在這台 VM 上，「一般」頁的埠號就是 VM 上的埠（${redis ? "通常 6379" : "通常 3306"}）。如果要經由 VM 再連到別台主機，請同時開「SSH 通道」。`}
+              </p>
+              <label>
+                VM 執行個體名稱
+                <input
+                  required
+                  value={p.iap.instance}
+                  placeholder="my-db-vm"
+                  onChange={(e) => setIap({ instance: e.target.value })}
+                />
+              </label>
+              <div className="row">
+                <label className="grow">
+                  Zone
+                  <input
+                    value={p.iap.zone}
+                    placeholder="asia-east1-b（空白則用 gcloud 預設值）"
+                    onChange={(e) => setIap({ zone: e.target.value })}
+                  />
+                </label>
+                <label className="grow">
+                  專案 ID
+                  <input
+                    value={p.iap.project}
+                    placeholder="空白則用 gcloud 預設專案"
+                    onChange={(e) => setIap({ project: e.target.value })}
+                  />
+                </label>
+              </div>
+              <label>
+                gcloud 路徑（選填）
+                <input
+                  value={p.iap.gcloud_path ?? ""}
+                  placeholder="空白則自動尋找，例如 /opt/homebrew/bin/gcloud"
+                  onChange={(e) => setIap({ gcloud_path: e.target.value || null })}
+                />
+                <span className="field-note">找不到 gcloud 時，在終端機執行 which gcloud，把結果貼在這裡。</span>
+              </label>
+              <p className="hint">
+                需要先在終端機執行過 <code>gcloud auth login</code>，帳號要有「IAP-secured Tunnel User」角色，VM 的防火牆要允許
+                35.235.240.0/20 連到{p.ssh ? " SSH 埠" : "該埠"}。
+              </p>
             </>
           )}
         </div>

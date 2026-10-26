@@ -11,13 +11,13 @@ use tokio::sync::Mutex;
 use crate::error::{CoreError, Result};
 use crate::profile::{ConnectionProfile, SslMode};
 use crate::split::split_statements;
-use crate::tunnel::SshTunnel;
+use crate::tunnel::Tunnel;
 
 /// Rows kept per result set unless the caller asks otherwise. The full row
 /// count is still reported.
 pub const DEFAULT_MAX_ROWS: usize = 1000;
 
-/// An open connection, possibly running through an SSH tunnel.
+/// An open connection, possibly running through an SSH or GCP IAP tunnel.
 ///
 /// If the server drops the connection (for example after `wait_timeout`),
 /// the next call reconnects transparently, re-opening the tunnel if needed
@@ -39,7 +39,7 @@ pub struct Session {
 struct Link {
     conn: Conn,
     // Declared after `conn` so the tunnel outlives the connection on drop.
-    _tunnel: Option<SshTunnel>,
+    _tunnel: Option<Tunnel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -691,10 +691,7 @@ async fn open_link(
     profile: &ConnectionProfile,
     database: Option<String>,
 ) -> Result<(Link, SessionInfo)> {
-    let tunnel = match &profile.ssh {
-        Some(ssh) => Some(SshTunnel::open(ssh, &profile.host, profile.port).await?),
-        None => None,
-    };
+    let tunnel = Tunnel::open(profile).await?;
     let (host, port) = match &tunnel {
         Some(t) => ("127.0.0.1".to_string(), t.local_port()),
         None => (profile.host.clone(), profile.port),
@@ -722,7 +719,10 @@ async fn open_link(
         server_version: server_version.unwrap_or_default(),
         connection_id: conn.id(),
         tls,
-        ssh_host_fingerprint: tunnel.as_ref().map(|t| t.host_fingerprint().to_string()),
+        ssh_host_fingerprint: tunnel
+            .as_ref()
+            .and_then(|t| t.ssh_host_fingerprint())
+            .map(str::to_string),
     };
     Ok((
         Link {
@@ -841,7 +841,7 @@ fn ssl_opts(profile: &ConnectionProfile) -> Result<SslOpts> {
         SslMode::VerifyIdentity => opts,
     };
     // Through a tunnel we dial 127.0.0.1, but the certificate names the real host.
-    if profile.ssh.is_some() {
+    if profile.ssh.is_some() || profile.iap.is_some() {
         opts = opts.with_danger_tls_hostname_override(Some(profile.host.clone()));
     }
     Ok(opts)

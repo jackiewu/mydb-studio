@@ -1,4 +1,5 @@
-//! SSH local port forwarding (the equivalent of `ssh -L`).
+//! SSH local port forwarding (the equivalent of `ssh -L`), optionally over
+//! a GCP IAP tunnel.
 //!
 //! The tunnel listens on an ephemeral port on 127.0.0.1 and forwards every
 //! accepted connection through a `direct-tcpip` channel to the database host,
@@ -12,7 +13,71 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use crate::error::{CoreError, Result};
-use crate::profile::{SshAuth, SshConfig};
+use crate::iap::IapTunnel;
+use crate::profile::{ConnectionProfile, SshAuth, SshConfig};
+
+/// The tunnels a profile asks for: GCP IAP, SSH, or IAP carrying SSH to a
+/// VM used as the jump host. Connect to 127.0.0.1 on [`Tunnel::local_port`].
+pub struct Tunnel {
+    // SSH first, so it closes before the IAP tunnel it may run through.
+    ssh: Option<SshTunnel>,
+    iap: Option<IapTunnel>,
+}
+
+impl Tunnel {
+    /// Opens the profile's tunnels, or returns `None` when it connects
+    /// directly.
+    pub async fn open(profile: &ConnectionProfile) -> Result<Option<Self>> {
+        let host = profile.host.trim();
+        // With SSH as well, IAP reaches the VM's SSH server instead.
+        let iap = match &profile.iap {
+            Some(cfg) => {
+                let port = profile.ssh.as_ref().map_or(profile.port, |s| s.port);
+                Some(IapTunnel::open(cfg, port).await?)
+            }
+            None => None,
+        };
+        let ssh = match (&profile.ssh, &iap) {
+            (Some(cfg), None) => Some(SshTunnel::open(cfg, host, profile.port).await?),
+            (Some(cfg), Some(iap)) => {
+                let via = SshConfig {
+                    host: "127.0.0.1".into(),
+                    port: iap.local_port(),
+                    ..cfg.clone()
+                };
+                let tunnel =
+                    SshTunnel::open(&via, host, profile.port)
+                        .await
+                        .map_err(|e| match e {
+                            CoreError::HostKeyMismatch {
+                                expected, actual, ..
+                            } => CoreError::HostKeyMismatch {
+                                host: cfg.host.clone(),
+                                expected,
+                                actual,
+                            },
+                            e => e,
+                        })?;
+                Some(tunnel)
+            }
+            (None, _) => None,
+        };
+        Ok((ssh.is_some() || iap.is_some()).then_some(Self { ssh, iap }))
+    }
+
+    pub fn local_port(&self) -> u16 {
+        match (&self.ssh, &self.iap) {
+            (Some(s), _) => s.local_port(),
+            (None, Some(i)) => i.local_port(),
+            (None, None) => unreachable!("a tunnel has at least one hop"),
+        }
+    }
+
+    /// The SSH host key seen, when the connection went through SSH.
+    pub fn ssh_host_fingerprint(&self) -> Option<&str> {
+        self.ssh.as_ref().map(|s| s.host_fingerprint())
+    }
+}
 
 pub struct SshTunnel {
     local_port: u16,
@@ -166,7 +231,7 @@ impl client::Handler for HostKeyCheck {
     }
 }
 
-fn expand_home(path: &str) -> String {
+pub(crate) fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
     {
