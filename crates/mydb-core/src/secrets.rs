@@ -81,6 +81,14 @@ fn describe(profile: &ConnectionProfile, with_tls_files: bool) -> String {
             at(&ssh.user, &ssh.host, ssh.port),
             ssh.known_host_fingerprint.as_deref().unwrap_or("-")
         ));
+        if let Some(sock) = ssh
+            .socket_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            d.push_str(&format!(" socket={sock}"));
+        }
     }
     d
 }

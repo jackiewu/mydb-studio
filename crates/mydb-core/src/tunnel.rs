@@ -164,22 +164,36 @@ impl SshTunnel {
         let local_port = listener.local_addr()?.port();
         let session = Arc::new(session);
         let target_host = target_host.to_string();
+        let socket_path = cfg
+            .socket_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
 
         let fwd_session = session.clone();
         let accept_task = tokio::spawn(async move {
             while let Ok((mut socket, peer)) = listener.accept().await {
                 let session = fwd_session.clone();
                 let target_host = target_host.clone();
+                let socket_path = socket_path.clone();
                 tokio::spawn(async move {
-                    let channel = match session
-                        .channel_open_direct_tcpip(
-                            target_host,
-                            target_port as u32,
-                            peer.ip().to_string(),
-                            peer.port() as u32,
-                        )
-                        .await
-                    {
+                    let channel = match socket_path {
+                        // Like `ssh -L port:/run/mysqld/mysqld.sock`: the
+                        // server sees a local socket connection.
+                        Some(path) => session.channel_open_direct_streamlocal(path).await,
+                        None => {
+                            session
+                                .channel_open_direct_tcpip(
+                                    target_host,
+                                    target_port as u32,
+                                    peer.ip().to_string(),
+                                    peer.port() as u32,
+                                )
+                                .await
+                        }
+                    };
+                    let channel = match channel {
                         Ok(c) => c,
                         Err(_) => return,
                     };

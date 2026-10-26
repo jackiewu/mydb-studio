@@ -23,6 +23,8 @@ export interface SshConfig {
   user: string;
   auth: SshAuth;
   known_host_fingerprint?: string | null;
+  /** A Unix socket on the jump host to connect to instead of host and port. */
+  socket_path?: string | null;
 }
 
 /** A Compute Engine VM reached with `gcloud compute start-iap-tunnel`. */

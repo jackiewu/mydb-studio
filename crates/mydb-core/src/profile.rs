@@ -186,6 +186,11 @@ pub struct SshConfig {
     /// A different key on a later connect is refused.
     #[serde(default)]
     pub known_host_fingerprint: Option<String>,
+    /// A Unix socket on the jump host to connect to instead of the
+    /// profile's host and port, e.g. `/run/mysqld/mysqld.sock`, for
+    /// accounts that may only log in from `localhost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
 }
 
 /// A Compute Engine VM reached with `gcloud compute start-iap-tunnel`.
@@ -237,6 +242,7 @@ mod tests {
                 password: String::new(),
             },
             known_host_fingerprint: None,
+            socket_path: None,
         });
         let pinned = p.with_pinned_host_key(Some("SHA256:a"));
         let fp = |p: &ConnectionProfile| p.ssh.as_ref().unwrap().known_host_fingerprint.clone();
@@ -262,6 +268,7 @@ mod tests {
                 passphrase: None,
             },
             known_host_fingerprint: None,
+            socket_path: None,
         });
         p.iap = Some(IapConfig {
             instance: "db-vm".into(),

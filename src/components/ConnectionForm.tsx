@@ -152,6 +152,8 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
       return old.ssh ? { ...old, iap, ssh: { ...old.ssh, host: name } } : { ...old, iap, host: name };
     });
   const iapOnly = !!p.iap && !p.ssh;
+  const viaSocket = !!p.ssh?.socket_path;
+  const defaultSocket = redis ? "/var/run/redis/redis-server.sock" : "/run/mysqld/mysqld.sock";
 
   // Databases on the server, offered for the default database.
   const [databases, setDatabases] = useState<{ key: string; names: string[]; error?: string } | null>(null);
@@ -290,7 +292,14 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <input value={p.name} placeholder={serverLabel(p)} onChange={(e) => set({ name: e.target.value })} />
           </label>
           <div className="row">
-            {iapOnly ? (
+            {viaSocket ? (
+              <div className="field-group grow">
+                <span>主機</span>
+                <span className="field-note">
+                  經由 SSH 連到跳板機上的 socket 檔 <code>{p.ssh!.socket_path}</code>，到「SSH 通道」頁修改。
+                </span>
+              </div>
+            ) : iapOnly ? (
               <div className="field-group grow">
                 <span>主機</span>
                 <span className="field-note">
@@ -303,6 +312,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
               <input required value={p.host} onChange={(e) => set({ host: e.target.value })} />
             </label>
             )}
+            {!viaSocket && (
             <label className="port">
               {iapOnly ? "VM 上的埠號" : "埠號"}
               <input
@@ -312,6 +322,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                 onChange={(e) => set({ port: Number(e.target.value) })}
               />
             </label>
+            )}
           </div>
           {redis ? (
             <label>
@@ -569,6 +580,40 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                     {keptNote("passphrase")}
                   </label>
                 </>
+              )}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={viaSocket}
+                  onChange={(e) =>
+                    setP((old) =>
+                      old.ssh
+                        ? {
+                            ...old,
+                            host: e.target.checked ? "localhost" : old.host,
+                            ssh: { ...old.ssh, socket_path: e.target.checked ? defaultSocket : null },
+                          }
+                        : old,
+                    )
+                  }
+                />
+                改連跳板機上的 socket 檔
+              </label>
+              {viaSocket && (
+                <label>
+                  Socket 檔路徑
+                  <input
+                    required
+                    value={p.ssh.socket_path ?? ""}
+                    placeholder={defaultSocket}
+                    onChange={(e) => setSsh({ socket_path: e.target.value })}
+                  />
+                  <span className="field-note">
+                    {redis
+                      ? "Redis 的 unixsocket 設定。"
+                      : "帳號只開放 localhost（例如 'user'@'localhost'）時用這個：伺服器會把連線當成本機登入。MariaDB / MySQL 預設是 /run/mysqld/mysqld.sock 或 /var/run/mysqld/mysqld.sock。"}
+                  </span>
+                </label>
               )}
               <div className="fingerprint">
                 主機金鑰指紋：
