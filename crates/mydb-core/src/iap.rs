@@ -75,8 +75,15 @@ impl IapTunnel {
                 if line.contains("Listening on port") {
                     return true;
                 }
+                // gcloud sometimes reports its test connection failing
+                // (e.g. [4010: 'destination read failed']) and then listens
+                // anyway; nothing would answer behind that port.
+                let refused = is_tunnel_error(&line);
                 if !line.trim().is_empty() {
                     output.push(line);
+                }
+                if refused {
+                    return false;
                 }
             }
             false
@@ -91,6 +98,7 @@ impl IapTunnel {
                 Ok(tunnel)
             }
             Ok(false) => {
+                let _ = tunnel.child.start_kill();
                 let status = tunnel.child.wait().await.ok();
                 Err(CoreError::Iap {
                     message: failure_message(&output, status.and_then(|s| s.code())),
@@ -124,6 +132,17 @@ impl Drop for IapTunnel {
         }
         let _ = self.child.start_kill();
     }
+}
+
+/// A line where IAP refused or dropped the connection, such as
+/// `Error while connecting [4010: 'destination read failed']`.
+fn is_tunnel_error(line: &str) -> bool {
+    line.find("[40").is_some_and(|i| {
+        let code = &line[i + 1..];
+        code.len() > 4
+            && code[..4].bytes().all(|b| b.is_ascii_digit())
+            && code[4..].starts_with(':')
+    })
 }
 
 /// What gcloud said before giving up: its `ERROR:` and what follows, or
@@ -356,6 +375,23 @@ mod tests {
             panic!("expected an IAP error");
         };
         assert!(message.starts_with("ERROR:"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_test_connection_fails_even_if_gcloud_listens() {
+        let (gcloud, _) = fake_gcloud(
+            "listen-anyway",
+            "echo \"Error while connecting [4010: 'destination read failed'].\" >&2\n\
+             echo 'Listening on port [1].' >&2\nexec sleep 30",
+        );
+        let Err(CoreError::Iap { message }) = IapTunnel::open(&config(&gcloud), 3306).await else {
+            panic!("expected an IAP error");
+        };
+        assert!(message.contains("4010"), "{message}");
+        assert!(is_tunnel_error(
+            "Received WebSocket Close message [4003: 'failed to connect to backend']."
+        ));
+        assert!(!is_tunnel_error("Listening on port [40123]."));
     }
 
     #[test]
