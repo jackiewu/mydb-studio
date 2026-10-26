@@ -6,6 +6,7 @@ import {
   KIND_LABEL,
   newProfile,
   serverLabel,
+  withoutSecrets,
   type ConnectionKind,
   type ConnectionProfile,
   type IapConfig,
@@ -82,9 +83,52 @@ function cloudOf(host: string, kind: ConnectionKind): Cloud | null {
 /** The parts of a profile that decide which server and login a list is for. */
 const loginKey = (p: ConnectionProfile) => JSON.stringify([p.host, p.port, p.user, p.password, p.ssl, p.ssh, p.iap]);
 
+/** The passwords a saved profile already has. */
+type Saved = { password: string; ssh_password: string; passphrase: string };
+
+function savedSecrets(p: ConnectionProfile): Saved {
+  const auth = p.ssh?.auth;
+  return {
+    password: p.password ?? "",
+    ssh_password: auth?.method === "password" ? auth.password : "",
+    passphrase: auth?.method === "key" ? (auth.passphrase ?? "") : "",
+  };
+}
+
+/** `p` with every empty password field replaced by the saved one. */
+function withSaved(p: ConnectionProfile, saved: Saved): ConnectionProfile {
+  const auth = p.ssh?.auth;
+  const ssh =
+    p.ssh && auth
+      ? {
+          ...p.ssh,
+          auth:
+            auth.method === "password"
+              ? { ...auth, password: auth.password || saved.ssh_password }
+              : { ...auth, passphrase: auth.passphrase || saved.passphrase || null },
+        }
+      : p.ssh;
+  return { ...p, password: p.password || saved.password, ssh };
+}
+
 export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) {
+  // Saved passwords are never put back in the fields, so not even their
+  // length shows; an empty field keeps them.
+  const [saved, setSaved] = useState<Saved>(() => savedSecrets(initial));
   // A new connection starts by picking what kind of server it is.
-  const [p, setP] = useState<ConnectionProfile>(initial.kind || initial.id ? initial : newProfile());
+  const [p, setP] = useState<ConnectionProfile>(() =>
+    initial.kind || initial.id ? withoutSecrets(initial) : newProfile(),
+  );
+  const full = withSaved(p, saved);
+  const keptNote = (key: keyof Saved) =>
+    saved[key] ? (
+      <span className="field-note">
+        已儲存，留空則沿用。
+        <button type="button" className="link" onClick={() => setSaved((s) => ({ ...s, [key]: "" }))}>
+          清除已儲存的值
+        </button>
+      </span>
+    ) : null;
   const [choosing, setChoosing] = useState(!initial.id && !initial.kind);
   const redis = p.kind === "redis";
   const clouds = redis ? REDIS_CLOUDS : CLOUDS;
@@ -113,12 +157,12 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
   const [databases, setDatabases] = useState<{ key: string; names: string[]; error?: string } | null>(null);
   const loading = useRef<string | null>(null);
   const loadDatabases = async (force = false) => {
-    const key = loginKey(p);
+    const key = loginKey(full);
     if (!p.host.trim() || !p.user.trim() || loading.current === key) return;
     if (!force && databases?.key === key) return;
     loading.current = key;
     try {
-      const names = await api.listServerDatabases(p);
+      const names = await api.listServerDatabases(full);
       setDatabases({ key, names });
     } catch (e) {
       setDatabases({ key, names: [], error: describeError(e) });
@@ -126,7 +170,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
       loading.current = null;
     }
   };
-  const dbList = databases?.key === loginKey(p) ? databases : null;
+  const dbList = databases?.key === loginKey(full) ? databases : null;
   const [dbOpen, setDbOpen] = useState(false);
   const typed = (p.database ?? "").trim().toLowerCase();
   const allNames = dbList?.names ?? [];
@@ -171,7 +215,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
     setBusy(true);
     setStatus(null);
     try {
-      const info = await api.testConnection(p);
+      const info = await api.testConnection(full);
       const extras = [info.tls && "TLS", p.iap && "IAP", p.ssh && "SSH"].filter(Boolean).join("、");
       setStatus({ ok: true, text: `連線成功：${info.server_version}${extras ? `（${extras}）` : ""}` });
       if (!redis) loadDatabases();
@@ -185,7 +229,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      onSaved(await api.saveConnection({ ...p, name: p.name.trim() || serverLabel(p) }));
+      onSaved(await api.saveConnection({ ...full, name: p.name.trim() || serverLabel(p) }));
     } catch (err) {
       setStatus({ ok: false, text: describeError(err) });
     }
@@ -284,6 +328,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
           <label>
             密碼
             <input type="password" value={p.password ?? ""} onChange={(e) => set({ password: e.target.value })} />
+            {keptNote("password")}
             <span className="field-note">macOS 與 Windows 上存在系統鑰匙圈，不會寫進 app 的資料庫檔案。</span>
           </label>
           {redis ? (
@@ -499,6 +544,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                     value={p.ssh.auth.password}
                     onChange={(e) => setAuth({ method: "password", password: e.target.value })}
                   />
+                  {keptNote("ssh_password")}
                 </label>
               ) : (
                 <>
@@ -520,6 +566,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
                         setAuth({ ...(p.ssh!.auth as Extract<SshAuth, { method: "key" }>), passphrase: e.target.value })
                       }
                     />
+                    {keptNote("passphrase")}
                   </label>
                 </>
               )}
