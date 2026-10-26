@@ -2,7 +2,8 @@
 //! `gcloud compute start-iap-tunnel` for as long as the connection lives.
 //!
 //! The app picks a free port on 127.0.0.1, starts gcloud listening there and
-//! waits for it to report "Listening on port". gcloud does its own test
+//! waits for it to report "Listening on port" (on stdout or stderr,
+//! depending on the gcloud release). gcloud does its own test
 //! connection first, so a missing permission or a closed firewall shows up
 //! as an error here rather than as a dropped database connection later.
 
@@ -60,7 +61,7 @@ impl IapTunnel {
             .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         // Its own process group, so closing the tunnel also stops the Python
@@ -71,10 +72,17 @@ impl IapTunnel {
         let mut child = cmd.spawn().map_err(|e| CoreError::Iap {
             message: format!("cannot run gcloud ({}): {e}", gcloud.display()),
         })?;
-        let mut lines = BufReader::new(child.stderr.take().expect("stderr is piped")).lines();
+        // "Listening on port" comes on stdout in recent gcloud releases,
+        // errors on stderr. Both are read for as long as gcloud runs, so it
+        // never blocks on a full pipe.
+        let (tx, mut lines) = tokio::sync::mpsc::unbounded_channel();
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
+        forward_lines(stdout, tx.clone());
+        forward_lines(stderr, tx);
         let mut output = Vec::new();
         let ready = tokio::time::timeout(READY_TIMEOUT, async {
-            while let Ok(Some(line)) = lines.next_line().await {
+            while let Some(line) = lines.recv().await {
                 if line.contains("Listening on port") {
                     return true;
                 }
@@ -95,11 +103,7 @@ impl IapTunnel {
 
         let mut tunnel = Self { local_port, child };
         match ready {
-            Ok(true) => {
-                // Keep reading so gcloud never blocks on a full pipe.
-                tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-                Ok(tunnel)
-            }
+            Ok(true) => Ok(tunnel),
             Ok(false) => {
                 let _ = tunnel.child.start_kill();
                 let status = tunnel.child.wait().await.ok();
@@ -135,6 +139,20 @@ impl Drop for IapTunnel {
         }
         let _ = self.child.start_kill();
     }
+}
+
+/// Sends each line of `stream` to `tx` until the stream ends, and keeps
+/// reading after nobody listens.
+fn forward_lines(
+    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = tx.send(line);
+        }
+    });
 }
 
 /// A line where IAP refused or dropped the connection, such as
@@ -317,7 +335,7 @@ mod tests {
     async fn waits_for_listening_and_passes_the_target() {
         let (gcloud, args) = fake_gcloud(
             "ok",
-            "echo 'Testing if tunnel connection works.' >&2\necho 'Listening on port [1].' >&2\nexec sleep 30",
+            "echo 'Testing if tunnel connection works.' >&2\necho 'Listening on port [1].'\nexec sleep 30",
         );
         let tunnel = IapTunnel::open(&config(&gcloud), 3306).await.unwrap();
         let port = tunnel.local_port();
