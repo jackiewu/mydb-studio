@@ -10,6 +10,7 @@ import {
   type ConnectionKind,
   type ConnectionProfile,
   type McpAccess,
+  type RecordMode,
   type SslConfig,
   type SshAuth,
   type SslMode,
@@ -310,6 +311,20 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <input type="password" value={p.password ?? ""} onChange={(e) => set({ password: e.target.value })} />
             {keptNote("password")}
             <span className="field-note">macOS 與 Windows 上存在系統鑰匙圈，不會寫進 app 的資料庫檔案。</span>
+          </label>
+          <label>
+            執行紀錄
+            <select value={p.record_mode ?? "auto"} onChange={(e) => set({ record_mode: e.target.value as RecordMode })}>
+              <option value="auto">跟隨設定：依「設定」裡的預設紀錄</option>
+              <option value="on">預設紀錄：新分頁打開紀錄，可以手動關閉</option>
+              <option value="off">預設不紀錄：新分頁關閉紀錄，可以手動打開</option>
+              <option value="forced">強制紀錄：每次執行都會紀錄，不能關閉</option>
+            </select>
+            <span className="field-note">
+              {p.record_mode === "forced"
+                ? `這個連線在編輯器執行的每個${redis ? "指令" : " SQL "}都會存進紀錄清單，分頁上的紀錄開關會鎖住。`
+                : `在編輯器執行的${redis ? "指令" : " SQL "}要不要存進紀錄清單。`}
+            </span>
           </label>
           {redis ? (
             <label>

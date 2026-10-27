@@ -43,11 +43,24 @@ export interface ConnectionProfile {
   last_used_at?: string | null;
   /** What AI tools may do through the MCP server (default read_only). MySQL only. */
   mcp?: McpAccess;
+  /** Whether editor runs are saved to the records (default auto: follow the app setting). */
+  record_mode?: RecordMode;
   /** Redis: database 0–15 selected after connecting. */
   redis_db?: number;
 }
 
 export type McpAccess = "off" | "read_only" | "read_write";
+
+/**
+ * auto: new tabs follow the app setting; on / off: new tabs start recording
+ * or not; forced: every run is recorded and it can't be turned off.
+ */
+export type RecordMode = "auto" | "on" | "off" | "forced";
+
+/** Whether new tabs on a connection start out recording. */
+export function recordsByDefault(mode: RecordMode | undefined, appDefault: boolean) {
+  return mode === "on" || mode === "forced" || (mode !== "off" && appDefault);
+}
 
 export interface McpSetup {
   command: string;

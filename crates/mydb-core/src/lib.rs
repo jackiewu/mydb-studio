@@ -22,7 +22,8 @@ pub mod tunnel;
 
 pub use error::{CoreError, Result};
 pub use profile::{
-    ConnectionKind, ConnectionProfile, McpAccess, SshAuth, SshConfig, SslConfig, SslMode,
+    ConnectionKind, ConnectionProfile, McpAccess, RecordMode, SshAuth, SshConfig, SslConfig,
+    SslMode,
 };
 pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatement};
 pub use redis::RedisSession;
