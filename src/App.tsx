@@ -421,6 +421,22 @@ export default function App() {
     }
   };
 
+  /**
+   * Runs what ▶ / ⌘Enter targets. A selection that starts mid-statement
+   * (say from a value line of a multi-line INSERT) would only fail with a
+   * syntax error, so offer the whole statement instead.
+   */
+  const runEditorTarget = async (t: RunTarget | null | undefined) => {
+    if (!t) return;
+    if (t.whole === undefined) return run(t.text);
+    const head = t.text.trim().split("\n")[0].slice(0, 40);
+    const ok = await ask(
+      `選取的內容（開頭是「${head}」）只是一句 SQL 的中間片段，單獨執行會出現語法錯誤。\n\n要改成執行它所在的整句嗎？`,
+      "執行整句",
+    );
+    if (ok) return run(t.whole);
+  };
+
   const stop = () => {
     if (session) api.cancelQuery(session.session_id).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
   };
@@ -640,7 +656,7 @@ export default function App() {
       : runTarget && runTarget.count > 1
         ? { text: `執行多行（${runTarget.count} 句）`, hint: "執行選取的部分" }
         : runTarget?.kind === "selection"
-          ? { text: "執行單行", hint: "執行選取的那一句" }
+          ? { text: "執行選取", hint: "執行選取的部分" }
           : { text: "執行單行", hint: "執行游標所在的那一句（淡色底的那段）" };
 
   return (
@@ -806,7 +822,7 @@ export default function App() {
                 <button
                   className="primary"
                   disabled={running || runTarget?.count === 0}
-                  onClick={() => run(editor.current?.runTarget()?.text ?? "")}
+                  onClick={() => runEditorTarget(editor.current?.runTarget())}
                   title={`${runLabel.hint}（⌘／Ctrl + Enter）\n${runTarget?.text.trim().slice(0, 200) ?? ""}`}
                 >
                   {running ? "執行中…" : `▶ ${runLabel.text}`}
@@ -1010,6 +1026,7 @@ export default function App() {
                   onRunTargetChange={setRunTarget}
                   onChange={(value) => tabs.setSql(t.key, value)}
                   onRun={run}
+                  onRunTarget={runEditorTarget}
                 />
                 ),
               )}

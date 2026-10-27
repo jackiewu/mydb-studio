@@ -51,6 +51,8 @@ interface Props {
   onChange: (value: string) => void;
   /** ⌘Enter: the selection, or the statement at the cursor; ⌘⇧Enter: everything. */
   onRun: (sql: string) => void;
+  /** ⌘Enter, when set: gets the whole target instead of `onRun` getting its text. */
+  onRunTarget?: (target: RunTarget) => void;
   /** What ⌘Enter would run, whenever that changes. */
   onRunTargetChange?: (target: RunTarget) => void;
   /** ⌘E: EXPLAIN the selection or the statement at the cursor. */
@@ -126,7 +128,9 @@ export function SqlEditor(props: Props) {
 
   useEffect(() => {
     const run = (v: EditorView) => {
-      handlers.current.onRun(runTarget(v.state).text);
+      const t = runTarget(v.state);
+      if (handlers.current.onRunTarget) handlers.current.onRunTarget(t);
+      else handlers.current.onRun(t.text);
       return true;
     };
     const runAll = (v: EditorView) => {
@@ -157,7 +161,9 @@ export function SqlEditor(props: Props) {
           ? `執行全部（${target.count} 句）`
           : target.count > 1
             ? `執行多行（${target.count} 句）`
-            : "執行單行";
+            : target.kind === "selection"
+              ? "執行選取"
+              : "執行單行";
       openMenu(e, [
         { label: `▶ ${runLabel}`, hint: "⌘↵", disabled: target.count === 0, onClick: () => run(v) },
         ...(target.total > 1 && target.kind !== "all"
