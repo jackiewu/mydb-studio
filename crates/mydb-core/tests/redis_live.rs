@@ -597,23 +597,31 @@ async fn server_page_slowlog() {
         Reply::Map { entries } => entries[0].1.to_text(),
         other => panic!("{other:?}"),
     };
-    // Log everything, but only for the one command: other tests run in
-    // parallel and would fill the log.
-    let marker = format!("mydbtest:slow:{}", std::process::id());
-    run(
-        &s,
-        &format!(
-            "CONFIG SET slowlog-log-slower-than 0\nSET {marker} 1\nCONFIG SET slowlog-log-slower-than {old}"
-        ),
-    )
-    .await;
-    run(&s, &format!("DEL {marker}")).await;
-    let log = s.slowlog().await.unwrap();
-    assert!(log.len() <= mydb_core::redis::server::SLOWLOG_ENTRIES);
-    let entry = log
-        .iter()
-        .find(|e| e.command == format!("SET {marker} 1"))
-        .unwrap_or_else(|| panic!("{log:?}"));
+    // Log everything, but only for the one command. Other tests run in
+    // parallel and can push it out of the newest entries while the log is
+    // wide open, so try again a few times.
+    let mut attempts = Vec::new();
+    let entry = loop {
+        let marker = format!("mydbtest:slow:{}:{}", std::process::id(), attempts.len());
+        run(
+            &s,
+            &format!(
+                "CONFIG SET slowlog-log-slower-than 0\nSET {marker} 1\nCONFIG SET slowlog-log-slower-than {old}"
+            ),
+        )
+        .await;
+        run(&s, &format!("DEL {marker}")).await;
+        let log = s.slowlog().await.unwrap();
+        assert!(log.len() <= mydb_core::redis::server::SLOWLOG_ENTRIES);
+        if let Some(entry) = log.iter().find(|e| e.command == format!("SET {marker} 1")) {
+            break entry.clone();
+        }
+        attempts.push(log.len());
+        assert!(
+            attempts.len() < 10,
+            "never found in the slow log: {attempts:?}"
+        );
+    };
     assert!(entry.time > 0);
     assert!(entry.duration_us >= 0);
 }
