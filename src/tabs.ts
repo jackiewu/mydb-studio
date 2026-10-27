@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "./ask";
 import { api, type ExecutionOutcome, type PinnedTab, type RedisOutcome } from "./api";
 import { statementRanges } from "./editor/statements";
@@ -67,9 +67,20 @@ const SAVE_DELAY_MS = 500;
 /**
  * Editor tabs for one connection. Each change is written to the store
  * (debounced while typing) so tabs survive a crash; see {@link EditorTab}.
+ * With `forceRecording` (the connection's record mode is "forced") every
+ * tab records and can't be turned off.
  */
-export function useTabs(connectionId: string | null, recordByDefault: boolean, redis = false) {
-  const [tabs, setTabs] = useState<EditorTab[]>([]);
+export function useTabs(
+  connectionId: string | null,
+  recordByDefault: boolean,
+  redis = false,
+  forceRecording = false,
+) {
+  const [stored, setTabs] = useState<EditorTab[]>([]);
+  const tabs = useMemo(
+    () => (forceRecording ? stored.map((t) => (t.recording ? t : { ...t, recording: true })) : stored),
+    [stored, forceRecording],
+  );
   const [activeKey, setActiveKey] = useState<string | null>(null);
   /** How many unsaved tabs came back from last time (after a crash). */
   const [restored, setRestored] = useState(0);

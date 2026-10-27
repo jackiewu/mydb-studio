@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
+  recordsByDefault,
   DEFAULT_SETTINGS,
   describeError,
   newProfile,
@@ -100,7 +101,14 @@ export default function App() {
   const [openKey, setOpenKey] = useState<{ db: number; key: KeyName } | null>(null);
   const [redisView, setRedisView] = useState<"result" | "key">("result");
   const schema = useSchema(isRedis ? null : (session?.session_id ?? null));
-  const tabs = useTabs(session?.connection_id ?? null, settings.record_by_default, isRedis);
+  const recordMode = connections.find((c) => c.id === session?.connection_id)?.record_mode;
+  const recordForced = recordMode === "forced";
+  const tabs = useTabs(
+    session?.connection_id ?? null,
+    recordsByDefault(recordMode, settings.record_by_default),
+    isRedis,
+    recordForced,
+  );
   const tab = tabs.active;
   // SQL to open in a new tab once a connection's tabs have loaded.
   const pendingSql = useRef<string | null>(null);
@@ -735,14 +743,19 @@ export default function App() {
               <>
                 <label
                   className={tab?.recording ? "record-toggle on" : "record-toggle"}
-                  title={`打開後，這個分頁每次執行的${isRedis ? "指令" : " SQL "}與統計都會存進「紀錄」（釘選的分頁預設打開）`}
+                  title={
+                    recordForced
+                      ? `這個連線設定為強制紀錄：每次執行的${isRedis ? "指令" : " SQL "}都會存進「紀錄」，不能關閉（在連線設定裡修改）`
+                      : `打開後，這個分頁每次執行的${isRedis ? "指令" : " SQL "}與統計都會存進「紀錄」（釘選的分頁預設打開）`
+                  }
                 >
                   <input
                     type="checkbox"
                     checked={!!tab?.recording}
+                    disabled={recordForced}
                     onChange={(e) => tab && tabs.update(tab.key, { recording: e.target.checked })}
                   />
-                  📝 紀錄
+                  📝 紀錄{recordForced && "（強制）"}
                 </label>
                 <button onClick={() => setView("records")}>紀錄清單</button>
                 {!isRedis && (
@@ -881,7 +894,12 @@ export default function App() {
                           onClick: () => tabs.togglePin(t.key),
                         },
                         {
-                          label: t.recording ? "停止記錄這個分頁" : "記錄這個分頁的執行",
+                          label: recordForced
+                            ? "這個連線強制紀錄"
+                            : t.recording
+                              ? "停止記錄這個分頁"
+                              : "記錄這個分頁的執行",
+                          disabled: recordForced,
                           onClick: () => tabs.update(t.key, { recording: !t.recording }),
                         },
                         {
@@ -933,7 +951,7 @@ export default function App() {
                       </span>
                     )}
                     {t.recording && (
-                      <span className="tab-rec" title="這個分頁會記錄執行">
+                      <span className="tab-rec" title={recordForced ? "這個連線強制紀錄執行" : "這個分頁會記錄執行"}>
                         ●
                       </span>
                     )}
