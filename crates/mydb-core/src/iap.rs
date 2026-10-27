@@ -305,7 +305,6 @@ fn child_path(gcloud: &Path) -> std::ffi::OsString {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in for gcloud that runs `body` with the real arguments.
     fn fake_gcloud(name: &str, body: &str) -> (PathBuf, PathBuf) {
@@ -313,12 +312,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("gcloud");
         let args = dir.join("args");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\necho \"$@\" > '{}'\n{body}\n", args.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Written by a child process: if this process held the file open
+        // for writing, a gcloud started by a test on another thread could
+        // inherit that handle and the run would fail with "text file busy".
+        let mut sh = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("cat > \"$0\" && chmod 755 \"$0\"")
+            .arg(&script)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let text = format!("#!/bin/sh\necho \"$@\" > '{}'\n{body}\n", args.display());
+        std::io::Write::write_all(&mut sh.stdin.take().unwrap(), text.as_bytes()).unwrap();
+        assert!(sh.wait().unwrap().success());
         (script, args)
     }
 
