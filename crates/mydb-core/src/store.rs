@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::ai::{AiChat, AiChatSummary};
 use crate::error::Result;
-use crate::profile::{ConnectionKind, ConnectionProfile};
+use crate::profile::{ConnectionKind, ConnectionProfile, RecordMode};
 use crate::records::{ExecutionRecord, RecordFilter};
 use crate::secrets::{self, ConnectionSecrets, SecretVault, Secrets};
 use crate::settings::{AppSettings, PinnedTab, Snippet};
@@ -326,6 +326,24 @@ impl Store {
         let profile: Option<ConnectionProfile> =
             json.map(|j| serde_json::from_str(&j)).transpose()?;
         Ok(profile.map(|p| self.with_secrets(p)))
+    }
+
+    /// Whether the saved profile `id` forces recording. Read from the file
+    /// as saved, so a change made while connected applies at once, and
+    /// without touching the keychain.
+    pub fn record_forced(&self, id: &str) -> Result<bool> {
+        let json: Option<String> = self
+            .db
+            .query_row("SELECT profile FROM connections WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(match json {
+            Some(j) => {
+                serde_json::from_str::<ConnectionProfile>(&j)?.record_mode == RecordMode::Forced
+            }
+            None => false,
+        })
     }
 
     /// Inserts or replaces a profile by id.
@@ -745,6 +763,23 @@ mod tests {
         store.delete_connection(&a.id).unwrap();
         assert_eq!(store.list_connections().unwrap().len(), 1);
         assert!(store.get_connection(&a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn record_forced_follows_saved_profile() {
+        let store = Store::open_in_memory().unwrap();
+        let mut p = ConnectionProfile::new("prod", "10.0.0.9", "app");
+        assert!(!store.record_forced(&p.id).unwrap());
+        store.save_connection(&p).unwrap();
+        assert!(!store.record_forced(&p.id).unwrap());
+        p.record_mode = RecordMode::Forced;
+        store.save_connection(&p).unwrap();
+        assert!(store.record_forced(&p.id).unwrap());
+        // Profiles saved before the setting existed follow the app setting.
+        let old: ConnectionProfile =
+            serde_json::from_str(r#"{"id":"x","name":"x","host":"h","port":3306,"user":"u"}"#)
+                .unwrap();
+        assert_eq!(old.record_mode, RecordMode::Auto);
     }
 
     #[test]

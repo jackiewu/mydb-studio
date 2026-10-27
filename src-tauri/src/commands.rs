@@ -301,7 +301,12 @@ pub async fn execute(
             auto_limit.filter(|n| *n > 0),
         )
         .await;
-    let record_id = if record.unwrap_or(false) {
+    let forced = state
+        .store
+        .lock()
+        .unwrap()
+        .record_forced(&session.profile().id)?;
+    let record_id = if forced || record.unwrap_or(false) {
         let p = session.profile();
         let rec = ExecutionRecord::from_outcome(
             RecordContext {
@@ -1233,7 +1238,12 @@ pub async fn redis_execute(
     state.lock.ensure_unlocked()?;
     let session = state.redis(&session_id).await?;
     let outcome = session.execute(&text).await;
-    let record_id = if record.unwrap_or(false) {
+    let forced = state
+        .store
+        .lock()
+        .unwrap()
+        .record_forced(&session.profile().id)?;
+    let record_id = if forced || record.unwrap_or(false) {
         let rec = session.record(&text, &outcome);
         Some(state.store.lock().unwrap().insert_record(&rec)?)
     } else {

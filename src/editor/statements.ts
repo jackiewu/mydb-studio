@@ -92,6 +92,24 @@ export function statementIndexAt(ranges: Range[], pos: number): number {
   return next < 0 ? ranges.length - 1 : Math.max(0, next - 1);
 }
 
+/**
+ * Whether `text` can't be the start of a statement: its first code (after
+ * blanks and comments) is something like `33,` or `'abc'` instead of a word
+ * or `(`. Such a selection was almost surely meant as part of a bigger
+ * statement, and would only fail with a syntax error on its own.
+ */
+export function startsMidStatement(text: string): boolean {
+  for (let i = 0; i < text.length; ) {
+    // `/*! ... */` is executable, so it counts as code.
+    if (text.startsWith("/*!", i) || text.startsWith("/*M!", i)) return false;
+    const end = commentEnd(text, i);
+    if (end >= 0) i = end;
+    else if (SPACE.test(text[i])) i++;
+    else return !/[\p{L}_(]/u.test(text[i]);
+  }
+  return false;
+}
+
 export function statementAt(sql: string, pos: number): string {
   const ranges = statementRanges(sql);
   const i = statementIndexAt(ranges, pos);

@@ -39,6 +39,9 @@ pub struct ConnectionProfile {
     /// Redis connections are never offered to them.
     #[serde(default)]
     pub mcp: McpAccess,
+    /// Whether editor runs on this connection are saved to the records.
+    #[serde(default)]
+    pub record_mode: RecordMode,
     /// Redis only: the database (0 to 15) selected after connecting.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub redis_db: u8,
@@ -78,6 +81,21 @@ pub enum McpAccess {
     ReadWrite,
 }
 
+/// Whether runs in the editor are saved to the records for a connection.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordMode {
+    /// New tabs follow the app setting ("record by default").
+    #[default]
+    Auto,
+    /// New tabs record; the user can turn it off per tab.
+    On,
+    /// New tabs don't record; the user can turn it on per tab.
+    Off,
+    /// Every run is recorded and recording can't be turned off.
+    Forced,
+}
+
 impl ConnectionProfile {
     /// This profile with the SSH host key seen on connecting pinned, if it
     /// had none: later connects through it (a reconnect, a cancel) then
@@ -107,6 +125,7 @@ impl ConnectionProfile {
             favorite: false,
             last_used_at: None,
             mcp: McpAccess::default(),
+            record_mode: RecordMode::default(),
             redis_db: 0,
         }
     }

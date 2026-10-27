@@ -1,6 +1,6 @@
 import { RangeSetBuilder, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
-import { statementIndexAt, statementRanges, type Range } from "./statements";
+import { startsMidStatement, statementIndexAt, statementRanges, type Range } from "./statements";
 
 /** What ▶ / ⌘Enter would run right now. */
 export interface RunTarget {
@@ -11,6 +11,11 @@ export interface RunTarget {
   /** Statements in the whole editor. */
   total: number;
   text: string;
+  /**
+   * Set when the selection starts in the middle of a statement (see
+   * `startsMidStatement`): the whole statements it touches, to run instead.
+   */
+  whole?: string;
 }
 
 const ranges = StateField.define<Range[]>({
@@ -24,7 +29,17 @@ export function runTarget(state: EditorState): RunTarget {
   if (from !== to) {
     const text = state.sliceDoc(from, to);
     const all = state.sliceDoc(0, from).trim() === "" && state.sliceDoc(to).trim() === "";
-    return { kind: all ? "all" : "selection", count: statementRanges(text).length, total: list.length, text };
+    const target: RunTarget = {
+      kind: all ? "all" : "selection",
+      count: statementRanges(text).length,
+      total: list.length,
+      text,
+    };
+    const touched = list.filter((r) => r.to > from && r.from < to);
+    if (touched.length > 0 && startsMidStatement(text)) {
+      target.whole = state.sliceDoc(touched[0].from, touched[touched.length - 1].to);
+    }
+    return target;
   }
   const i = statementIndexAt(list, head);
   return {
