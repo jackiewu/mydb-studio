@@ -249,6 +249,8 @@ export interface AppSettings {
   lock_on_start: boolean;
   lock_disconnect: boolean;
   schema_autocomplete: boolean;
+  /** Show the run-all button in the toolbar (⌘⇧↵ works either way). */
+  show_run_all_button: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
   /** LIMIT added to queries that have none; 0 turns it off. */
@@ -546,6 +548,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lock_on_start: true,
   lock_disconnect: false,
   schema_autocomplete: true,
+  show_run_all_button: false,
   confirm_dangerous: true,
   auto_limit: 1000,
   ai_enabled: false,

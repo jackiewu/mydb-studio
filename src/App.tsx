@@ -805,7 +805,7 @@ export default function App() {
                 </button>
                 </>
                 )}
-                {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
+                {settings.show_run_all_button && (runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
                   <button
                     disabled={running}
                     onClick={() => run(editor.current?.allText()?.text ?? "")}

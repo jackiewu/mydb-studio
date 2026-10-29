@@ -444,6 +444,9 @@ export function SettingsDialog({
             <Row title="自動完成名稱" caption="打字時建議資料庫、資料表、欄位名稱。">
               <Switch checked={settings.schema_autocomplete} onChange={(v) => set({ schema_autocomplete: v })} />
             </Row>
+            <Row title="顯示「全部」按鈕" caption="工具列顯示依序執行全部的按鈕。不顯示時仍可用 ⌘／Ctrl + Shift + Enter 或右鍵選單。">
+              <Switch checked={settings.show_run_all_button} onChange={(v) => set({ show_run_all_button: v })} />
+            </Row>
             <Row
               title="Snippet（常用 SQL）"
               caption={
