@@ -175,6 +175,18 @@ input, select, textarea {
 .tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree .caret, .tree .icon { color: var(--muted); width: 12px; flex-shrink: 0; font-size: 11px; }
 .tree .count { color: var(--muted); font-size: 11px; }
+.tree-db .caret {
+  width: 18px;
+  height: 18px;
+  margin-left: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tree-db .caret:hover { background: color-mix(in srgb, var(--muted) 25%, transparent); color: var(--text); }
 .schema > .link { text-align: left; padding: 8px 12px; color: var(--muted); }
 
 .split {
