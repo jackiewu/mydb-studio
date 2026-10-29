@@ -222,6 +222,12 @@ table.grid { border-collapse: collapse; font-size: 12px; font-family: ui-monospa
 .grid tbody tr:nth-child(even) { background: var(--row-alt); }
 .grid .rownum { color: var(--muted); text-align: right; }
 .grid .null { color: var(--muted); font-style: italic; }
+/* Resizable result columns: a drag handle on each header's right edge. */
+.grid th .col-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 1; }
+.grid th .col-resize:hover, body.col-resizing .grid th .col-resize:active { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+table.grid.sized { table-layout: fixed; }
+table.grid.sized th, table.grid.sized td { max-width: none; }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
 
 .modal-backdrop {
   position: fixed;
