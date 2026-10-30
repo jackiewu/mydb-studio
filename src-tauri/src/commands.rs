@@ -249,11 +249,15 @@ pub fn read_connection_import(
 /// saved, so the UI can ask for their passwords.
 #[tauri::command]
 pub fn import_connections(
+    app: AppHandle,
     state: State<'_, AppState>,
     items: Vec<transfer::ImportItem>,
 ) -> Result<Vec<ConnectionProfile>> {
     state.lock.ensure_unlocked()?;
-    transfer::save(&state.store.lock().unwrap(), items)
+    let saved = transfer::save(&state.store.lock().unwrap(), items);
+    // Some may have been saved before an error.
+    crate::windows::changed(&app, "connections");
+    saved
 }
 
 /// Connects with an unsaved profile and disconnects again.
