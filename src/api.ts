@@ -267,6 +267,8 @@ export interface AppSettings {
   lock_on_start: boolean;
   lock_disconnect: boolean;
   schema_autocomplete: boolean;
+  /** Show the run-all button in the toolbar (⌘⇧↵ works either way). */
+  show_run_all_button: boolean;
   /** Ask before running statements that can destroy data. */
   confirm_dangerous: boolean;
   /** LIMIT added to queries that have none; 0 turns it off. */
@@ -564,6 +566,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lock_on_start: true,
   lock_disconnect: false,
   schema_autocomplete: true,
+  show_run_all_button: false,
   confirm_dangerous: true,
   auto_limit: 1000,
   ai_enabled: false,
@@ -839,6 +842,11 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
+  /** Opens another app window; with `connectionId` it connects to that. */
+  newWindow: (connectionId?: string) => invoke<void>("new_window", { connectionId: connectionId ?? null }),
+  /** Brings forward another window that has the connection open; false if none has. */
+  focusConnectionWindow: (connectionId: string) =>
+    invoke<boolean>("focus_connection_window", { connectionId }),
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),

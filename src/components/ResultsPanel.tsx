@@ -17,10 +17,10 @@ function ms(n: number) {
 
 function summary(r: StatementResult) {
   if (r.columns.length > 0) {
-    const shown = r.truncated ? `（顯示前 ${r.rows.length} 筆）` : "";
-    return `回傳 ${r.total_rows} 筆${shown}`;
+    const shown = r.truncated ? `（顯示前 ${r.rows.length.toLocaleString()} 筆）` : "";
+    return `回傳 ${r.total_rows.toLocaleString()} 筆${shown}`;
   }
-  return `影響 ${r.affected_rows} 筆`;
+  return `影響 ${r.affected_rows.toLocaleString()} 筆`;
 }
 
 /** A result set as a `|`-separated text table, for the AI. */
@@ -178,20 +178,22 @@ export function ResultsPanel({
             <span>{ms(current.duration_ms)}</span>
             {current.warnings > 0 && <span className="warn">{current.warnings} 個警告</span>}
             {current.last_insert_id ? <span>last insert id {current.last_insert_id}</span> : null}
+            {current.limit_added != null && (
+              <span className="limit-note" title="可在 ⚙ 設定調整自動 LIMIT 的數量或關閉">
+                {current.total_rows >= current.limit_added ? (
+                  <span className="warn">已達自動 LIMIT {current.limit_added.toLocaleString()}，可能還有更多資料</span>
+                ) : (
+                  <span>已自動加上 LIMIT {current.limit_added.toLocaleString()}</span>
+                )}
+                {onRunWithoutLimit && (
+                  <button className="link" onClick={() => onRunWithoutLimit(current.sql)}>
+                    不限制筆數重新執行
+                  </button>
+                )}
+              </span>
+            )}
             {current.info && <span>{current.info}</span>}
           </div>
-          {current.limit_added != null && (
-            <div className="limit-note">
-              已自動加上 LIMIT {current.limit_added.toLocaleString()}
-              {current.total_rows >= current.limit_added ? "，可能還有更多資料。" : "。"}
-              {onRunWithoutLimit && (
-                <button className="link" onClick={() => onRunWithoutLimit(current.sql)}>
-                  不限制筆數重新執行
-                </button>
-              )}
-              <span className="muted">（可在 ⚙ 設定調整數量或關閉）</span>
-            </div>
-          )}
           {plan && (
             <div className="plan-notes">
               {onAskAi && (

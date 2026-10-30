@@ -34,6 +34,8 @@ pub struct AppState {
     pub lock: crate::lock::LockState,
     /// How the previous run ended, until the UI asks.
     pub crash: Mutex<Option<CrashInfo>>,
+    /// Which window each session belongs to.
+    pub windows: crate::windows::WindowSessions,
 }
 
 impl AppState {
@@ -98,6 +100,7 @@ pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<Connecti
 
 #[tauri::command]
 pub fn save_connection(
+    app: AppHandle,
     state: State<'_, AppState>,
     mut profile: ConnectionProfile,
 ) -> Result<ConnectionProfile> {
@@ -106,19 +109,29 @@ pub fn save_connection(
         profile.id = uuid_v4();
     }
     state.store.lock().unwrap().save_connection(&profile)?;
+    crate::windows::changed(&app, "connections");
     Ok(profile)
 }
 
 #[tauri::command]
-pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<()> {
+pub fn set_favorite(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    favorite: bool,
+) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().set_favorite(&id, favorite)
+    state.store.lock().unwrap().set_favorite(&id, favorite)?;
+    crate::windows::changed(&app, "connections");
+    Ok(())
 }
 
 #[tauri::command]
-pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
+pub fn delete_connection(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().delete_connection(&id)
+    state.store.lock().unwrap().delete_connection(&id)?;
+    crate::windows::changed(&app, "connections");
+    Ok(())
 }
 
 fn home_dir() -> Option<std::path::PathBuf> {
@@ -310,6 +323,7 @@ pub struct OpenedSession {
 
 #[tauri::command]
 pub async fn open_session(
+    window: tauri::WebviewWindow,
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<OpenedSession> {
@@ -342,6 +356,9 @@ pub async fn open_session(
         .write()
         .await
         .insert(session_id.clone(), session);
+    state
+        .windows
+        .add(&session_id, window.label(), &connection_id);
     Ok(OpenedSession {
         session_id,
         connection_id,
@@ -355,6 +372,7 @@ pub async fn open_session(
 #[tauri::command]
 pub async fn close_session(state: State<'_, AppState>, session_id: String) -> Result<()> {
     let session = state.sessions.write().await.remove(&session_id);
+    state.windows.remove(&session_id);
     // Only disconnect cleanly if no query is still holding the session.
     if let Some(session) = session {
         session.close().await?;
@@ -931,14 +949,20 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<()> {
     // Settings include where AI prompts go and what program runs the model.
     state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     state
         .lock
         .check_settings_change(&store.get_settings()?, &settings)?;
-    store.save_settings(&settings)
+    store.save_settings(&settings)?;
+    crate::windows::changed(&app, "settings");
+    Ok(())
 }
 
 #[tauri::command]
@@ -948,15 +972,23 @@ pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
 }
 
 #[tauri::command]
-pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snippet> {
+pub fn save_snippet(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    snippet: Snippet,
+) -> Result<Snippet> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().save_snippet(&snippet)
+    let saved = state.store.lock().unwrap().save_snippet(&snippet)?;
+    crate::windows::changed(&app, "snippets");
+    Ok(saved)
 }
 
 #[tauri::command]
-pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
+pub fn delete_snippet(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().delete_snippet(id)
+    state.store.lock().unwrap().delete_snippet(id)?;
+    crate::windows::changed(&app, "snippets");
+    Ok(())
 }
 
 #[tauri::command]

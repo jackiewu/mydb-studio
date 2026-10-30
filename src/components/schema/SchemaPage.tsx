@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   describeError,
@@ -14,6 +14,7 @@ import {
 } from "../../api";
 import { openMenu } from "../../contextMenu";
 import { OBJECT_LABEL, objectTemplate } from "../../ddl";
+import { Loading, LoadError } from "./Loading";
 import type { EditorTheme } from "../../editor/themes";
 import { SYSTEM_DBS } from "../../schema";
 import { CodeArea } from "./CodeArea";
@@ -42,6 +43,14 @@ interface Props {
 }
 
 type Tab = "tables" | ObjectKind;
+
+/** What loadDb fetches, named for the loading and error messages. */
+type LoadKey = "options" | "tables" | "objects";
+const LOAD_LABEL: Record<LoadKey, string> = {
+  options: "資料庫字元集",
+  tables: "資料表清單",
+  objects: "檢視、程序、觸發器與事件",
+};
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "tables", label: "資料表" },
@@ -76,11 +85,15 @@ export function SchemaPage(props: Props) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [dbDialog, setDbDialog] = useState<"create" | "alter" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<Partial<Record<LoadKey, boolean>>>({});
+  const [loadErrors, setLoadErrors] = useState<Partial<Record<LoadKey, string>>>({});
   const [message, setMessage] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadMeta = useCallback(() => {
+    setError(null);
     api.schemaMeta(sessionId).then(setMeta, (e) => setError(describeError(e)));
   }, [sessionId]);
+  useEffect(loadMeta, [loadMeta]);
 
   useEffect(() => {
     if (!target) return;
@@ -90,12 +103,23 @@ export function SchemaPage(props: Props) {
     setSelected(null);
   }, [target]);
 
+  // Bumped on every load, so a slow answer for another database is dropped.
+  const loadSeq = useRef(0);
   const loadDb = useCallback(() => {
-    setError(null);
+    const seq = ++loadSeq.current;
+    setLoading({});
+    setLoadErrors({});
     if (!db) return;
-    api.databaseOptions(sessionId, db).then(setOptions, (e) => setError(describeError(e)));
-    api.listTables(sessionId, db).then(setTables, (e) => setError(describeError(e)));
-    api.schemaObjects(sessionId, db).then(setObjects, (e) => setError(describeError(e)));
+    const load = <T,>(key: LoadKey, p: Promise<T>, set: (v: T) => void) => {
+      setLoading((l) => ({ ...l, [key]: true }));
+      p.then(
+        (v) => seq === loadSeq.current && set(v),
+        (e) => seq === loadSeq.current && setLoadErrors((x) => ({ ...x, [key]: describeError(e) })),
+      ).finally(() => seq === loadSeq.current && setLoading((l) => ({ ...l, [key]: false })));
+    };
+    load("options", api.databaseOptions(sessionId, db), setOptions);
+    load("tables", api.listTables(sessionId, db), setTables);
+    load("objects", api.schemaObjects(sessionId, db), setObjects);
   }, [sessionId, db]);
 
   useEffect(() => {
@@ -104,6 +128,13 @@ export function SchemaPage(props: Props) {
     setObjects(null);
     loadDb();
   }, [loadDb]);
+
+  const loadError = (key: LoadKey) =>
+    loadErrors[key] ? <LoadError what={LOAD_LABEL[key]} error={loadErrors[key]!} onRetry={loadDb} /> : null;
+  // A reload after a change keeps the old data on screen; say it is refreshing.
+  const refreshing = (Object.keys(loading) as LoadKey[]).filter(
+    (k) => loading[k] && { options, tables, objects }[k] != null,
+  );
 
   const ran = (result: SchemaApplied, text: string) => {
     setMessage(`${text}${result.record_id != null ? `（已存進紀錄 #${result.record_id}）` : ""}`);
@@ -129,6 +160,7 @@ export function SchemaPage(props: Props) {
             ＋
           </button>
         </div>
+        {databases == null && <Loading what="資料庫清單" />}
         <ul>
           {shown.map((d) => (
             <li
@@ -156,8 +188,8 @@ export function SchemaPage(props: Props) {
             {message}
           </div>
         )}
-        {error && <div className="error-box">{error}</div>}
-        {!db && <div className="hint pad">選擇左邊的資料庫。</div>}
+        {error && <LoadError what="伺服器字元集與引擎清單" error={error} onRetry={loadMeta} />}
+        {!db && databases != null && <div className="hint pad">選擇左邊的資料庫。</div>}
         {db && (
           <div className="schema-detail">
             <div className="user-head schema-head">
@@ -166,6 +198,10 @@ export function SchemaPage(props: Props) {
                 <span className="badge" title="資料庫預設字元集與定序">
                   {options.charset} · {options.collation}
                 </span>
+              )}
+              {!options && loading.options && <Loading what={LOAD_LABEL.options} inline />}
+              {refreshing.length > 0 && (
+                <Loading what={`最新的${refreshing.map((k) => LOAD_LABEL[k]).join("、")}`} inline />
               )}
               <span className="spacer" />
               <button onClick={() => setDbDialog("alter")} disabled={!options || !meta}>
@@ -207,7 +243,9 @@ export function SchemaPage(props: Props) {
                 </button>
               ))}
             </div>
+            {loadError("options")}
 
+            {tab === "tables" && designing != null && !meta && !error && <Loading what="伺服器字元集與引擎清單" />}
             {tab === "tables" && designing != null && meta && (
               <TableDesigner
                 key={`${db}/${designing}/${designVersion}`}
@@ -225,7 +263,9 @@ export function SchemaPage(props: Props) {
                 }}
               />
             )}
-            {tab === "tables" && designing == null && (
+            {tab === "tables" && designing == null && loadError("tables")}
+            {tab === "tables" && designing == null && !tables && loading.tables && <Loading what={LOAD_LABEL.tables} />}
+            {tab === "tables" && designing == null && tables && (
               <TableList
                 tables={baseTables}
                 onDesign={setDesigning}
@@ -246,6 +286,8 @@ export function SchemaPage(props: Props) {
             {tab !== "tables" && (
               <div className="objects-panel">
                 <div className="objects-list">
+                  {loadError("objects")}
+                  {!objects && loading.objects && <Loading what={`${OBJECT_LABEL[tab]}清單`} />}
                   {tab === "event" && objects && (
                     <div className="scheduler">
                       <span>
@@ -467,7 +509,7 @@ function ObjectEditor(props: {
   const [loaded, setLoaded] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [sqlMode, setSqlMode] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (name == null) {
@@ -482,7 +524,7 @@ function ObjectEditor(props: {
         setText(d.definition);
         setSqlMode(d.sql_mode);
       },
-      (e) => setError(describeError(e)),
+      (e) => setLoadError(describeError(e)),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, database, kind, name]);
@@ -539,7 +581,8 @@ function ObjectEditor(props: {
           預覽並儲存…
         </button>
       </div>
-      {error && <div className="error-box">{error}</div>}
+      {loadError && <LoadError what={`${label} ${name} 的定義`} error={loadError} />}
+      {name != null && loaded == null && !loadError && <Loading what={`${label} ${name} 的定義`} />}
       <p className="muted small-text object-hint">
         整段 CREATE 語句會當成一句送出，不需要 DELIMITER。
         {name &&

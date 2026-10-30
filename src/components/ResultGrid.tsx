@@ -11,6 +11,11 @@ interface Pos {
 // Statements safe to run a second time for an export (checked again in Rust).
 const READ_ONLY = /^\s*(\/\*[\s\S]*?\*\/\s*)*(select|with|show|desc|describe|explain|table|values|\()/i;
 
+// Column resizing: narrowest width, widest double-click fit, rows a fit looks at.
+const MIN_COL = 32;
+const MAX_FIT = 1200;
+const FIT_ROWS = 1000;
+
 // Remembered across results so a chosen format sticks.
 let lastFormat: CopyFormat = "tsv";
 let lastHeader = false;
@@ -21,7 +26,8 @@ let lastHeader = false;
  * rows or columns. ⌘/Ctrl+C copies the selection (or everything) in the
  * chosen format; right-click offers the other formats. The search box
  * keeps only the loaded rows with a matching cell; selection and copying
- * then work on those rows.
+ * then work on those rows. Dragging the right edge of a column header
+ * resizes the column; double-clicking it fits the column to its contents.
  */
 export function ResultGrid({
   result,
@@ -57,6 +63,68 @@ export function ResultGrid({
   const wrap = useRef<HTMLDivElement>(null);
   const lastRow = rows.length - 1;
   const lastCol = columns.length - 1;
+  // Pixel widths of the row-number column and each result column, once the
+  // user has resized one; until then the table sizes itself.
+  const [widths, setWidths] = useState<number[] | null>(null);
+  const resizing = useRef(false);
+
+  const columnKey = columns.map((c) => c.name).join("\u0000");
+  useEffect(() => setWidths(null), [columnKey]);
+
+  /** Current widths: the ones set, or what the browser laid out. */
+  const measured = () =>
+    widths ??
+    Array.from(wrap.current?.querySelectorAll<HTMLElement>("thead th") ?? [], (th) => th.getBoundingClientRect().width);
+
+  const startResize = (col: number, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const base = measured();
+    const startX = e.clientX;
+    const startW = base[col];
+    resizing.current = true;
+    document.body.classList.add("col-resizing");
+    const move = (ev: MouseEvent) => {
+      const next = [...base];
+      next[col] = Math.max(MIN_COL, Math.round(startW + ev.clientX - startX));
+      setWidths(next);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("col-resizing");
+      // Let the click that ends the drag pass without selecting the column.
+      setTimeout(() => (resizing.current = false));
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  /** Widens or narrows a column to its longest loaded value (header included). */
+  const autoFit = (col: number) => {
+    const table = wrap.current?.querySelector("table");
+    if (!table) return;
+    const cells = [
+      table.querySelector<HTMLElement>(`thead th:nth-child(${col + 1})`),
+      ...Array.from(table.querySelectorAll<HTMLElement>(`tbody tr:nth-child(-n + ${FIT_ROWS}) td:nth-child(${col + 1})`)),
+    ];
+    // A range around the cell's text measures it even where the cell clips it.
+    const range = document.createRange();
+    let fit = MIN_COL;
+    for (const cell of cells) {
+      if (!cell) continue;
+      range.selectNodeContents(cell);
+      const handle = cell.querySelector(".col-resize");
+      if (handle) range.setEndBefore(handle);
+      const pad = parseFloat(getComputedStyle(cell).paddingLeft) + parseFloat(getComputedStyle(cell).paddingRight);
+      fit = Math.max(fit, Math.ceil(range.getBoundingClientRect().width + pad + 2));
+    }
+    const base = measured();
+    const next = [...base];
+    next[col] = Math.min(MAX_FIT, fit);
+    setWidths(next);
+  };
 
   useEffect(() => {
     lastFormat = format;
@@ -267,7 +335,17 @@ export function ResultGrid({
         onKeyDown={onKeyDown}
         onClick={() => setMenu(null)}
       >
-        <table className="grid selectable">
+        <table
+          className={widths ? "grid selectable sized" : "grid selectable"}
+          style={widths ? { width: widths.reduce((a, b) => a + b, 0) } : undefined}
+        >
+          {widths && (
+            <colgroup>
+              {widths.map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+            </colgroup>
+          )}
           <thead>
             <tr>
               <th
@@ -282,9 +360,19 @@ export function ResultGrid({
                   key={i}
                   className={range && range.r1 === 0 && range.r2 === lastRow && i >= range.c1 && i <= range.c2 ? "sel" : ""}
                   title={`${c.table ? c.table + "." : ""}${c.name} · ${c.type_name}`}
-                  onClick={(e) => select({ r: 0, c: i }, { r: lastRow, c: i }, e.shiftKey)}
+                  onClick={(e) => !resizing.current && select({ r: 0, c: i }, { r: lastRow, c: i }, e.shiftKey)}
                 >
                   {c.name}
+                  <span
+                    className="col-resize"
+                    title="拖曳調整欄寬，雙擊依內容自動調整"
+                    onMouseDown={(e) => startResize(i + 1, e)}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      autoFit(i + 1);
+                    }}
+                  />
                 </th>
               ))}
             </tr>

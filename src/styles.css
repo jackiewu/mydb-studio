@@ -176,6 +176,18 @@ input, select, textarea {
 .tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree .caret, .tree .icon { color: var(--muted); width: 12px; flex-shrink: 0; font-size: 11px; }
 .tree .count { color: var(--muted); font-size: 11px; }
+.tree-db .caret {
+  width: 18px;
+  height: 18px;
+  margin-left: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tree-db .caret:hover { background: color-mix(in srgb, var(--muted) 25%, transparent); color: var(--text); }
 .schema > .link { text-align: left; padding: 8px 12px; color: var(--muted); }
 
 .split {
@@ -202,7 +214,7 @@ input, select, textarea {
 .result-tabs { display: flex; gap: 4px; overflow-x: auto; }
 .result-tabs button { font-size: 12px; padding: 1px 8px; }
 .result-tabs button.active { border-color: var(--accent); color: var(--accent); }
-.statement-meta { display: flex; gap: 16px; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+.statement-meta { display: flex; gap: 4px 16px; flex-wrap: wrap; align-items: center; padding: 6px 12px; font-size: 12px; color: var(--muted); }
 .statement-meta .warn { color: var(--warn); }
 .error-box { margin: 8px 12px; padding: 8px 12px; border-left: 3px solid var(--bad); background: var(--code-bg); }
 .error-box strong { color: var(--bad); font-weight: 600; }
@@ -223,6 +235,12 @@ table.grid { border-collapse: collapse; font-size: 12px; font-family: ui-monospa
 .grid tbody tr:nth-child(even) { background: var(--row-alt); }
 .grid .rownum { color: var(--muted); text-align: right; }
 .grid .null { color: var(--muted); font-style: italic; }
+/* Resizable result columns: a drag handle on each header's right edge. */
+.grid th .col-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 1; }
+.grid th .col-resize:hover, body.col-resizing .grid th .col-resize:active { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+table.grid.sized { table-layout: fixed; }
+table.grid.sized th, table.grid.sized td { max-width: none; }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
 
 .modal-backdrop {
   position: fixed;
@@ -501,6 +519,7 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .risk-dialog h2 { margin: 0 0 6px; font-size: 18px; }
 .risk-dialog .actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .limit-note { margin: 4px 12px; font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.statement-meta .limit-note { margin: 0; gap: 4px; }
 .limit-note button.link { font-size: 12px; }
 .settings-dialog .limit-input, .limit-input { width: 100px; }
 
@@ -888,3 +907,8 @@ td.row-actions button + button { margin-left: 4px; }
 .ddl-dialog .plan-sql { max-height: 360px; }
 .confirm-name { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 8px 0; }
 .confirm-name code { color: var(--bad); }
+
+.loading-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px; color: var(--muted); font-size: 13px; }
+.loading-state.inline { display: inline-flex; padding: 0; font-size: 12px; }
+.loading-state .loading-slow { flex-basis: 100%; }
+.error-box.load-error button { margin-top: 6px; }
