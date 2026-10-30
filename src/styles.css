@@ -148,6 +148,7 @@ input, select, textarea {
 .card-addr { font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .empty-state { text-align: center; color: var(--muted); padding: 60px 0; }
+.empty-state button + button { margin-left: 8px; }
 .small-text { font-size: 12px; }
 
 .star { border: none; background: none; padding: 0 4px; color: var(--muted); font-size: 15px; line-height: 1; }
@@ -602,6 +603,23 @@ button.ai-ask { margin-left: 8px; }
 .bug-report textarea.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .bug-report .muted { font-size: 12px; }
 .bug-report .error { color: var(--bad); }
+/* Connection export / import */
+.transfer-dialog {
+  background: var(--panel); border-radius: 10px; padding: 20px 24px; width: min(640px, 94vw); max-height: 85vh;
+  overflow: auto; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3); display: flex; flex-direction: column; gap: 10px;
+}
+.transfer-dialog h2 { margin: 0; font-size: 18px; }
+.transfer-dialog p { margin: 0; font-size: 13px; }
+.transfer-dialog .error { color: var(--bad); }
+.transfer-dialog label.check { display: flex; align-items: center; gap: 6px; }
+.transfer-dialog label.check input { width: auto; }
+.transfer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.transfer-list li { border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.transfer-line { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.transfer-line .muted { font-size: 12px; }
+.transfer-note { margin: 4px 0 0 24px; font-size: 12px; color: var(--muted); }
+.transfer-note select { width: auto; margin-left: 4px; font-size: 12px; }
+.transfer-note.warn { color: var(--warn); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .notice .report-link { margin-left: 8px; }
 

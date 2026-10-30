@@ -11,6 +11,7 @@ use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
+use mydb_core::transfer;
 use mydb_core::{
     AnySession, AppSettings, ColumnDef, ConnectionKind, ConnectionProfile, CoreError,
     DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext,
@@ -118,6 +119,128 @@ pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> R
 pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
     state.lock.ensure_unlocked()?;
     state.store.lock().unwrap().delete_connection(&id)
+}
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(Into::into)
+}
+
+/// Writes the connections `ids` (all when empty) to `path`, without any
+/// passwords or key passphrases. Returns how many were written.
+#[tauri::command]
+pub fn export_connections(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    path: String,
+) -> Result<usize> {
+    state.lock.ensure_unlocked()?;
+    // The list has no passwords, so this doesn't touch the keychain.
+    let list: Vec<ConnectionProfile> = state
+        .store
+        .lock()
+        .unwrap()
+        .list_connections()?
+        .into_iter()
+        .filter(|p| ids.is_empty() || ids.contains(&p.id))
+        .collect();
+    let now = chrono::Utc::now().to_rfc3339();
+    let text = transfer::export(&list, home_dir().as_deref(), &now)?;
+    std::fs::write(&path, text)?;
+    Ok(list.len())
+}
+
+/// A saved connection an imported one would collide with.
+#[derive(Serialize)]
+pub struct ImportClash {
+    pub id: String,
+    pub name: String,
+    /// The same connection (exported from here, or imported before), not
+    /// just the same name.
+    pub same_id: bool,
+}
+
+#[derive(Serialize)]
+pub struct ImportCandidate {
+    pub profile: ConnectionProfile,
+    pub clash: Option<ImportClash>,
+    /// Key and certificate files it names that this computer doesn't have.
+    pub missing_files: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImportPreview {
+    pub connections: Vec<ImportCandidate>,
+    pub skipped: Vec<String>,
+}
+
+/// Reads an export file and says what importing it would do. Nothing is
+/// saved yet.
+#[tauri::command]
+pub fn read_connection_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ImportPreview> {
+    state.lock.ensure_unlocked()?;
+    if std::fs::metadata(&path)?.len() > 5 * 1024 * 1024 {
+        return Err(CoreError::Config {
+            message: "檔案太大，不像是連線匯出檔。".into(),
+        });
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let home = home_dir();
+    let aws_ca = aws_rds_ca_path(app).ok();
+    let parsed = transfer::parse(
+        &text,
+        &transfer::Local {
+            home: home.as_deref(),
+            aws_ca: aws_ca.as_deref(),
+        },
+    )?;
+    let saved = state.store.lock().unwrap().list_connections()?;
+    let connections = parsed
+        .connections
+        .into_iter()
+        .map(|profile| {
+            let clash = saved
+                .iter()
+                .find(|s| s.id == profile.id)
+                .map(|s| (s, true))
+                .or_else(|| {
+                    saved
+                        .iter()
+                        .find(|s| s.name.trim().eq_ignore_ascii_case(profile.name.trim()))
+                        .map(|s| (s, false))
+                })
+                .map(|(s, same_id)| ImportClash {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    same_id,
+                });
+            ImportCandidate {
+                missing_files: transfer::missing_files(&profile, home.as_deref()),
+                profile,
+                clash,
+            }
+        })
+        .collect();
+    Ok(ImportPreview {
+        connections,
+        skipped: parsed.skipped,
+    })
+}
+
+/// Saves the connections picked in the import preview. Returns them as
+/// saved, so the UI can ask for their passwords.
+#[tauri::command]
+pub fn import_connections(
+    state: State<'_, AppState>,
+    items: Vec<transfer::ImportItem>,
+) -> Result<Vec<ConnectionProfile>> {
+    state.lock.ensure_unlocked()?;
+    transfer::save(&state.store.lock().unwrap(), items)
 }
 
 /// Connects with an unsaved profile and disconnects again.

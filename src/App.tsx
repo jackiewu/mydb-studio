@@ -15,6 +15,7 @@ import {
   type ConnectionProfile,
   type ExecutionRecord,
   type Finding,
+  type ImportPreview,
   type KeyName,
   KIND_LABEL,
   type OpenedSession,
@@ -26,6 +27,7 @@ import { copyText } from "./copy";
 import { AiDrawer, type AiRequest } from "./components/AiDrawer";
 import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
+import { ExportDialog, ImportDialog } from "./components/ConnectionTransfer";
 import { Home } from "./components/Home";
 import { LockScreen } from "./components/LockScreen";
 import { RecordsPage } from "./components/RecordsPage";
@@ -66,6 +68,9 @@ function useSystemDark() {
 export default function App() {
   const [connections, setConnections] = useState<ConnectionProfile[]>([]);
   const [editing, setEditing] = useState<ConnectionProfile | null>(null);
+  const [transfer, setTransfer] = useState<{ kind: "export" } | { kind: "import"; preview: ImportPreview } | null>(
+    null,
+  );
   const [session, setSession] = useState<OpenedSession | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
@@ -118,6 +123,17 @@ export default function App() {
   const reload = useCallback(async () => {
     setConnections(await api.listConnections());
   }, []);
+
+  /** Picks an export file and shows what importing it would do. */
+  const importConnections = async () => {
+    const path = await openDialog({ multiple: false, filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (typeof path !== "string") return;
+    try {
+      setTransfer({ kind: "import", preview: await api.readConnectionImport(path) });
+    } catch (e) {
+      setNotice({ text: describeError(e), kind: "error" });
+    }
+  };
 
   const reloadSnippets = useCallback(async () => {
     setSnippets(await api.listSnippets());
@@ -1072,6 +1088,8 @@ export default function App() {
             onDelete={deleteConnection}
             onOpenRecords={() => setView("records")}
             onOpenSettings={() => (setSettingsTab(undefined), setDialog("settings"))}
+            onExport={() => setTransfer({ kind: "export" })}
+            onImport={importConnections}
           />
         )}
       </main>
@@ -1117,6 +1135,26 @@ export default function App() {
           connectionName={active?.name ?? ""}
           intro={isRedis ? "這些指令可能會刪除資料、拖慢伺服器或影響其他用戶端。" : undefined}
           onAnswer={risk.answer}
+        />
+      )}
+      {transfer?.kind === "export" && (
+        <ExportDialog
+          connections={connections}
+          onClose={() => setTransfer(null)}
+          onDone={(text) => {
+            setTransfer(null);
+            setNotice({ text, kind: "info" });
+          }}
+        />
+      )}
+      {transfer?.kind === "import" && (
+        <ImportDialog
+          preview={transfer.preview}
+          onClose={() => setTransfer(null)}
+          onImported={() => reload().catch(() => {})}
+          onEdit={(c) =>
+            api.getConnection(c.id).then(setEditing, (e) => setNotice({ text: describeError(e), kind: "error" }))
+          }
         />
       )}
       {editing && (

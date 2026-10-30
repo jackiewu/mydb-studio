@@ -18,6 +18,8 @@ interface Props {
   onDelete: (c: ConnectionProfile) => void;
   onOpenRecords: () => void;
   onOpenSettings: () => void;
+  onExport: () => void;
+  onImport: () => void;
 }
 
 function lastUsed(iso?: string | null) {
@@ -174,7 +176,7 @@ function sorted(list: ConnectionProfile[], by: SortBy) {
 }
 
 export function Home(props: Props) {
-  const { connections, onNew, onOpenRecords, onOpenSettings } = props;
+  const { connections, onNew, onOpenRecords, onOpenSettings, onExport, onImport } = props;
   const [text, setText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useChoice<SortBy>("mydb.home.sort", ["name", "recent"], "recent");
@@ -195,6 +197,17 @@ export function Home(props: Props) {
         <h1>連線</h1>
         <div className="home-actions">
           <button onClick={onOpenRecords}>📋 執行紀錄與報表</button>
+          <button
+            title="匯出或匯入連線，例如搬到另一台電腦"
+            onClick={(e) =>
+              openMenu(e, [
+                { label: "匯出連線…", onClick: onExport, disabled: connections.length === 0 },
+                { label: "從檔案匯入連線…", onClick: onImport },
+              ])
+            }
+          >
+            ⇅ 匯入／匯出
+          </button>
           <button onClick={onOpenSettings} title="設定">
             ⚙ 設定
           </button>
@@ -209,6 +222,7 @@ export function Home(props: Props) {
           <button className="primary" onClick={onNew}>
             建立第一個連線
           </button>
+          <button onClick={onImport}>從另一台電腦匯入連線…</button>
         </div>
       )}
       {connections.length > 0 && (
