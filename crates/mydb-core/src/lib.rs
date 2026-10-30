@@ -19,6 +19,7 @@ pub mod session;
 pub mod settings;
 pub mod split;
 pub mod store;
+pub mod transfer;
 pub mod tunnel;
 
 pub use error::{CoreError, Result};

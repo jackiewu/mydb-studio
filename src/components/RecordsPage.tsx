@@ -74,7 +74,8 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const [detail, setDetail] = useState<ExecutionRecord | null>(null);
   const [note, setNote] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const [reportOpen, setReportOpen] = useState(false);
+  /** Ids the report dialog is open for; null when closed. */
+  const [reportIds, setReportIds] = useState<number[] | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -160,7 +161,12 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
             </button>
           </>
         )}
-        <button className="primary" disabled={selected.size === 0} onClick={() => setReportOpen(true)}>
+        <button
+          className="primary"
+          disabled={selected.size === 0 && !detail}
+          title={selected.size > 0 ? `用已勾選的 ${selected.size} 筆產生報表` : detail ? `用目前開啟的 #${detail.id} 產生報表` : "請先選擇或勾選紀錄"}
+          onClick={() => setReportIds(selected.size > 0 ? [...selected] : detail ? [detail.id] : [])}
+        >
           產生報表
         </button>
       </header>
@@ -246,10 +252,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                         { label: selected.has(r.id) ? "取消選取" : "選取", onClick: () => toggle(r.id) },
                         {
                           label: "用這筆產生報表…",
-                          onClick: () => {
-                            setSelected(new Set([r.id]));
-                            setReportOpen(true);
-                          },
+                          onClick: () => setReportIds([r.id]),
                         },
                         ...(r.error_message
                           ? [{ label: "複製錯誤訊息", onClick: () => copySql(r.error_message ?? "", "錯誤訊息") }]
@@ -385,12 +388,12 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {reportOpen && (
+      {reportIds && (
         <ReportDialog
-          ids={[...selected]}
-          onClose={() => setReportOpen(false)}
+          ids={reportIds}
+          onClose={() => setReportIds(null)}
           onSaved={(path) => {
-            setReportOpen(false);
+            setReportIds(null);
             setMessage({ ok: true, text: `報表已儲存到 ${path}` });
           }}
           onCopied={() => setToast("已複製報表內容")}

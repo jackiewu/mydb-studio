@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ask } from "./ask";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -15,6 +15,7 @@ import {
   type ConnectionProfile,
   type ExecutionRecord,
   type Finding,
+  type ImportPreview,
   type KeyName,
   KIND_LABEL,
   type OpenedSession,
@@ -26,6 +27,7 @@ import { copyText } from "./copy";
 import { AiDrawer, type AiRequest } from "./components/AiDrawer";
 import { BugReportDialog, type BugInfo } from "./components/BugReportDialog";
 import { ConnectionForm } from "./components/ConnectionForm";
+import { ExportDialog, ImportDialog } from "./components/ConnectionTransfer";
 import { Home } from "./components/Home";
 import { LockScreen } from "./components/LockScreen";
 import { RecordsPage } from "./components/RecordsPage";
@@ -51,6 +53,16 @@ import { useSessionStatus } from "./status/useSessionStatus";
 import { fileName, isUnsaved, tabTitle, useTabs, type EditorTab } from "./tabs";
 import "./styles.css";
 
+declare global {
+  interface Window {
+    /** Set by the backend in a window opened for one connection. */
+    __MYDB_CONNECT__?: string;
+  }
+}
+
+const isMac = navigator.userAgent.includes("Mac");
+const thisWindow = getCurrentWindow();
+
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 function useSystemDark() {
@@ -66,6 +78,9 @@ function useSystemDark() {
 export default function App() {
   const [connections, setConnections] = useState<ConnectionProfile[]>([]);
   const [editing, setEditing] = useState<ConnectionProfile | null>(null);
+  const [transfer, setTransfer] = useState<{ kind: "export" } | { kind: "import"; preview: ImportPreview } | null>(
+    null,
+  );
   const [session, setSession] = useState<OpenedSession | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "info" } | null>(null);
@@ -119,6 +134,17 @@ export default function App() {
     setConnections(await api.listConnections());
   }, []);
 
+  /** Picks an export file and shows what importing it would do. */
+  const importConnections = async () => {
+    const path = await openDialog({ multiple: false, filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (typeof path !== "string") return;
+    try {
+      setTransfer({ kind: "import", preview: await api.readConnectionImport(path) });
+    } catch (e) {
+      setNotice({ text: describeError(e), kind: "error" });
+    }
+  };
+
   const reloadSnippets = useCallback(async () => {
     setSnippets(await api.listSnippets());
   }, []);
@@ -129,11 +155,35 @@ export default function App() {
     reloadSnippets().catch(() => {});
   }, [reload, reloadSnippets]);
 
+  // Other windows share connections, settings and snippets; show their changes.
+  useEffect(() => {
+    const offs = [
+      listen("connections-changed", () => reload().catch(() => {})),
+      listen("settings-changed", () => api.getSettings().then(setSettings, () => {})),
+      listen("snippets-changed", () => reloadSnippets().catch(() => {})),
+    ];
+    return () => offs.forEach((off) => off.then((f) => f()));
+  }, [reload, reloadSnippets]);
+
+  // ⌘/Ctrl+Shift+N opens another window (on macOS the menu item does).
+  useEffect(() => {
+    if (isMac) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        api.newWindow().catch((err) => setNotice({ text: describeError(err), kind: "error" }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Offer to report last run's crash, and catch unexpected errors in this one.
   useEffect(() => {
     Promise.all([api.crashInfo(), api.getSettings()])
       .then(([c, s]) => {
-        if (!c) return;
+        // The first window tells about it; later ones needn't again.
+        if (!c || thisWindow.label !== "main") return;
         const reason = c.panic ? "MyDB Studio 上次發生錯誤而關閉。" : "MyDB Studio 上次沒有正常關閉。";
         const details = c.panic ?? "（app 被強制結束或當掉，沒有留下錯誤訊息）";
         // Only a real crash may open the report by itself, and only when asked to;
@@ -196,6 +246,11 @@ export default function App() {
   };
 
   const connect = async (c: ConnectionProfile) => {
+    // A connection is open in one window at a time, which owns its saved tabs.
+    if (session?.connection_id !== c.id && (await api.focusConnectionWindow(c.id).catch(() => false))) {
+      setNotice({ text: `「${c.name}」已在另一個視窗開啟，已切換到那個視窗。`, kind: "info" });
+      return false;
+    }
     if (session && !(await leaveTabs("切換連線"))) return false;
     setNotice(null);
     setConnecting(c.id);
@@ -217,6 +272,38 @@ export default function App() {
     } finally {
       setConnecting(null);
     }
+  };
+
+  // A window opened for one connection connects to it.
+  const autoConnect = useRef(window.__MYDB_CONNECT__);
+  useEffect(() => {
+    const id = autoConnect.current;
+    const target = id && connections.find((c) => c.id === id);
+    if (!target) return;
+    autoConnect.current = undefined;
+    connect(target);
+    // `connect` changes every render; this runs once the list has the connection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connections]);
+
+  // The window title names the connection, to tell windows apart.
+  const activeName = connections.find((c) => c.id === session?.connection_id)?.name;
+  useEffect(() => {
+    thisWindow.setTitle(activeName ? `${activeName} — MyDB Studio` : "MyDB Studio").catch(() => {});
+  }, [activeName]);
+
+  // The connection was deleted (maybe in another window): let go of it.
+  useEffect(() => {
+    if (session && connections.length && !connections.some((c) => c.id === session.connection_id)) {
+      api.closeSession(session.session_id).catch(() => {});
+      setSession(null);
+      setView("main");
+    }
+  }, [session, connections]);
+
+  const openInNewWindow = async (c?: ConnectionProfile) => {
+    if (c && (await api.focusConnectionWindow(c.id).catch(() => false))) return;
+    api.newWindow(c?.id).catch((e) => setNotice({ text: describeError(e), kind: "error" }));
   };
 
   const openRecordInEditor = async (rec: ExecutionRecord) => {
@@ -275,11 +362,17 @@ export default function App() {
       },
       () => {},
     );
-    const off = listen("app-locked", () => setLocked(true));
-    return () => {
-      off.then((f) => f());
-    };
-  }, []);
+    const offs = [
+      listen("app-locked", () => setLocked(true)),
+      // Unlocked in another window.
+      listen("app-unlocked", () => {
+        setLocked(false);
+        setLockedAtStart(false);
+        reloadSnippets().catch(() => {});
+      }),
+    ];
+    return () => offs.forEach((off) => off.then((f) => f()));
+  }, [reloadSnippets]);
   const lockNow = useCallback(async () => {
     if (!lockOn) return;
     await api.lockApp().catch(() => {});
@@ -290,7 +383,16 @@ export default function App() {
     if (!lockOn || locked) return;
     let lastInput = Date.now();
     let lastTick = Date.now();
-    const touch = () => (lastInput = Date.now());
+    // Input in any window keeps them all unlocked; tell the others now and then.
+    let lastShared = 0;
+    const touch = () => {
+      lastInput = Date.now();
+      if (lastInput - lastShared > 5000) {
+        lastShared = lastInput;
+        emit("user-active").catch(() => {});
+      }
+    };
+    const offActive = listen("user-active", () => (lastInput = Date.now()));
     const events = ["pointerdown", "pointermove", "keydown", "wheel"] as const;
     events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
     const timer = setInterval(() => {
@@ -302,6 +404,7 @@ export default function App() {
     }, 5000);
     return () => {
       events.forEach((e) => window.removeEventListener(e, touch));
+      offActive.then((f) => f());
       clearInterval(timer);
     };
   }, [lockOn, locked, settings.lock_idle_minutes, settings.lock_on_sleep, lockNow]);
@@ -515,8 +618,8 @@ export default function App() {
   const leaveRef = useRef(leaveTabs);
   leaveRef.current = leaveTabs;
   useEffect(() => {
-    const unlisten = getCurrentWindow().onCloseRequested(async (e) => {
-      if (!(await leaveRef.current("關閉 app"))) e.preventDefault();
+    const unlisten = thisWindow.onCloseRequested(async (e) => {
+      if (!(await leaveRef.current("關閉視窗"))) e.preventDefault();
     });
     return () => {
       unlisten.then((f) => f());
@@ -782,6 +885,9 @@ export default function App() {
                 <button onClick={() => (setSettingsTab(undefined), setDialog("settings"))} title="設定">
                   ⚙
                 </button>
+                <button onClick={() => openInNewWindow()} title="開新視窗，同時連另一台（⌘／Ctrl + Shift + N）">
+                  ⧉
+                </button>
                 {!isRedis && (
                 <>
                 <button
@@ -805,7 +911,7 @@ export default function App() {
                 </button>
                 </>
                 )}
-                {(runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
+                {settings.show_run_all_button && (runTarget?.total ?? 0) > 1 && runTarget?.kind !== "all" && (
                   <button
                     disabled={running}
                     onClick={() => run(editor.current?.allText()?.text ?? "")}
@@ -1070,8 +1176,11 @@ export default function App() {
               })
             }
             onDelete={deleteConnection}
+            onOpenInNewWindow={openInNewWindow}
             onOpenRecords={() => setView("records")}
             onOpenSettings={() => (setSettingsTab(undefined), setDialog("settings"))}
+            onExport={() => setTransfer({ kind: "export" })}
+            onImport={importConnections}
           />
         )}
       </main>
@@ -1117,6 +1226,26 @@ export default function App() {
           connectionName={active?.name ?? ""}
           intro={isRedis ? "這些指令可能會刪除資料、拖慢伺服器或影響其他用戶端。" : undefined}
           onAnswer={risk.answer}
+        />
+      )}
+      {transfer?.kind === "export" && (
+        <ExportDialog
+          connections={connections}
+          onClose={() => setTransfer(null)}
+          onDone={(text) => {
+            setTransfer(null);
+            setNotice({ text, kind: "info" });
+          }}
+        />
+      )}
+      {transfer?.kind === "import" && (
+        <ImportDialog
+          preview={transfer.preview}
+          onClose={() => setTransfer(null)}
+          onImported={() => reload().catch(() => {})}
+          onEdit={(c) =>
+            api.getConnection(c.id).then(setEditing, (e) => setNotice({ text: describeError(e), kind: "error" }))
+          }
         />
       )}
       {editing && (

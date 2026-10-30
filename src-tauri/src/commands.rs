@@ -11,6 +11,7 @@ use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
 use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
+use mydb_core::transfer;
 use mydb_core::{
     AnySession, AppSettings, ColumnDef, ConnectionKind, ConnectionProfile, CoreError,
     DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext,
@@ -33,6 +34,8 @@ pub struct AppState {
     pub lock: crate::lock::LockState,
     /// How the previous run ended, until the UI asks.
     pub crash: Mutex<Option<CrashInfo>>,
+    /// Which window each session belongs to.
+    pub windows: crate::windows::WindowSessions,
 }
 
 impl AppState {
@@ -97,6 +100,7 @@ pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<Connecti
 
 #[tauri::command]
 pub fn save_connection(
+    app: AppHandle,
     state: State<'_, AppState>,
     mut profile: ConnectionProfile,
 ) -> Result<ConnectionProfile> {
@@ -105,19 +109,155 @@ pub fn save_connection(
         profile.id = uuid_v4();
     }
     state.store.lock().unwrap().save_connection(&profile)?;
+    crate::windows::changed(&app, "connections");
     Ok(profile)
 }
 
 #[tauri::command]
-pub fn set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<()> {
+pub fn set_favorite(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    favorite: bool,
+) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().set_favorite(&id, favorite)
+    state.store.lock().unwrap().set_favorite(&id, favorite)?;
+    crate::windows::changed(&app, "connections");
+    Ok(())
 }
 
 #[tauri::command]
-pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
+pub fn delete_connection(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().delete_connection(&id)
+    state.store.lock().unwrap().delete_connection(&id)?;
+    crate::windows::changed(&app, "connections");
+    Ok(())
+}
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(Into::into)
+}
+
+/// Writes the connections `ids` (all when empty) to `path`, without any
+/// passwords or key passphrases. Returns how many were written.
+#[tauri::command]
+pub fn export_connections(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    path: String,
+) -> Result<usize> {
+    state.lock.ensure_unlocked()?;
+    // The list has no passwords, so this doesn't touch the keychain.
+    let list: Vec<ConnectionProfile> = state
+        .store
+        .lock()
+        .unwrap()
+        .list_connections()?
+        .into_iter()
+        .filter(|p| ids.is_empty() || ids.contains(&p.id))
+        .collect();
+    let now = chrono::Utc::now().to_rfc3339();
+    let text = transfer::export(&list, home_dir().as_deref(), &now)?;
+    std::fs::write(&path, text)?;
+    Ok(list.len())
+}
+
+/// A saved connection an imported one would collide with.
+#[derive(Serialize)]
+pub struct ImportClash {
+    pub id: String,
+    pub name: String,
+    /// The same connection (exported from here, or imported before), not
+    /// just the same name.
+    pub same_id: bool,
+}
+
+#[derive(Serialize)]
+pub struct ImportCandidate {
+    pub profile: ConnectionProfile,
+    pub clash: Option<ImportClash>,
+    /// Key and certificate files it names that this computer doesn't have.
+    pub missing_files: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImportPreview {
+    pub connections: Vec<ImportCandidate>,
+    pub skipped: Vec<String>,
+}
+
+/// Reads an export file and says what importing it would do. Nothing is
+/// saved yet.
+#[tauri::command]
+pub fn read_connection_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ImportPreview> {
+    state.lock.ensure_unlocked()?;
+    if std::fs::metadata(&path)?.len() > 5 * 1024 * 1024 {
+        return Err(CoreError::Config {
+            message: "檔案太大，不像是連線匯出檔。".into(),
+        });
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let home = home_dir();
+    let aws_ca = aws_rds_ca_path(app).ok();
+    let parsed = transfer::parse(
+        &text,
+        &transfer::Local {
+            home: home.as_deref(),
+            aws_ca: aws_ca.as_deref(),
+        },
+    )?;
+    let saved = state.store.lock().unwrap().list_connections()?;
+    let connections = parsed
+        .connections
+        .into_iter()
+        .map(|profile| {
+            let clash = saved
+                .iter()
+                .find(|s| s.id == profile.id)
+                .map(|s| (s, true))
+                .or_else(|| {
+                    saved
+                        .iter()
+                        .find(|s| s.name.trim().eq_ignore_ascii_case(profile.name.trim()))
+                        .map(|s| (s, false))
+                })
+                .map(|(s, same_id)| ImportClash {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    same_id,
+                });
+            ImportCandidate {
+                missing_files: transfer::missing_files(&profile, home.as_deref()),
+                profile,
+                clash,
+            }
+        })
+        .collect();
+    Ok(ImportPreview {
+        connections,
+        skipped: parsed.skipped,
+    })
+}
+
+/// Saves the connections picked in the import preview. Returns them as
+/// saved, so the UI can ask for their passwords.
+#[tauri::command]
+pub fn import_connections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    items: Vec<transfer::ImportItem>,
+) -> Result<Vec<ConnectionProfile>> {
+    state.lock.ensure_unlocked()?;
+    let saved = transfer::save(&state.store.lock().unwrap(), items);
+    // Some may have been saved before an error.
+    crate::windows::changed(&app, "connections");
+    saved
 }
 
 /// Connects with an unsaved profile and disconnects again.
@@ -187,6 +327,7 @@ pub struct OpenedSession {
 
 #[tauri::command]
 pub async fn open_session(
+    window: tauri::WebviewWindow,
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<OpenedSession> {
@@ -219,6 +360,9 @@ pub async fn open_session(
         .write()
         .await
         .insert(session_id.clone(), session);
+    state
+        .windows
+        .add(&session_id, window.label(), &connection_id);
     Ok(OpenedSession {
         session_id,
         connection_id,
@@ -232,6 +376,7 @@ pub async fn open_session(
 #[tauri::command]
 pub async fn close_session(state: State<'_, AppState>, session_id: String) -> Result<()> {
     let session = state.sessions.write().await.remove(&session_id);
+    state.windows.remove(&session_id);
     // Only disconnect cleanly if no query is still holding the session.
     if let Some(session) = session {
         session.close().await?;
@@ -815,14 +960,20 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings> {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<()> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<()> {
     // Settings include where AI prompts go and what program runs the model.
     state.lock.ensure_unlocked()?;
     let store = state.store.lock().unwrap();
     state
         .lock
         .check_settings_change(&store.get_settings()?, &settings)?;
-    store.save_settings(&settings)
+    store.save_settings(&settings)?;
+    crate::windows::changed(&app, "settings");
+    Ok(())
 }
 
 #[tauri::command]
@@ -832,15 +983,23 @@ pub fn list_snippets(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
 }
 
 #[tauri::command]
-pub fn save_snippet(state: State<'_, AppState>, snippet: Snippet) -> Result<Snippet> {
+pub fn save_snippet(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    snippet: Snippet,
+) -> Result<Snippet> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().save_snippet(&snippet)
+    let saved = state.store.lock().unwrap().save_snippet(&snippet)?;
+    crate::windows::changed(&app, "snippets");
+    Ok(saved)
 }
 
 #[tauri::command]
-pub fn delete_snippet(state: State<'_, AppState>, id: i64) -> Result<()> {
+pub fn delete_snippet(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state.store.lock().unwrap().delete_snippet(id)
+    state.store.lock().unwrap().delete_snippet(id)?;
+    crate::windows::changed(&app, "snippets");
+    Ok(())
 }
 
 #[tauri::command]

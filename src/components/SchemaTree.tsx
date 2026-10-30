@@ -10,7 +10,7 @@ interface Props {
   currentDb: string | null;
   showSystem: boolean;
   onShowSystemChange: (show: boolean) => void;
-  /** Double-click on a database. */
+  /** Click on a database. */
   onUseDatabase: (database: string) => void;
   /** Called when a table is clicked. */
   onOpenTable: (database: string, table: string) => void;
@@ -124,24 +124,16 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
             <li key={d.name}>
               <button
                 className={isCurrent ? "tree-db current" : "tree-db"}
-                title={isCurrent ? "目前使用中的資料庫" : "雙擊切換到這個資料庫（USE）"}
-                onClick={(e) => {
-                  // The second click of a double-click is handled below.
-                  if (e.detail <= 1) expand(d.name, !isOpen);
-                }}
-                onDoubleClick={() => {
-                  expand(d.name, true);
-                  onUseDatabase(d.name);
+                title={isCurrent ? "目前使用中的資料庫" : "點一下切換到這個資料庫（USE）"}
+                onClick={() => {
+                  if (!isCurrent) onUseDatabase(d.name);
                 }}
                 onContextMenu={(e) =>
                   openMenu(e, [
                     {
                       label: "使用這個資料庫（USE）",
                       disabled: isCurrent,
-                      onClick: () => {
-                        expand(d.name, true);
-                        onUseDatabase(d.name);
-                      },
+                      onClick: () => onUseDatabase(d.name),
                     },
                     { label: isOpen ? "收合" : "展開", disabled: onlyTables, onClick: () => expand(d.name, !isOpen) },
                     "sep",
@@ -153,7 +145,21 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                   ])
                 }
               >
-                <span className="caret">{isOpen ? "▾" : "▸"}</span>
+                <span
+                  className="caret"
+                  role="button"
+                  aria-label={isOpen ? "收合資料表" : "展開資料表"}
+                  aria-expanded={isOpen}
+                  title={onlyTables ? undefined : isOpen ? "收合資料表" : "展開資料表"}
+                  onClick={(e) => {
+                    // Only the chevron opens the table list; the row selects.
+                    e.stopPropagation();
+                    if (!onlyTables) expand(d.name, !isOpen);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                >
+                  {isOpen ? "▾" : "▸"}
+                </span>
                 <span className="tree-name">{highlight(d.name, filter)}</span>
                 {isCurrent && <span className="current-mark">USE</span>}
                 <span className="count">{d.table_count}</span>

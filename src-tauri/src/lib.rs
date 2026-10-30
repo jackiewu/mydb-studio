@@ -2,6 +2,7 @@ mod commands;
 mod keychain;
 mod lock;
 mod mcp;
+mod windows;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -85,7 +86,10 @@ pub fn run() {
                 ai,
                 lock,
                 crash: Mutex::new(crash),
+                windows: windows::WindowSessions::default(),
             });
+            #[cfg(target_os = "macos")]
+            windows::install_menu(app)?;
             lock::watch_screen_lock(app.handle());
             // Stop the AI model once it sits unused for the configured time.
             let handle = app.handle().clone();
@@ -106,6 +110,11 @@ pub fn run() {
                 }
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                windows::window_destroyed(window.app_handle(), window.label());
+            }
         })
         .register_uri_scheme_protocol(commands::PRINT_PROTOCOL, |ctx, _request| {
             let html = ctx
@@ -162,11 +171,16 @@ pub fn run() {
             commands::schema_apply,
             commands::save_connection,
             commands::delete_connection,
+            commands::export_connections,
+            commands::read_connection_import,
+            commands::import_connections,
             commands::set_favorite,
             commands::test_connection,
             commands::list_server_databases,
             commands::aws_rds_ca_path,
             commands::open_session,
+            windows::new_window,
+            windows::focus_connection_window,
             commands::close_session,
             commands::execute,
             commands::list_databases,
