@@ -117,7 +117,7 @@ pub fn lock_status(state: State<'_, AppState>) -> LockStatus {
 }
 
 /// Locks, closes windows the lock screen doesn't cover (a printed report),
-/// and tells the main window.
+/// and tells every window.
 fn lock_now(app: &AppHandle, state: &AppState) {
     state.lock.set_locked(true);
     state.print_html.lock().unwrap().clear();
@@ -137,10 +137,12 @@ pub fn lock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
 }
 
 #[tauri::command]
-pub async fn unlock_app(state: State<'_, AppState>) -> Result<()> {
+pub async fn unlock_app(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
     system_auth("解鎖 MyDB Studio").await?;
     state.lock.set_locked(false);
     state.lock.mark_verified();
+    // Every window's lock screen goes away.
+    let _ = app.emit("app-unlocked", ());
     Ok(())
 }
 

@@ -816,6 +816,11 @@ export const api = {
   openSession: (connectionId: string) =>
     invoke<OpenedSession>("open_session", { connectionId }),
   closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
+  /** Opens another app window; with `connectionId` it connects to that. */
+  newWindow: (connectionId?: string) => invoke<void>("new_window", { connectionId: connectionId ?? null }),
+  /** Brings forward another window that has the connection open; false if none has. */
+  focusConnectionWindow: (connectionId: string) =>
+    invoke<boolean>("focus_connection_window", { connectionId }),
   execute: (sessionId: string, sql: string, record = false, maxRows?: number | null, autoLimit?: number | null) =>
     invoke<ExecutionOutcome>("execute", { sessionId, sql, maxRows, autoLimit, record }),
   aiStatus: () => invoke<AiStatus>("ai_status"),

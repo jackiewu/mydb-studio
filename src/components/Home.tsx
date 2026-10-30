@@ -16,6 +16,8 @@ interface Props {
   /** Opens the form with a copy of `c`, saved as a new connection. */
   onDuplicate: (c: ConnectionProfile) => void;
   onDelete: (c: ConnectionProfile) => void;
+  /** Opens another window, connected to `c` when given. */
+  onOpenInNewWindow: (c?: ConnectionProfile) => void;
   onOpenRecords: () => void;
   onOpenSettings: () => void;
 }
@@ -32,7 +34,7 @@ function lastUsed(iso?: string | null) {
 
 type CardProps = Pick<
   Props,
-  "connecting" | "doubleClick" | "onConnect" | "onEdit" | "onToggleFavorite" | "onDuplicate" | "onDelete"
+  "connecting" | "doubleClick" | "onConnect" | "onEdit" | "onToggleFavorite" | "onDuplicate" | "onDelete" | "onOpenInNewWindow"
 > & { selected: boolean; onSelect: (c: ConnectionProfile) => void };
 
 function Card({
@@ -46,6 +48,7 @@ function Card({
   onToggleFavorite,
   onDuplicate,
   onDelete,
+  onOpenInNewWindow,
 }: CardProps & { c: ConnectionProfile }) {
   const address = serverLabel(c);
   const kind = c.kind ?? "mysql";
@@ -63,6 +66,7 @@ function Card({
       onContextMenu={(e) =>
         openMenu(e, [
           { label: "連線", onClick: () => onConnect(c) },
+          { label: "在新視窗連線", onClick: () => onOpenInNewWindow(c) },
           { label: "編輯…", onClick: () => onEdit(c) },
           { label: "複製一份連線…", onClick: () => onDuplicate(c) },
           { label: c.favorite ? "取消最愛" : "加入最愛", onClick: () => onToggleFavorite(c) },
@@ -174,7 +178,7 @@ function sorted(list: ConnectionProfile[], by: SortBy) {
 }
 
 export function Home(props: Props) {
-  const { connections, onNew, onOpenRecords, onOpenSettings } = props;
+  const { connections, onNew, onOpenRecords, onOpenSettings, onOpenInNewWindow } = props;
   const [text, setText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useChoice<SortBy>("mydb.home.sort", ["name", "recent"], "recent");
@@ -197,6 +201,9 @@ export function Home(props: Props) {
           <button onClick={onOpenRecords}>📋 執行紀錄與報表</button>
           <button onClick={onOpenSettings} title="設定">
             ⚙ 設定
+          </button>
+          <button onClick={() => onOpenInNewWindow()} title="開新視窗，同時連另一台（⌘／Ctrl + Shift + N）">
+            ⧉ 新視窗
           </button>
           <button className="primary" onClick={onNew}>
             ＋ 新增連線
