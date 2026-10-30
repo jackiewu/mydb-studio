@@ -592,6 +592,13 @@ fn known_secrets(store: &Store) -> Result<Vec<ConnectionSecrets>> {
                 hosts.push(ssh.host);
                 users.push(ssh.user);
             }
+            if let Some(iap) = p.iap {
+                hosts.extend(
+                    [iap.instance, iap.project]
+                        .into_iter()
+                        .filter(|s| !s.trim().is_empty()),
+                );
+            }
             ConnectionSecrets {
                 id: p.id,
                 name: p.name,

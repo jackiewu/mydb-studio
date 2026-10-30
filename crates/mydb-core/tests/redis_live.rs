@@ -517,6 +517,7 @@ fn ssh_config() -> Option<SshConfig> {
         user: env("MYDB_TEST_SSH_USER")?,
         auth,
         known_host_fingerprint: None,
+        socket_path: None,
     })
 }
 

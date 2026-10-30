@@ -1192,6 +1192,7 @@ mod tests {
                 password: "sshpw".into(),
             },
             known_host_fingerprint: None,
+            socket_path: None,
         });
         store.save_connection(&p).unwrap();
         let vault = MemoryVault::default();

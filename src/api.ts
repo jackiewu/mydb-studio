@@ -23,6 +23,18 @@ export interface SshConfig {
   user: string;
   auth: SshAuth;
   known_host_fingerprint?: string | null;
+  /** A Unix socket on the jump host to connect to instead of host and port. */
+  socket_path?: string | null;
+}
+
+/** A Compute Engine VM reached with `gcloud compute start-iap-tunnel`. */
+export interface IapConfig {
+  instance: string;
+  /** Empty: gcloud's default zone. */
+  zone: string;
+  /** Empty: gcloud's default project. */
+  project: string;
+  gcloud_path?: string | null;
 }
 
 export type ConnectionKind = "mysql" | "redis";
@@ -39,6 +51,8 @@ export interface ConnectionProfile {
   database?: string | null;
   ssl: SslConfig;
   ssh?: SshConfig | null;
+  /** Through a GCP IAP tunnel. Alone, `port` is the port on the VM; with `ssh`, IAP carries SSH. */
+  iap?: IapConfig | null;
   favorite?: boolean;
   last_used_at?: string | null;
   /** What AI tools may do through the MCP server (default read_only). MySQL only. */
@@ -129,7 +143,7 @@ export interface StatementResult {
 export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
-  | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config" | "redis"; message: string }
+  | { kind: "driver" | "connection" | "ssh" | "iap" | "io" | "store" | "config" | "redis"; message: string }
   | { kind: "not_connected"; id: string }
   | { kind: "cancelled" };
 
@@ -612,6 +626,7 @@ export function newProfile(kind: ConnectionKind = "mysql"): ConnectionProfile {
       database: null,
       ssl: { mode: "disabled" },
       ssh: null,
+      iap: null,
       mcp: "off",
       redis_db: 0,
     };
@@ -626,6 +641,7 @@ export function newProfile(kind: ConnectionKind = "mysql"): ConnectionProfile {
     database: "",
     ssl: { mode: "disabled" },
     ssh: null,
+    iap: null,
     mcp: "read_only",
   };
 }
@@ -789,6 +805,35 @@ function tlsHint(message: string) {
   return "";
 }
 
+/** Plain words for SSH failures that have a usual fix. */
+function sshHint(message: string) {
+  if (/cannot open the socket .*no such socket/i.test(message))
+    return "\n跳板機上找不到這個 socket 檔，或 SSH 使用者沒有權限使用它。請在主機上執行 sudo mariadb -e \"SELECT @@socket\" 確認路徑。";
+  if (/AllowStreamLocalForwarding/.test(message))
+    return "\nSSH 伺服器不允許轉送 socket，需要在 /etc/ssh/sshd_config 設定 AllowStreamLocalForwarding yes。";
+  return "";
+}
+
+/** Plain words for what gcloud says when an IAP tunnel won't open. */
+function iapHint(message: string) {
+  if (/gcloud not found|cannot run gcloud/i.test(message))
+    return "\n找不到 gcloud。請先安裝 Google Cloud CLI，或在「GCP IAP」頁填 gcloud 的完整路徑（終端機執行 which gcloud 可以看到）。";
+  if (/auth login|credentialed accounts|authentication credential|Reauthentication|refresh.*token|invalid_grant/i.test(message))
+    return "\ngcloud 還沒登入或登入已過期。請在終端機執行 gcloud auth login 後再試。";
+  if (/4033|not authorized/i.test(message))
+    return "\n帳號沒有使用 IAP 通道的權限。需要在專案或 VM 上有「IAP-secured Tunnel User」角色。";
+  if (/4003|failed to connect to backend/i.test(message))
+    return "\nIAP 連不到 VM 上的這個埠。請確認防火牆允許 35.235.240.0/20 連到該埠，且服務有在 VM 上監聽。";
+  if (/4010|destination read failed/i.test(message))
+    return "\nIAP 已連到 VM，但 VM 上這個埠沒有回應。常見原因是資料庫的 bind-address 是 127.0.0.1（IAP 從 VM 內部 IP 連入），或埠號填錯。可以改用「SSH 通道」搭配 IAP，主機填 127.0.0.1，就不用改伺服器設定。";
+  if (/Underspecified resource|\[--zone\]/i.test(message))
+    return "\n請在「GCP IAP」頁填 VM 所在的 zone（例如 asia-east1-b）。";
+  if (/was not found|notFound|does not exist/i.test(message))
+    return "\n找不到這台 VM。請確認執行個體名稱、zone 和專案 ID。";
+  if (/did not open the tunnel within/i.test(message)) return "\ngcloud 太久沒有回應，請稍後再試或在終端機手動執行看看。";
+  return "";
+}
+
 /** `p` without its database password, SSH password or key passphrase. */
 export function withoutSecrets(p: ConnectionProfile): ConnectionProfile {
   const ssh = p.ssh && {
@@ -811,6 +856,10 @@ export function describeError(e: unknown): string {
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
     case "connection":
       return `連線中斷：${err.message}${tlsHint(err.message)}`;
+    case "ssh":
+      return `${err.message}${sshHint(err.message)}`;
+    case "iap":
+      return `GCP IAP 通道開不起來：${err.message}${iapHint(err.message)}`;
     case "not_connected":
       return "連線已關閉，請重新連線。";
     case "cancelled":
