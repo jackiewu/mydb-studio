@@ -35,6 +35,8 @@ pub struct AppSettings {
     pub lock_disconnect: bool,
     /// Suggest database, table and column names while typing.
     pub schema_autocomplete: bool,
+    /// Show the run-all button in the toolbar (⌘⇧↵ works either way).
+    pub show_run_all_button: bool,
     /// Ask before running statements that can destroy data.
     pub confirm_dangerous: bool,
     /// LIMIT added to queries that have none; 0 turns it off.
@@ -70,6 +72,7 @@ impl Default for AppSettings {
             lock_on_start: true,
             lock_disconnect: false,
             schema_autocomplete: true,
+            show_run_all_button: false,
             confirm_dangerous: true,
             auto_limit: 1000,
             ai_enabled: false,
