@@ -13,6 +13,7 @@ import {
   type TableDesign,
 } from "../../api";
 import { copyText } from "../../copy";
+import { Loading, LoadError } from "./Loading";
 import {
   COMMON_TYPES,
   defaultSql,
@@ -88,8 +89,8 @@ export function TableDesigner({ sessionId, database, table, meta, dbCharset, dbC
   const origCols = useMemo(() => new Map((original?.columns ?? []).map((c) => [c.name, c])), [original]);
   const changes = useMemo(() => (design ? countChanges(original, design, convert) : 0), [original, design, convert]);
 
-  if (error && !design) return <div className="error-box">{error}</div>;
-  if (!design) return <div className="hint pad">載入中…</div>;
+  if (error && !design) return <LoadError what={`資料表 ${table} 的欄位與索引`} error={error} onRetry={load} />;
+  if (!design) return <Loading what={`資料表 ${table} 的欄位與索引`} />;
 
   const set = (next: TableDesign) => setDesign(next);
   const setCol = (i: number, patch: Partial<ColumnDesign>) =>

@@ -889,3 +889,8 @@ td.row-actions button + button { margin-left: 4px; }
 .ddl-dialog .plan-sql { max-height: 360px; }
 .confirm-name { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 8px 0; }
 .confirm-name code { color: var(--bad); }
+
+.loading-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px; color: var(--muted); font-size: 13px; }
+.loading-state.inline { display: inline-flex; padding: 0; font-size: 12px; }
+.loading-state .loading-slow { flex-basis: 100%; }
+.error-box.load-error button { margin-top: 6px; }
