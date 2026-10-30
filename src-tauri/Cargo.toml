@@ -1,6 +1,6 @@
 [package]
 name = "mydb-studio"
-version = "0.2.2"
+version = "0.3.0"
 description = "MySQL / MariaDB client with execution records, reports and an error advisor"
 authors = ["jackiewu"]
 edition = "2024"
