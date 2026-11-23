@@ -36,6 +36,7 @@ fn quoted(message: &str) -> Option<&str> {
 pub fn error_advice(err: &CoreError) -> Option<Advice> {
     match err {
         CoreError::Server { code, message, .. } => server_advice(*code, message),
+        CoreError::Postgres { state, message } => postgres_advice(state, message),
         CoreError::Connection { .. } => Some(advice(
             "連線中斷",
             "跟伺服器的網路連線失敗或被關閉。",
@@ -54,6 +55,105 @@ pub fn error_advice(err: &CoreError) -> Option<Advice> {
         )),
         _ => None,
     }
+}
+
+/// Advice for a PostgreSQL error, by SQLSTATE.
+fn postgres_advice(state: &str, message: &str) -> Option<Advice> {
+    let name = message.split('"').nth(1).unwrap_or("").to_string();
+    let a = match state {
+        "42P01" => advice(
+            "資料表不存在",
+            &format!("找不到資料表 {name}。PostgreSQL 依 search_path 找沒有寫 schema 的名稱。"),
+            &[
+                "在側欄點 schema 把它設為目前的 schema，或寫成 schema.資料表。",
+                "名稱有大寫時要加雙引號，例如 \"MyTable\"；沒加引號的名稱一律當成小寫。",
+            ],
+        ),
+        "42703" => advice(
+            "欄位不存在",
+            &format!("找不到欄位 {name}。"),
+            &[
+                "確認欄位名稱和資料表別名。",
+                "名稱有大寫時要加雙引號；字串要用單引號，雙引號是欄位或資料表名稱。",
+            ],
+        ),
+        "42601" => advice(
+            "語法錯誤",
+            "PostgreSQL 看不懂這句。",
+            &[
+                "MySQL 的反引號 `名稱` 在 PostgreSQL 要改成雙引號 \"名稱\"。",
+                "LIMIT a, b 要寫成 LIMIT b OFFSET a；字串用單引號。",
+            ],
+        ),
+        "42883" => advice(
+            "函式或運算子不存在",
+            "找不到符合這些參數型別的函式或運算子。",
+            &["必要時加上型別轉換，例如 '2026-01-01'::date 或 id::text。"],
+        ),
+        "25P02" => advice(
+            "交易已中止",
+            "這個交易裡先前有一句失敗，之後的語句都會被拒絕，直到結束交易。",
+            &["執行 ROLLBACK; 結束交易後再重來。"],
+        ),
+        "25006" => advice(
+            "唯讀交易",
+            "目前的交易或連線是唯讀的，不能修改資料。",
+            &["如果連的是唯讀副本（read replica），請改連主要執行個體。"],
+        ),
+        "23505" => advice(
+            "重複的值",
+            "違反唯一限制（主鍵或 UNIQUE）。",
+            &["先查有沒有相同的資料，或改用 INSERT … ON CONFLICT DO UPDATE / DO NOTHING。"],
+        ),
+        "23503" => advice(
+            "外鍵限制",
+            "參照的資料不存在，或還有其他資料參照它。",
+            &["先新增被參照的資料，或先處理參照它的資料。"],
+        ),
+        "23502" => advice(
+            "不能是 NULL",
+            &format!("欄位 {name} 不允許 NULL。"),
+            &["給這個欄位一個值，或設定預設值。"],
+        ),
+        "42501" => advice(
+            "權限不足",
+            "這個角色沒有執行這個動作的權限。",
+            &[
+                "請 DBA 用 GRANT 授權，例如 GRANT SELECT ON 資料表 TO 角色。",
+                "schema 也需要 USAGE 權限：GRANT USAGE ON SCHEMA 名稱 TO 角色。",
+            ],
+        ),
+        "28P01" | "28000" => advice(
+            "登入失敗",
+            "帳號或密碼錯誤，或 pg_hba.conf 不允許這個來源連線。",
+            &[
+                "確認帳號、密碼和要連的資料庫。",
+                "RDS 請確認安全群組允許你的位址；需要 SSL 時把 SSL 模式設為「必須」以上。",
+            ],
+        ),
+        "3D000" => advice(
+            "資料庫不存在",
+            "連線設定裡的資料庫不存在。",
+            &["在連線設定改成正確的資料庫名稱（預設是 postgres）。"],
+        ),
+        "57014" => advice(
+            "語句被取消",
+            "語句被取消，或超過 statement_timeout。",
+            &["縮小查詢範圍，或用 SET statement_timeout = '5min'; 調整時限。"],
+        ),
+        "40P01" => advice(
+            "死結",
+            "兩個交易互相等待對方鎖住的資料，伺服器中止了其中一個。",
+            &["重新執行；固定各交易更新資料表的順序可以避免。"],
+        ),
+        "53300" => advice(
+            "連線數已滿",
+            "伺服器的連線數到達 max_connections。",
+            &["關掉閒置的連線，或請 DBA 調整上限。"],
+        ),
+        _ => return None,
+    };
+    Some(a)
 }
 
 fn server_advice(code: u16, message: &str) -> Option<Advice> {
@@ -407,6 +507,69 @@ pub fn is_plain_read(stmt: &str) -> bool {
         .any(|w| top.iter().any(|t| is_word(t, w)))
 }
 
+/// [`is_plain_read`] for PostgreSQL, where a data-changing statement can
+/// sit inside a CTE (`WITH d AS (DELETE …) SELECT …`) and some functions
+/// change things even in a SELECT.
+pub fn is_plain_read_pg(stmt: &str) -> bool {
+    if !is_plain_read(stmt) {
+        return false;
+    }
+    let toks = tokens(stmt);
+    let writes = [
+        "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "COPY", "CALL", "DO",
+    ];
+    if toks
+        .iter()
+        .any(|(t, _)| writes.iter().any(|w| is_word(t, w)))
+    {
+        return false;
+    }
+    pg_side_effect_call(stmt).is_none()
+}
+
+/// The first function in `stmt` that changes something or reaches outside
+/// the database even when called from a SELECT, such as
+/// `pg_terminate_backend` or `dblink_exec`.
+pub fn pg_side_effect_call(stmt: &str) -> Option<String> {
+    const PREFIXES: &[&str] = &[
+        "PG_TERMINATE_BACKEND",
+        "PG_CANCEL_BACKEND",
+        "PG_RELOAD_CONF",
+        "PG_ROTATE_LOGFILE",
+        "PG_SWITCH_WAL",
+        "PG_CREATE_",
+        "PG_DROP_",
+        "PG_STAT_RESET",
+        "PG_ADVISORY_",
+        "PG_TRY_ADVISORY_",
+        "PG_READ_",
+        "PG_LS_",
+        "PG_FILE_",
+        "PG_NOTIFY",
+        "PG_SLEEP",
+        "PG_PROMOTE",
+        "PG_REPLICATION_",
+        "PG_LOGICAL_",
+        "PG_IMPORT_",
+        "PG_BACKUP_",
+        "SET_CONFIG",
+        "NEXTVAL",
+        "SETVAL",
+        "DBLINK",
+        "LO_",
+        "QUERY_TO_XML",
+        "TABLE_TO_XML",
+        "CURSOR_TO_XML",
+    ];
+    let toks = tokens(stmt);
+    toks.windows(2).find_map(|w| match (&w[0].0, &w[1].0) {
+        (Tok::Word(name), Tok::Punct('(')) if PREFIXES.iter().any(|p| name.starts_with(p)) => {
+            Some(name.to_lowercase())
+        }
+        _ => None,
+    })
+}
+
 /// Whether the server would run more of `stmt` than a reader sees: a
 /// `/*! … */` (or MariaDB `/*M! … */`) executable comment, which the server
 /// runs as code, or a `;` that starts another statement (possible after a
@@ -472,6 +635,35 @@ pub fn has_hidden_statements(stmt: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod pg_tests {
+    use super::*;
+
+    #[test]
+    fn postgres_reads() {
+        assert!(is_plain_read_pg("SELECT * FROM t WHERE a = 1"));
+        assert!(is_plain_read_pg("SHOW search_path"));
+        assert!(!is_plain_read_pg(
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"
+        ));
+        assert!(!is_plain_read_pg("SELECT pg_terminate_backend(123)"));
+        assert!(!is_plain_read_pg("select nextval('s')"));
+        assert!(!is_plain_read_pg("EXPLAIN ANALYZE SELECT 1"));
+        assert!(!is_plain_read_pg("SELECT * FROM t FOR UPDATE"));
+        assert!(is_plain_read_pg("SELECT update_time, deleted FROM t"));
+    }
+
+    #[test]
+    fn postgres_advice_by_state() {
+        let e = CoreError::Postgres {
+            state: "42P01".into(),
+            message: "relation \"users\" does not exist".into(),
+        };
+        let a = error_advice(&e).unwrap();
+        assert!(a.explanation.contains("users"));
+    }
 }
 
 // ---------- Pre-run checks ----------
@@ -763,8 +955,17 @@ const INDEX_BREAKERS: &[&str] = &[
 
 /// Checks each statement of `sql` before it runs.
 pub fn check_sql(sql: &str) -> Vec<Finding> {
+    check_statements(&split_statements(sql))
+}
+
+/// [`check_sql`] for PostgreSQL text (split the way `psql` does).
+pub fn check_sql_pg(sql: &str) -> Vec<Finding> {
+    check_statements(&crate::split::split_statements_pg(sql))
+}
+
+fn check_statements(statements: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
-    for (i, stmt) in split_statements(sql).iter().enumerate() {
+    for (i, stmt) in statements.iter().enumerate() {
         let toks = tokens(stmt);
         let mut add = |level, rule, message: String, suggestion: &str| {
             out.push(Finding {

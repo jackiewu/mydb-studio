@@ -14,8 +14,9 @@ use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::transfer;
 use mydb_core::{
     AnySession, AppSettings, ColumnDef, ConnectionKind, ConnectionProfile, CoreError,
-    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext,
-    RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, Store, TableInfo,
+    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PgSession, PinnedTab,
+    RecordContext, RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, SqlSession,
+    Store, TableInfo,
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -58,20 +59,33 @@ impl AppState {
             .ok_or_else(|| CoreError::NotConnected { id: id.to_string() })
     }
 
-    /// A MySQL session; SQL commands refuse Redis ones.
+    /// A MySQL session, for the MySQL-only pages (server, schema).
     async fn session(&self, id: &str) -> Result<Arc<Session>> {
         match self.any_session(id).await? {
             AnySession::Mysql(s) => Ok(s),
             AnySession::Redis(_) => Err(CoreError::Config {
                 message: "這是 Redis 連線，不能執行 SQL。".into(),
             }),
+            AnySession::Postgres(_) => Err(CoreError::Config {
+                message: "這個功能目前只支援 MySQL / MariaDB。".into(),
+            }),
         }
+    }
+
+    /// A session that runs SQL (MySQL or PostgreSQL); refuses Redis.
+    async fn sql(&self, id: &str) -> Result<SqlSession> {
+        self.any_session(id)
+            .await?
+            .sql()
+            .ok_or_else(|| CoreError::Config {
+                message: "這是 Redis 連線，不能執行 SQL。".into(),
+            })
     }
 
     async fn redis(&self, id: &str) -> Result<Arc<RedisSession>> {
         match self.any_session(id).await? {
             AnySession::Redis(s) => Ok(s),
-            AnySession::Mysql(_) => Err(CoreError::Config {
+            _ => Err(CoreError::Config {
                 message: "這不是 Redis 連線。".into(),
             }),
         }
@@ -83,6 +97,9 @@ async fn connect(profile: &ConnectionProfile) -> Result<AnySession> {
     Ok(match profile.kind {
         ConnectionKind::Mysql => AnySession::Mysql(Arc::new(Session::connect(profile).await?)),
         ConnectionKind::Redis => AnySession::Redis(Arc::new(RedisSession::connect(profile).await?)),
+        ConnectionKind::Postgres => {
+            AnySession::Postgres(Arc::new(PgSession::connect(profile).await?))
+        }
     })
 }
 
@@ -285,6 +302,17 @@ pub async fn list_server_databases(
         database: None,
         ..profile
     };
+    if profile.kind == ConnectionKind::Postgres {
+        // PostgreSQL needs a database to connect to; `postgres` is always there.
+        let profile = ConnectionProfile {
+            database: Some("postgres".into()),
+            ..profile
+        };
+        let session = PgSession::connect(&profile).await?;
+        let names = session.list_server_databases().await;
+        session.close().await;
+        return names;
+    }
     let session = Session::connect(&profile).await?;
     let names = session
         .list_databases()
@@ -337,6 +365,7 @@ pub async fn open_session(
     let info = session.info().clone();
     let (current_database, redis_db) = match &session {
         AnySession::Mysql(s) => (s.current_database(), None),
+        AnySession::Postgres(s) => (s.current_database(), None),
         AnySession::Redis(s) => (None, Some(s.current_db())),
     };
 
@@ -424,8 +453,20 @@ pub async fn ai_running(state: State<'_, AppState>) -> Result<bool> {
 
 /// Checks SQL before it runs: risky statements and slow patterns.
 #[tauri::command]
-pub fn check_sql(sql: String) -> Vec<Finding> {
-    advisor::check_sql(&sql)
+pub fn check_sql(sql: String, postgres: Option<bool>) -> Vec<Finding> {
+    if postgres.unwrap_or(false) {
+        advisor::check_sql_pg(&sql)
+    } else {
+        advisor::check_sql(&sql)
+    }
+}
+
+fn check_for(session: &SqlSession, sql: &str) -> Vec<Finding> {
+    if session.is_postgres() {
+        advisor::check_sql_pg(sql)
+    } else {
+        advisor::check_sql(sql)
+    }
 }
 
 #[tauri::command]
@@ -438,7 +479,7 @@ pub async fn execute(
     record: Option<bool>,
 ) -> Result<ExecuteResponse> {
     state.lock.ensure_unlocked()?;
-    let session = state.session(&session_id).await?;
+    let session = state.sql(&session_id).await?;
     let outcome = session
         .execute_limited(
             &sql,
@@ -453,7 +494,7 @@ pub async fn execute(
         .record_forced(&session.profile().id)?;
     let record_id = if forced || record.unwrap_or(false) {
         let p = session.profile();
-        let rec = ExecutionRecord::from_outcome(
+        let mut rec = ExecutionRecord::from_outcome(
             RecordContext {
                 connection_id: &p.id,
                 connection_name: &p.name,
@@ -464,6 +505,7 @@ pub async fn execute(
             &sql,
             &outcome,
         );
+        rec.connection_kind = p.kind;
         Some(state.store.lock().unwrap().insert_record(&rec)?)
     } else {
         None
@@ -475,7 +517,7 @@ pub async fn execute(
         .and_then(advisor::error_advice);
     Ok(ExecuteResponse {
         advice,
-        findings: advisor::check_sql(&sql)
+        findings: check_for(&session, &sql)
             .into_iter()
             // The automatic LIMIT already covers it.
             .filter(|f| !(auto_limit > Some(0) && f.rule == "select_all_rows"))
@@ -738,7 +780,7 @@ pub async fn ai_context(
         ..Default::default()
     };
     let session = match session_id {
-        Some(id) => state.session(&id).await.ok(),
+        Some(id) => state.sql(&id).await.ok(),
         None => None,
     };
     let Some(session) = session else {
@@ -775,7 +817,7 @@ pub async fn ai_context(
         Some(e) => Some(e),
         None => {
             let mut plans = Vec::new();
-            for stmt in mydb_core::split::split_statements(&sql).iter().take(3) {
+            for stmt in session.split(&sql).iter().take(3) {
                 let head = stmt.trim_start().to_uppercase();
                 if !(head.starts_with("SELECT") || head.starts_with("WITH")) {
                     continue;
@@ -892,7 +934,7 @@ pub async fn list_databases(
     session_id: String,
 ) -> Result<Vec<DatabaseInfo>> {
     state.lock.ensure_unlocked()?;
-    state.session(&session_id).await?.list_databases().await
+    state.sql(&session_id).await?.list_databases().await
 }
 
 #[tauri::command]
@@ -902,11 +944,7 @@ pub async fn list_tables(
     database: String,
 ) -> Result<Vec<TableInfo>> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .list_tables(&database)
-        .await
+    state.sql(&session_id).await?.list_tables(&database).await
 }
 
 #[tauri::command]
@@ -916,11 +954,7 @@ pub async fn use_database(
     database: String,
 ) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .use_database(&database)
-        .await
+    state.sql(&session_id).await?.use_database(&database).await
 }
 
 /// Table names per database, for autocomplete.
@@ -930,7 +964,7 @@ pub async fn list_all_tables(
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
     state.lock.ensure_unlocked()?;
-    state.session(&session_id).await?.list_all_tables().await
+    state.sql(&session_id).await?.list_all_tables().await
 }
 
 #[tauri::command]
@@ -940,11 +974,7 @@ pub async fn list_columns(
     database: String,
 ) -> Result<Vec<ColumnDef>> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .list_columns(&database)
-        .await
+    state.sql(&session_id).await?.list_columns(&database).await
 }
 
 #[tauri::command]
@@ -1143,7 +1173,7 @@ pub async fn show_create_table(
 ) -> Result<String> {
     state.lock.ensure_unlocked()?;
     state
-        .session(&session_id)
+        .sql(&session_id)
         .await?
         .show_create_table(Some(&database), &table)
         .await
@@ -1230,6 +1260,7 @@ pub async fn schema_apply(
 pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<bool> {
     match state.any_session(&session_id).await? {
         AnySession::Mysql(s) => s.cancel().await,
+        AnySession::Postgres(s) => s.cancel().await,
         AnySession::Redis(s) => Ok(s.cancel()),
     }
 }
@@ -1247,6 +1278,7 @@ pub async fn session_ping(state: State<'_, AppState>, session_id: String) -> Res
 pub async fn idle_timeout(state: State<'_, AppState>, session_id: String) -> Result<Option<u64>> {
     match state.any_session(&session_id).await? {
         AnySession::Mysql(s) => s.wait_timeout().await,
+        AnySession::Postgres(s) => s.idle_timeout().await,
         AnySession::Redis(_) => Ok(None),
     }
 }
@@ -1417,12 +1449,14 @@ pub async fn export_query(
     path: String,
 ) -> Result<u64> {
     state.lock.ensure_unlocked()?;
-    if !advisor::is_plain_read(&sql) {
+    let session = state.sql(&session_id).await?;
+    if !session.is_plain_read(&sql) {
         return Err(CoreError::Config {
             message: "只能匯出查詢（SELECT、SHOW 等）的結果，這句會修改資料或鎖定資料列。".into(),
         });
     }
-    let session = state.session(&session_id).await?;
+    let mut options = options;
+    options.postgres = session.is_postgres();
     let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
     let writer = Mutex::new(Some(RowWriter::new(file, options)));
     let streamed = session

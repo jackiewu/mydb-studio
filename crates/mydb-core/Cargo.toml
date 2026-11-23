@@ -9,6 +9,12 @@ mysql_async = { version = "0.37", default-features = false, features = ["default
 # Redis connections. Not the connection-manager feature: reconnecting is done
 # here, so an SSH tunnel can be reopened too.
 redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure"] }
+# PostgreSQL connections. TLS goes through rustls (see pg.rs), not OpenSSL.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 russh = "0.64"
 serde = { version = "1.0.229", features = ["derive"] }

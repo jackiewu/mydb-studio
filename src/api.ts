@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { quoteName } from "./dialect";
 
 // Mirrors of the Rust types in crates/mydb-core. Keep in sync.
 
@@ -25,7 +26,7 @@ export interface SshConfig {
   known_host_fingerprint?: string | null;
 }
 
-export type ConnectionKind = "mysql" | "redis";
+export type ConnectionKind = "mysql" | "redis" | "postgres";
 
 export interface ConnectionProfile {
   id: string;
@@ -128,6 +129,7 @@ export interface StatementResult {
 
 export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
+  | { kind: "postgres"; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
   | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config" | "redis"; message: string }
   | { kind: "not_connected"; id: string }
@@ -600,6 +602,20 @@ export interface PinnedTab {
 }
 
 export function newProfile(kind: ConnectionKind = "mysql"): ConnectionProfile {
+  if (kind === "postgres")
+    return {
+      id: "",
+      name: "",
+      kind: "postgres",
+      host: "127.0.0.1",
+      port: 5432,
+      user: "postgres",
+      password: "",
+      database: "postgres",
+      ssl: { mode: "disabled" },
+      ssh: null,
+      mcp: "read_only",
+    };
   if (kind === "redis")
     return {
       id: "",
@@ -635,7 +651,7 @@ export function serverLabel(p: ConnectionProfile) {
   return p.kind === "redis" && !p.user ? `${p.host}:${p.port}` : `${p.user}@${p.host}:${p.port}`;
 }
 
-export const KIND_LABEL: Record<ConnectionKind, string> = { mysql: "MySQL", redis: "Redis" };
+export const KIND_LABEL: Record<ConnectionKind, string> = { mysql: "MySQL", redis: "Redis", postgres: "PostgreSQL" };
 
 // Redis, mirroring crates/mydb-core/src/redis.
 
@@ -807,6 +823,8 @@ export function describeError(e: unknown): string {
   switch (err?.kind) {
     case "server":
       return `錯誤 ${err.code} (${err.state})：${err.message}`;
+    case "postgres":
+      return `錯誤 ${err.state}：${err.message}`;
     case "host_key_mismatch":
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
     case "connection":
@@ -868,7 +886,7 @@ export const api = {
   listAiChats: () => invoke<AiChatSummary[]>("list_ai_chats"),
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
   deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
-  checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
+  checkSql: (sql: string, postgres = false) => invoke<Finding[]>("check_sql", { sql, postgres }),
   mcpSetup: () => invoke<McpSetup>("mcp_setup"),
   cancelQuery: (sessionId: string) => invoke<boolean>("cancel_query", { sessionId }),
   /** Round trip in ms; null while the connection is busy. Never reconnects. */
@@ -955,5 +973,5 @@ export const api = {
 
 /** Quotes an identifier with backticks. */
 export function quoteIdent(name: string): string {
-  return "`" + name.replace(/`/g, "``") + "`";
+  return quoteName(name);
 }

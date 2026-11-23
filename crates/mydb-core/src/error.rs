@@ -34,6 +34,10 @@ pub enum CoreError {
     Config { message: String },
     #[error("not connected: {id}")]
     NotConnected { id: String },
+    /// An error reported by a PostgreSQL server, with its SQLSTATE. The
+    /// server's DETAIL and HINT lines follow the message.
+    #[error("PostgreSQL error {state}: {message}")]
+    Postgres { state: String, message: String },
     /// An error reply from a Redis server, e.g. `WRONGTYPE …`.
     #[error("Redis error: {message}")]
     Redis { message: String },
@@ -84,6 +88,35 @@ impl From<::redis::RedisError> for CoreError {
                 _ => err.to_string(),
             };
             CoreError::Redis { message }
+        }
+    }
+}
+
+impl From<tokio_postgres::Error> for CoreError {
+    fn from(err: tokio_postgres::Error) -> Self {
+        if let Some(db) = err.as_db_error() {
+            let mut message = db.message().to_string();
+            if let Some(d) = db.detail() {
+                message.push_str(&format!("\nDETAIL: {d}"));
+            }
+            if let Some(h) = db.hint() {
+                message.push_str(&format!("\nHINT: {h}"));
+            }
+            return CoreError::Postgres {
+                state: db.code().code().to_string(),
+                message,
+            };
+        }
+        let text = match std::error::Error::source(&err) {
+            Some(src) => format!("{err}: {src}"),
+            None => err.to_string(),
+        };
+        if err.is_closed()
+            || std::error::Error::source(&err).is_some_and(|s| s.is::<std::io::Error>())
+        {
+            CoreError::Connection { message: text }
+        } else {
+            CoreError::Driver { message: text }
         }
     }
 }

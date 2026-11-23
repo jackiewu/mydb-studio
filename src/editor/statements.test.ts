@@ -34,3 +34,18 @@ test("selections that can start a statement are left alone", () => {
   assert.equal(startsMidStatement("/* note */ UPDATE t SET a = 1"), false);
   assert.equal(startsMidStatement("   "), false);
 });
+
+test("postgres: dollar quotes, nested comments and # are handled", async () => {
+  const { setSqlDialect } = await import("./statements.ts");
+  setSqlDialect("postgres");
+  try {
+    const fn = "CREATE FUNCTION f() RETURNS int AS $$\nBEGIN\n  RETURN 1;\nEND;\n$$ LANGUAGE plpgsql;";
+    const sql = `${fn}\nSELECT 5 # 3; /* a /* b; */ c; */ SELECT 'x\\'; SELECT 2;`;
+    const parts = statementRanges(sql).map((r) => sql.slice(r.from, r.to));
+    // A comment after `;` on the same line stays with that statement.
+    assert.deepEqual(parts, [fn, "SELECT 5 # 3; /* a /* b; */ c; */", "SELECT 'x\\';", "SELECT 2;"]);
+    assert.equal(statementAt(sql, sql.indexOf("RETURN")), fn);
+  } finally {
+    setSqlDialect("mysql");
+  }
+});

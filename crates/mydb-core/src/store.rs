@@ -134,6 +134,7 @@ fn record_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(ExecutionRecord, 
             note: r.get(16)?,
             connection_kind: match r.get::<_, String>(17)?.as_str() {
                 "redis" => ConnectionKind::Redis,
+                "postgres" => ConnectionKind::Postgres,
                 _ => ConnectionKind::Mysql,
             },
         },

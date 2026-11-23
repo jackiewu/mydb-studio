@@ -47,6 +47,7 @@ import { StatusBar, type Problem } from "./components/StatusBar";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
+import { setSqlDialect } from "./dialect";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
 import { useSessionStatus } from "./status/useSessionStatus";
@@ -110,6 +111,9 @@ export default function App() {
   // What ▶ would run; drives its label.
   const [runTarget, setRunTarget] = useState<RunTarget | null>(null);
   const isRedis = session?.kind === "redis";
+  const isPg = session?.kind === "postgres";
+  // Quoting and statement splitting follow the window's connection.
+  setSqlDialect(isPg ? "postgres" : "mysql");
   // Redis: the editor's database (SELECT), the key in the value view, and
   // which of the two the lower panel shows.
   const [redisDb, setRedisDb] = useState(0);
@@ -454,7 +458,7 @@ export default function App() {
 
   const confirmRisk = async (text: string) => {
     if (!settings.confirm_dangerous) return true;
-    const found = isRedis ? api.redisCheck(text) : api.checkSql(text);
+    const found = isRedis ? api.redisCheck(text) : api.checkSql(text, isPg);
     const dangers = (await found.catch(() => [] as Finding[])).filter((f) => f.level === "danger");
     if (dangers.length === 0) return true;
     return new Promise<boolean>((resolve) =>
@@ -799,10 +803,14 @@ export default function App() {
             onShowSystemChange={(show) => updateSettings({ ...settings, show_system_databases: show })}
             onUseDatabase={switchDatabase}
             onOpenTable={openTable}
-            onManage={(database, table) => {
-              setSchemaTarget({ database, table, nonce: Date.now() });
-              setView("schema");
-            }}
+            onManage={
+              isPg
+                ? undefined
+                : (database, table) => {
+                    setSchemaTarget({ database, table, nonce: Date.now() });
+                    setView("schema");
+                  }
+            }
           />
           )}
         </aside>
@@ -824,8 +832,15 @@ export default function App() {
                 </select>
               </label>
             ) : (
-            <label className="db-picker" title="目前資料庫（USE）。左側雙擊資料庫也可以切換。">
-              資料庫
+            <label
+              className="db-picker"
+              title={
+                isPg
+                  ? `目前的 schema（放在 search_path 最前面）。PostgreSQL 一條連線只連一個資料庫：${active.database || "postgres"}；要換資料庫請另建連線。`
+                  : "目前資料庫（USE）。左側雙擊資料庫也可以切換。"
+              }
+            >
+              {isPg ? `${active.database || "postgres"} · Schema` : "資料庫"}
               <select value={currentDb ?? ""} onChange={(e) => e.target.value && switchDatabase(e.target.value)}>
                 {!currentDb && <option value="">（未選擇）</option>}
                 {currentDb && !databaseNames.includes(currentDb) && <option value={currentDb}>{currentDb}</option>}
@@ -838,7 +853,7 @@ export default function App() {
             </label>
             )}
             <span className="spacer" />
-            {!isRedis && (
+            {!isRedis && !isPg && (
               <button
                 className={view === "schema" ? "active" : undefined}
                 onClick={() => setView(view === "schema" ? "main" : "schema")}
@@ -847,6 +862,7 @@ export default function App() {
                 🗂 結構
               </button>
             )}
+            {!isPg && (
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
@@ -854,6 +870,7 @@ export default function App() {
             >
               🖥 伺服器
             </button>
+            )}
             {view === "server" || view === "schema" ? (
               <button className="primary" onClick={() => setView("main")}>
                 ← 回到編輯器
@@ -1115,6 +1132,7 @@ export default function App() {
                   active={t.key === tab?.key}
                   initialValue={t.sql}
                   mariadb={isMaria}
+                  postgres={isPg}
                   schema={settings.schema_autocomplete ? schema.namespace : null}
                   defaultSchema={currentDb}
                   theme={editorTheme(settings.editor_theme, systemDark)}

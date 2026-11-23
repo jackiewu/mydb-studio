@@ -1,5 +1,6 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Cell, ColumnInfo } from "./api";
+import { quoteName, sqlDialect } from "./dialect";
 
 export type CopyFormat = "tsv" | "csv" | "json" | "insert" | "insert_batch" | "markdown";
 
@@ -19,7 +20,8 @@ export interface Block {
 }
 
 // Driver type names (see session.rs) that hold numbers and need no quotes.
-const NUMERIC = new Set(["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "FLOAT", "DOUBLE", "DECIMAL", "NEWDECIMAL", "YEAR", "BIT"]);
+// PostgreSQL's names (see pg.rs) are lower case.
+const NUMERIC = new Set(["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "FLOAT", "DOUBLE", "DECIMAL", "NEWDECIMAL", "YEAR", "BIT", "int2", "int4", "int8", "oid", "float4", "float8", "numeric"]);
 
 /**
  * Text that starts like a formula (=, +, -, @, tab, CR) gets a leading ', so a
@@ -47,21 +49,23 @@ function sqlValue(v: Cell, col: ColumnInfo) {
   if (NUMERIC.has(col.type_name) && /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i.test(v)) return v;
   // Binary cells arrive as 0x hex (see to_json in session.rs).
   if (/BLOB|STRING/.test(col.type_name) && /^0x[0-9A-F]+$/.test(v)) return v;
+  // PostgreSQL strings take no backslash escapes.
+  if (sqlDialect() === "postgres") return `'${v.replace(/'/g, "''")}'`;
   return `'${v.replace(/\\/g, "\\\\").replace(/'/g, "''").replace(/\n/g, "\\n").replace(/\r/g, "\\r")}'`;
 }
 
-const INTEGER = new Set(["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "YEAR"]);
+const INTEGER = new Set(["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "YEAR", "int2", "int4", "int8", "oid"]);
 
 /** Integers and floats as JSON numbers; DECIMAL stays a string to keep its exact digits. */
 function jsonValue(v: Cell, col: ColumnInfo) {
   if (typeof v !== "string") return v;
   if (INTEGER.has(col.type_name) && /^-?\d+$/.test(v) && Number.isSafeInteger(Number(v))) return Number(v);
-  if ((col.type_name === "FLOAT" || col.type_name === "DOUBLE") && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  if (["FLOAT", "DOUBLE", "float4", "float8"].includes(col.type_name) && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
   return v;
 }
 
 function ident(name: string) {
-  return "`" + name.replace(/`/g, "``") + "`";
+  return quoteName(name);
 }
 
 /** Table the columns come from, when they all come from one. */

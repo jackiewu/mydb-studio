@@ -179,6 +179,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
         >
           <option value="">所有類型</option>
           <option value="mysql">MySQL / MariaDB</option>
+          <option value="postgres">PostgreSQL</option>
           <option value="redis">Redis</option>
         </select>
         <select value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
