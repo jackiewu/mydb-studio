@@ -1052,7 +1052,9 @@ mod tests {
             grant.body,
             "GRANT ${SELECT, INSERT, UPDATE, DELETE} ON ${db}.${*} TO '${user}'@'${%}';"
         );
-        for prefix in ["cuser", "newuser", "revoke", "grants", "pwd", "duser", "users"] {
+        for prefix in [
+            "cuser", "newuser", "revoke", "grants", "pwd", "duser", "users",
+        ] {
             assert!(seeded.iter().any(|s| s.prefix == prefix), "{prefix}");
         }
 
@@ -1079,7 +1081,10 @@ mod tests {
     fn account_snippets_keep_prefixes_already_in_use() {
         let mut store = Store::open_in_memory().unwrap();
         // As if the database was at version 8 with a snippet of its own on "grant".
-        store.db.execute_batch("DELETE FROM snippets WHERE prefix != 'sel'").unwrap();
+        store
+            .db
+            .execute_batch("DELETE FROM snippets WHERE prefix != 'sel'")
+            .unwrap();
         store
             .db
             .execute(
