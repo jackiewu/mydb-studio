@@ -680,8 +680,8 @@ impl PgSession {
         }
     }
 
-    /// Typed query over the live connection, for the catalog lookups here.
-    async fn query(
+    /// Typed query over the live connection, for catalog lookups.
+    pub(crate) async fn query(
         &self,
         sql: &str,
         params: &[&(dyn tokio_postgres::types::ToSql + Sync)],

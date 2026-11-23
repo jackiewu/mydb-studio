@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
-use mydb_core::ddl;
 use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
@@ -18,6 +17,7 @@ use mydb_core::{
     RecordContext, RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, SqlSession,
     Store, TableInfo,
 };
+use mydb_core::{ddl, pg_ddl};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -1133,13 +1133,24 @@ pub async fn admin_apply(
     admin::apply(&*state.session(&session_id).await?, &change).await
 }
 
+/// Runs a schema-management call on the `ddl` (MySQL) or `pg_ddl`
+/// (PostgreSQL) module, whichever fits the session.
+macro_rules! schema {
+    ($state:ident, $id:ident, $s:ident => $f:ident($($arg:expr),*)) => {
+        match $state.sql(&$id).await? {
+            SqlSession::Mysql($s) => ddl::$f($($arg),*).await,
+            SqlSession::Postgres($s) => pg_ddl::$f($($arg),*).await,
+        }
+    };
+}
+
 #[tauri::command]
 pub async fn schema_meta(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<ddl::SchemaMeta> {
     state.lock.ensure_unlocked()?;
-    ddl::meta(&*state.session(&session_id).await?).await
+    schema!(state, session_id, s => meta(&s))
 }
 
 #[tauri::command]
@@ -1149,7 +1160,7 @@ pub async fn database_options(
     database: String,
 ) -> Result<ddl::DatabaseOptions> {
     state.lock.ensure_unlocked()?;
-    ddl::database_options(&*state.session(&session_id).await?, &database).await
+    schema!(state, session_id, s => database_options(&s, &database))
 }
 
 #[tauri::command]
@@ -1160,7 +1171,7 @@ pub async fn table_design(
     table: String,
 ) -> Result<ddl::TableDesign> {
     state.lock.ensure_unlocked()?;
-    ddl::table_design(&*state.session(&session_id).await?, &database, &table).await
+    schema!(state, session_id, s => table_design(&s, &database, &table))
 }
 
 /// `SHOW CREATE TABLE` (or VIEW) text.
@@ -1186,7 +1197,7 @@ pub async fn schema_objects(
     database: String,
 ) -> Result<ddl::ObjectList> {
     state.lock.ensure_unlocked()?;
-    ddl::objects(&*state.session(&session_id).await?, &database).await
+    schema!(state, session_id, s => objects(&s, &database))
 }
 
 #[tauri::command]
@@ -1198,7 +1209,7 @@ pub async fn object_definition(
     name: String,
 ) -> Result<ddl::ObjectDefinition> {
     state.lock.ensure_unlocked()?;
-    ddl::definition(&*state.session(&session_id).await?, &database, kind, &name).await
+    schema!(state, session_id, s => definition(&s, &database, kind, &name))
 }
 
 /// The statements a schema change would run, for the user to confirm.
@@ -1209,7 +1220,7 @@ pub async fn schema_plan(
     change: ddl::SchemaChange,
 ) -> Result<ddl::DdlPlan> {
     state.lock.ensure_unlocked()?;
-    ddl::plan(&*state.session(&session_id).await?, &change).await
+    schema!(state, session_id, s => plan(&s, &change))
 }
 
 #[derive(Serialize)]
@@ -1231,8 +1242,11 @@ pub async fn schema_apply(
     change: ddl::SchemaChange,
 ) -> Result<SchemaApplied> {
     state.lock.ensure_unlocked()?;
-    let session = state.session(&session_id).await?;
-    let run = ddl::apply(&session, &change).await?;
+    let session = state.sql(&session_id).await?;
+    let run = match &session {
+        SqlSession::Mysql(s) => ddl::apply(s, &change).await?,
+        SqlSession::Postgres(s) => pg_ddl::apply(s, &change).await?,
+    };
     let p = session.profile();
     let mut rec = ExecutionRecord::from_outcome(
         RecordContext {
@@ -1246,6 +1260,7 @@ pub async fn schema_apply(
         &run.outcome,
     );
     rec.note = run.note;
+    rec.connection_kind = p.kind;
     let record_id = state.store.lock().unwrap().insert_record(&rec).ok();
     Ok(SchemaApplied {
         statements: run.outcome.results.iter().map(|r| r.sql.clone()).collect(),

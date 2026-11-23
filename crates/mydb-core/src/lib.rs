@@ -9,6 +9,7 @@ pub mod ddl;
 pub mod error;
 pub mod export;
 pub mod pg;
+pub mod pg_ddl;
 pub mod profile;
 pub mod records;
 pub mod redis;
