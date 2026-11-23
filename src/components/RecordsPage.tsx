@@ -62,6 +62,16 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "csv", label: "CSV (.csv)" },
 ];
 
+/** What the report dialog starts with, and what the quick buttons use. */
+const DEFAULT_TITLE = "SQL 執行報表";
+const quickOptions = (format: ReportFormat): ReportOptions => ({
+  format,
+  title: DEFAULT_TITLE,
+  include_results: true,
+  max_result_rows: 20,
+  hide_connection: true,
+});
+
 export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const [connectionId, setConnectionId] = useState("");
   const [kind, setKind] = useState<ConnectionKind | "">("");
@@ -87,6 +97,32 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const copySql = async (sql: string, what = "SQL") => {
     await copyText(sql);
     setToast(`已複製 ${what}`);
+  };
+
+  /** Copies one record's report as Markdown, skipping the report dialog. */
+  const copyMarkdown = async (id: number) => {
+    try {
+      await copyText(await api.generateReport([id], quickOptions("markdown")));
+      setToast("已複製 Markdown 報表");
+    } catch (e) {
+      setMessage({ ok: false, text: describeError(e) });
+    }
+  };
+
+  /** Saves one record's report as PDF in Downloads, skipping the report dialog. */
+  const [savingPdf, setSavingPdf] = useState(false);
+  const downloadPdf = async (id: number) => {
+    if (savingPdf) return;
+    setSavingPdf(true);
+    try {
+      const html = await api.generateReport([id], quickOptions("html"));
+      const path = await api.saveReportPdf(html, `sql-report-${id}`);
+      if (path) setMessage({ ok: true, text: `PDF 已儲存到 ${path}` });
+    } catch (e) {
+      setMessage({ ok: false, text: describeError(e) });
+    } finally {
+      setSavingPdf(false);
+    }
   };
 
   const filter: RecordFilter = {
@@ -179,6 +215,7 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
         >
           <option value="">所有類型</option>
           <option value="mysql">MySQL / MariaDB</option>
+          <option value="postgres">PostgreSQL</option>
           <option value="redis">Redis</option>
         </select>
         <select value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
@@ -254,6 +291,8 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
                           label: "用這筆產生報表…",
                           onClick: () => setReportIds([r.id]),
                         },
+                        { label: "複製 Markdown 報表", onClick: () => copyMarkdown(r.id) },
+                        { label: "下載 PDF 報表", onClick: () => downloadPdf(r.id) },
                         ...(r.error_message
                           ? [{ label: "複製錯誤訊息", onClick: () => copySql(r.error_message ?? "", "錯誤訊息") }]
                           : []),
@@ -321,6 +360,16 @@ export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
             <div className="row-actions">
               <button onClick={() => copySql(detail.sql)}>複製 SQL</button>
               <button onClick={() => onOpenInEditor(detail)}>在編輯器中開啟</button>
+              <button title="用預設選項（隱藏連線資訊、含查詢結果）產生報表並複製 Markdown" onClick={() => copyMarkdown(detail.id)}>
+                複製 MD
+              </button>
+              <button
+                title="用預設選項（隱藏連線資訊、含查詢結果）產生報表，存成 PDF 到「下載」資料夾"
+                disabled={savingPdf}
+                onClick={() => downloadPdf(detail.id)}
+              >
+                {savingPdf ? "產生中…" : "下載 PDF"}
+              </button>
             </div>
 
             {detail.error_message && (
@@ -416,7 +465,7 @@ function ReportDialog({
 }) {
   const [format, setFormat] = useState<ExportFormat>("markdown");
   const [hideConnection, setHideConnection] = useState(true);
-  const [title, setTitle] = useState("SQL 執行報表");
+  const [title, setTitle] = useState(DEFAULT_TITLE);
   const [includeResults, setIncludeResults] = useState(true);
   const [preview, setPreview] = useState("");
   const [error, setError] = useState<string | null>(null);

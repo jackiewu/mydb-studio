@@ -488,6 +488,7 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .copyable { cursor: copy; }
 .copyable:hover { outline: 1px dashed var(--accent); outline-offset: -1px; }
 .row-actions { display: flex; gap: 8px; }
+.record-detail .row-actions { flex-wrap: wrap; }
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
   padding: 6px 14px; border-radius: 6px; font-size: 13px;
@@ -746,6 +747,7 @@ button.ai-ask { margin-left: 8px; }
 /* Redis */
 .badge.kind-mysql { color: var(--accent); }
 .badge.kind-redis { color: #d1453b; }
+.badge.kind-postgres { color: #336791; }
 .sidebar-head .badge { margin-left: auto; }
 .kind-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0 16px; }
 .kind-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px; text-align: left; height: auto; }
@@ -912,3 +914,14 @@ td.row-actions button + button { margin-left: 4px; }
 .loading-state.inline { display: inline-flex; padding: 0; font-size: 12px; }
 .loading-state .loading-slow { flex-basis: 100%; }
 .error-box.load-error button { margin-top: 6px; }
+
+/* PostgreSQL server page: privilege checkboxes in a wrapping row. */
+.pg-priv-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 6px 0;
+}
+.pg-priv-checks label.check {
+  margin: 0;
+}

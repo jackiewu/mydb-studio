@@ -1,7 +1,7 @@
 // Run with `npm test` (Node's own test runner; Node 22 strips the types).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultSql, indexName, moveColumn, newColumn, newTable, removeColumn, renameColumn } from "./ddl.ts";
+import { defaultSql, objectTemplate, indexName, moveColumn, newColumn, newTable, removeColumn, renameColumn } from "./ddl.ts";
 
 function table() {
   const t = newTable("InnoDB", "utf8mb4", null);
@@ -70,4 +70,15 @@ test("moves stay in range and index names stay unique", () => {
   assert.equal(moveColumn(t, 0, -1), t);
   assert.equal(indexName(t, "unique", ["email"]), "uq_email_2");
   assert.equal(indexName(t, "index", ["team_id"]), "idx_team_id");
+});
+
+test("PostgreSQL defaults, new tables and templates", () => {
+  assert.equal(defaultSql("a\\b", "text", true), "'a\\b'");
+  assert.equal(defaultSql("a\\b", "text"), "'a\\\\b'");
+  assert.equal(defaultSql("now()", "timestamptz", true), "now()");
+  assert.equal(defaultSql("true", "boolean", true), "true");
+  assert.equal(newTable(null, null, null, true).columns[0].column_type, "bigint");
+  const fn = objectTemplate("function", ["t"], true);
+  assert.match(fn, /\$\$/);
+  assert.match(objectTemplate("view", ['my "t"'], true), /FROM "my ""t"""/);
 });

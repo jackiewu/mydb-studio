@@ -56,6 +56,28 @@ const CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
   },
 ];
 
+/** TLS presets for managed PostgreSQL. */
+const PG_CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
+  {
+    value: "aws",
+    label: "AWS RDS / Aurora PostgreSQL",
+    mode: "verify_identity",
+    hint: "已套用 app 內建的 AWS RDS CA（所有區域）。「主機」請填 RDS 的 endpoint（xxx.rds.amazonaws.com），不要填 IP。RDS PostgreSQL 15 起預設要求 SSL（rds.force_ssl）。",
+  },
+  {
+    value: "gcp",
+    label: "Google Cloud SQL for PostgreSQL",
+    mode: "verify_ca",
+    hint: "到 Cloud SQL 主控台 → 連線 → 安全性，下載伺服器 CA（server-ca.pem），在下面選這個檔案。用 IP 連線所以不驗證主機名稱。",
+  },
+  {
+    value: "azure",
+    label: "Azure Database for PostgreSQL",
+    mode: "verify_identity",
+    hint: "憑證由 DigiCert 簽發，app 內建的根憑證就能驗證，CA 欄位留空即可。「主機」填 xxx.postgres.database.azure.com。",
+  },
+];
+
 /** TLS presets for managed Redis. */
 const REDIS_CLOUDS: { value: Cloud; label: string; mode: SslMode; hint: string }[] = [
   {
@@ -132,7 +154,8 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
     ) : null;
   const [choosing, setChoosing] = useState(!initial.id && !initial.kind);
   const redis = p.kind === "redis";
-  const clouds = redis ? REDIS_CLOUDS : CLOUDS;
+  const pg = p.kind === "postgres";
+  const clouds = redis ? REDIS_CLOUDS : pg ? PG_CLOUDS : CLOUDS;
   const [tab, setTab] = useState<Tab>("general");
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -253,6 +276,10 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <strong>MySQL / MariaDB</strong>
             <span className="muted">SQL 編輯器、資料表瀏覽、Explain、伺服器管理</span>
           </button>
+          <button type="button" className="kind-choice" onClick={() => (setP(newProfile("postgres")), setChoosing(false))}>
+            <strong>PostgreSQL</strong>
+            <span className="muted">SQL 編輯器、schema 與資料表瀏覽、Explain</span>
+          </button>
           <button type="button" className="kind-choice" onClick={() => (setP(newProfile("redis")), setChoosing(false))}>
             <strong>Redis</strong>
             <span className="muted">Key 瀏覽（SCAN）、值的檢視、指令列</span>
@@ -372,7 +399,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
           ) : (
           <>
           <div className="field-group db-field">
-            <span>預設資料庫（選填）</span>
+            <span>{pg ? "資料庫" : "預設資料庫（選填）"}</span>
             <div className="input-with-button">
               <input
                 value={p.database ?? ""}
@@ -407,6 +434,11 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             {dbList?.error && <span className="field-note bad">讀不到資料庫清單：{dbList.error}</span>}
             {dbList && !dbList.error && (
               <span className="field-note">伺服器上有 {dbList.names.length} 個資料庫，點輸入框就能選。</span>
+            )}
+            {pg && (
+              <span className="field-note">
+                PostgreSQL 一條連線只連一個資料庫（空白時用 postgres）；連線後左側列出它的 schema。
+              </span>
             )}
           </div>
           <label>
@@ -517,7 +549,7 @@ export function ConnectionForm({ initial, onSaved, onCancel, onDelete }: Props) 
             <>
               <p className="hint">
                 上方「主機」與「埠號」是從跳板機看出去的{redis ? " Redis " : "資料庫"}位址，例如{" "}
-                {redis ? "127.0.0.1:6379 或 ElastiCache 的 endpoint" : "127.0.0.1:3306"}。使用 TLS 時會用這個主機名稱驗證憑證。
+                {redis ? "127.0.0.1:6379 或 ElastiCache 的 endpoint" : pg ? "127.0.0.1:5432 或 RDS 的 endpoint" : "127.0.0.1:3306"}。使用 TLS 時會用這個主機名稱驗證憑證。
               </p>
               <div className="row">
                 {p.iap ? (

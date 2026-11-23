@@ -190,7 +190,7 @@ export function Home(props: Props) {
   const [text, setText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useChoice<SortBy>("mydb.home.sort", ["name", "recent"], "recent");
-  const [kind, setKind] = useChoice<KindFilter>("mydb.home.kind", ["all", "mysql", "redis"], "all");
+  const [kind, setKind] = useChoice<KindFilter>("mydb.home.kind", ["all", "mysql", "postgres", "redis"], "all");
   const [grouped, setGrouped] = useChoice<"yes" | "no">("mydb.home.grouped", ["yes", "no"], "no");
 
   const kindOf = (c: ConnectionProfile) => c.kind ?? "mysql";
@@ -252,7 +252,7 @@ export function Home(props: Props) {
             }}
           />
           <div className="segmented" role="group" aria-label="連線類型">
-            {(["all", "mysql", "redis"] as const).map((k) => (
+            {(["all", "mysql", "postgres", "redis"] as const).map((k) => (
               <button key={k} className={kind === k ? "on" : ""} onClick={() => setKind(k)}>
                 {k === "all" ? `全部 ${connections.length}` : `${KIND_LABEL[k]} ${count(k)}`}
               </button>

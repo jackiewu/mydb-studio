@@ -57,6 +57,7 @@ pub enum ConnectionKind {
     #[default]
     Mysql,
     Redis,
+    Postgres,
 }
 
 impl ConnectionKind {
@@ -64,7 +65,13 @@ impl ConnectionKind {
         match self {
             ConnectionKind::Mysql => "mysql",
             ConnectionKind::Redis => "redis",
+            ConnectionKind::Postgres => "postgres",
         }
+    }
+
+    /// Whether this kind runs SQL (MySQL / MariaDB or PostgreSQL).
+    pub fn is_sql(self) -> bool {
+        self != ConnectionKind::Redis
     }
 }
 
@@ -139,10 +146,20 @@ impl ConnectionProfile {
         }
     }
 
+    /// A PostgreSQL connection with the default port, user and database.
+    pub fn new_postgres(name: impl Into<String>, host: impl Into<String>) -> Self {
+        Self {
+            kind: ConnectionKind::Postgres,
+            port: 5432,
+            database: Some("postgres".into()),
+            ..Self::new(name, host, "postgres")
+        }
+    }
+
     /// Whether AI tools may see and use this connection through MCP. The
     /// MCP server only speaks SQL, so Redis connections are left out.
     pub fn mcp_allowed(&self) -> bool {
-        self.kind == ConnectionKind::Mysql && self.mcp != McpAccess::Off
+        self.kind.is_sql() && self.mcp != McpAccess::Off
     }
 
     /// `user@host:port`, as shown in records.

@@ -31,6 +31,10 @@ pub struct ExportOptions {
     /// Table name for INSERTs; defaults to the columns' table.
     #[serde(default)]
     pub table: Option<String>,
+    /// Write INSERTs for PostgreSQL ("quoted" names, no backslash escapes).
+    /// Set by the app from the connection, not by the UI.
+    #[serde(default, skip)]
+    pub postgres: bool,
 }
 
 /// Rows per statement in [`ExportFormat::InsertBatch`], so a big export
@@ -50,8 +54,18 @@ const NUMERIC: &[&str] = &[
     "NEWDECIMAL",
     "YEAR",
     "BIT",
+    // PostgreSQL type names (see pg.rs).
+    "int2",
+    "int4",
+    "int8",
+    "oid",
+    "float4",
+    "float8",
+    "numeric",
 ];
-const INTEGER: &[&str] = &["TINY", "SHORT", "LONG", "INT24", "LONGLONG", "YEAR"];
+const INTEGER: &[&str] = &[
+    "TINY", "SHORT", "LONG", "INT24", "LONGLONG", "YEAR", "int2", "int4", "int8", "oid",
+];
 
 /// Streams rows into `out` in one format.
 pub struct RowWriter<W: Write> {
@@ -197,15 +211,16 @@ impl<W: Write> RowWriter<W> {
             .filter(|t| !t.is_empty())
             .or_else(|| source_table(&self.columns))
             .unwrap_or_else(|| "table_name".to_string());
-        let names: Vec<String> = self.columns.iter().map(|c| ident(&c.name)).collect();
-        format!("INSERT INTO {} ({})", ident(&table), names.join(", "))
+        let pg = self.options.postgres;
+        let names: Vec<String> = self.columns.iter().map(|c| ident(&c.name, pg)).collect();
+        format!("INSERT INTO {} ({})", ident(&table, pg), names.join(", "))
     }
 
     fn values(&self, values: &[Value]) -> String {
         let cells: Vec<String> = values
             .iter()
             .zip(&self.columns)
-            .map(|(v, c)| sql_value(v, c))
+            .map(|(v, c)| sql_value(v, c, self.options.postgres))
             .collect();
         format!("({})", cells.join(", "))
     }
@@ -280,8 +295,12 @@ fn md_text(s: &str) -> String {
         .replace('\n', " ")
 }
 
-fn ident(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
+fn ident(name: &str, postgres: bool) -> String {
+    if postgres {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    } else {
+        format!("`{}`", name.replace('`', "``"))
+    }
 }
 
 /// `-?\d+(\.\d+)?(e[+-]?\d+)?`
@@ -300,7 +319,7 @@ fn is_number(s: &str) -> bool {
     mantissa_ok && exp_ok
 }
 
-fn sql_value(v: &Value, col: &ColumnInfo) -> String {
+fn sql_value(v: &Value, col: &ColumnInfo, postgres: bool) -> String {
     match v {
         Value::Null => "NULL".into(),
         Value::Number(n) => n.to_string(),
@@ -316,6 +335,10 @@ fn sql_value(v: &Value, col: &ColumnInfo) -> String {
                     .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b));
             if (col.type_name.contains("BLOB") || col.type_name.contains("STRING")) && hex {
                 return s.clone();
+            }
+            if postgres {
+                // Standard strings: only the quote is doubled.
+                return format!("'{}'", s.replace('\'', "''"));
             }
             format!(
                 "'{}'",
@@ -343,7 +366,7 @@ pub fn json_value(v: &Value, col: &ColumnInfo) -> Value {
     {
         return n.into();
     }
-    if (t == "FLOAT" || t == "DOUBLE")
+    if (t == "FLOAT" || t == "DOUBLE" || t == "float4" || t == "float8")
         && let Ok(f) = s.trim().parse::<f64>()
         && f.is_finite()
     {
@@ -394,6 +417,7 @@ mod tests {
                 format,
                 header,
                 table: None,
+                postgres: false,
             },
         );
         w.begin(&cols()).unwrap();

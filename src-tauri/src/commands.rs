@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use mydb_core::admin;
 use mydb_core::advisor::{self, Advice, Finding};
 use mydb_core::ai::{AiChat, AiChatSummary, AiContext, ChatMessage, ServerConfig, TableDdl};
-use mydb_core::ddl;
 use mydb_core::export::{ExportOptions, RowWriter};
 use mydb_core::redis::server::{ClientInfo, CommandStat, RedisOverview, SlowEntry};
 use mydb_core::redis::{self as kv, DbInfo, KeyInfo, KeyName, RedisOutcome, ScanPage, ValuePage};
@@ -14,9 +13,11 @@ use mydb_core::report::{self, ConnectionSecrets, ReportOptions};
 use mydb_core::transfer;
 use mydb_core::{
     AnySession, AppSettings, ColumnDef, ConnectionKind, ConnectionProfile, CoreError,
-    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PinnedTab, RecordContext,
-    RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, Store, TableInfo,
+    DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, ExecutionRecord, PgSession, PinnedTab,
+    RecordContext, RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, SqlSession,
+    Store, TableInfo,
 };
+use mydb_core::{ddl, pg_admin, pg_ddl};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -29,6 +30,8 @@ pub struct AppState {
     /// The report shown in the print window, served by the `mydbreport:`
     /// protocol.
     pub print_html: Mutex<String>,
+    /// The report being saved as PDF, served on `mydbreport:` at `/pdf`.
+    pub pdf_html: Mutex<String>,
     /// The local AI model, started on demand.
     pub ai: mydb_core::ai::AiRuntime,
     pub lock: crate::lock::LockState,
@@ -58,12 +61,34 @@ impl AppState {
             .ok_or_else(|| CoreError::NotConnected { id: id.to_string() })
     }
 
-    /// A MySQL session; SQL commands refuse Redis ones.
+    /// A MySQL session, for the MySQL-only pages (server, schema).
     async fn session(&self, id: &str) -> Result<Arc<Session>> {
         match self.any_session(id).await? {
             AnySession::Mysql(s) => Ok(s),
             AnySession::Redis(_) => Err(CoreError::Config {
                 message: "這是 Redis 連線，不能執行 SQL。".into(),
+            }),
+            AnySession::Postgres(_) => Err(CoreError::Config {
+                message: "這個功能目前只支援 MySQL / MariaDB。".into(),
+            }),
+        }
+    }
+
+    /// A session that runs SQL (MySQL or PostgreSQL); refuses Redis.
+    async fn sql(&self, id: &str) -> Result<SqlSession> {
+        self.any_session(id)
+            .await?
+            .sql()
+            .ok_or_else(|| CoreError::Config {
+                message: "這是 Redis 連線，不能執行 SQL。".into(),
+            })
+    }
+
+    async fn pg(&self, id: &str) -> Result<Arc<PgSession>> {
+        match self.any_session(id).await? {
+            AnySession::Postgres(s) => Ok(s),
+            _ => Err(CoreError::Config {
+                message: "這不是 PostgreSQL 連線。".into(),
             }),
         }
     }
@@ -71,7 +96,7 @@ impl AppState {
     async fn redis(&self, id: &str) -> Result<Arc<RedisSession>> {
         match self.any_session(id).await? {
             AnySession::Redis(s) => Ok(s),
-            AnySession::Mysql(_) => Err(CoreError::Config {
+            _ => Err(CoreError::Config {
                 message: "這不是 Redis 連線。".into(),
             }),
         }
@@ -83,6 +108,9 @@ async fn connect(profile: &ConnectionProfile) -> Result<AnySession> {
     Ok(match profile.kind {
         ConnectionKind::Mysql => AnySession::Mysql(Arc::new(Session::connect(profile).await?)),
         ConnectionKind::Redis => AnySession::Redis(Arc::new(RedisSession::connect(profile).await?)),
+        ConnectionKind::Postgres => {
+            AnySession::Postgres(Arc::new(PgSession::connect(profile).await?))
+        }
     })
 }
 
@@ -285,6 +313,17 @@ pub async fn list_server_databases(
         database: None,
         ..profile
     };
+    if profile.kind == ConnectionKind::Postgres {
+        // PostgreSQL needs a database to connect to; `postgres` is always there.
+        let profile = ConnectionProfile {
+            database: Some("postgres".into()),
+            ..profile
+        };
+        let session = PgSession::connect(&profile).await?;
+        let names = session.list_server_databases().await;
+        session.close().await;
+        return names;
+    }
     let session = Session::connect(&profile).await?;
     let names = session
         .list_databases()
@@ -337,6 +376,7 @@ pub async fn open_session(
     let info = session.info().clone();
     let (current_database, redis_db) = match &session {
         AnySession::Mysql(s) => (s.current_database(), None),
+        AnySession::Postgres(s) => (s.current_database(), None),
         AnySession::Redis(s) => (None, Some(s.current_db())),
     };
 
@@ -424,8 +464,20 @@ pub async fn ai_running(state: State<'_, AppState>) -> Result<bool> {
 
 /// Checks SQL before it runs: risky statements and slow patterns.
 #[tauri::command]
-pub fn check_sql(sql: String) -> Vec<Finding> {
-    advisor::check_sql(&sql)
+pub fn check_sql(sql: String, postgres: Option<bool>) -> Vec<Finding> {
+    if postgres.unwrap_or(false) {
+        advisor::check_sql_pg(&sql)
+    } else {
+        advisor::check_sql(&sql)
+    }
+}
+
+fn check_for(session: &SqlSession, sql: &str) -> Vec<Finding> {
+    if session.is_postgres() {
+        advisor::check_sql_pg(sql)
+    } else {
+        advisor::check_sql(sql)
+    }
 }
 
 #[tauri::command]
@@ -438,7 +490,7 @@ pub async fn execute(
     record: Option<bool>,
 ) -> Result<ExecuteResponse> {
     state.lock.ensure_unlocked()?;
-    let session = state.session(&session_id).await?;
+    let session = state.sql(&session_id).await?;
     let outcome = session
         .execute_limited(
             &sql,
@@ -453,7 +505,7 @@ pub async fn execute(
         .record_forced(&session.profile().id)?;
     let record_id = if forced || record.unwrap_or(false) {
         let p = session.profile();
-        let rec = ExecutionRecord::from_outcome(
+        let mut rec = ExecutionRecord::from_outcome(
             RecordContext {
                 connection_id: &p.id,
                 connection_name: &p.name,
@@ -464,6 +516,7 @@ pub async fn execute(
             &sql,
             &outcome,
         );
+        rec.connection_kind = p.kind;
         Some(state.store.lock().unwrap().insert_record(&rec)?)
     } else {
         None
@@ -475,7 +528,7 @@ pub async fn execute(
         .and_then(advisor::error_advice);
     Ok(ExecuteResponse {
         advice,
-        findings: advisor::check_sql(&sql)
+        findings: check_for(&session, &sql)
             .into_iter()
             // The automatic LIMIT already covers it.
             .filter(|f| !(auto_limit > Some(0) && f.rule == "select_all_rows"))
@@ -568,9 +621,9 @@ pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) ->
 pub const PRINT_WINDOW: &str = "report-print";
 pub const PRINT_PROTOCOL: &str = "mydbreport";
 #[cfg(any(windows, target_os = "android"))]
-const PRINT_URL: &str = "http://mydbreport.localhost/";
+pub const PRINT_URL: &str = "http://mydbreport.localhost/";
 #[cfg(not(any(windows, target_os = "android")))]
-const PRINT_URL: &str = "mydbreport://localhost/";
+pub const PRINT_URL: &str = "mydbreport://localhost/";
 
 /// Writes a generated report to the path the user picked in the save dialog.
 #[tauri::command]
@@ -745,7 +798,7 @@ pub async fn ai_context(
         ..Default::default()
     };
     let session = match session_id {
-        Some(id) => state.session(&id).await.ok(),
+        Some(id) => state.sql(&id).await.ok(),
         None => None,
     };
     let Some(session) = session else {
@@ -782,7 +835,7 @@ pub async fn ai_context(
         Some(e) => Some(e),
         None => {
             let mut plans = Vec::new();
-            for stmt in mydb_core::split::split_statements(&sql).iter().take(3) {
+            for stmt in session.split(&sql).iter().take(3) {
                 let head = stmt.trim_start().to_uppercase();
                 if !(head.starts_with("SELECT") || head.starts_with("WITH")) {
                     continue;
@@ -899,7 +952,7 @@ pub async fn list_databases(
     session_id: String,
 ) -> Result<Vec<DatabaseInfo>> {
     state.lock.ensure_unlocked()?;
-    state.session(&session_id).await?.list_databases().await
+    state.sql(&session_id).await?.list_databases().await
 }
 
 #[tauri::command]
@@ -909,11 +962,7 @@ pub async fn list_tables(
     database: String,
 ) -> Result<Vec<TableInfo>> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .list_tables(&database)
-        .await
+    state.sql(&session_id).await?.list_tables(&database).await
 }
 
 #[tauri::command]
@@ -923,11 +972,7 @@ pub async fn use_database(
     database: String,
 ) -> Result<()> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .use_database(&database)
-        .await
+    state.sql(&session_id).await?.use_database(&database).await
 }
 
 /// Table names per database, for autocomplete.
@@ -937,7 +982,7 @@ pub async fn list_all_tables(
     session_id: String,
 ) -> Result<Vec<(String, String)>> {
     state.lock.ensure_unlocked()?;
-    state.session(&session_id).await?.list_all_tables().await
+    state.sql(&session_id).await?.list_all_tables().await
 }
 
 #[tauri::command]
@@ -947,11 +992,7 @@ pub async fn list_columns(
     database: String,
 ) -> Result<Vec<ColumnDef>> {
     state.lock.ensure_unlocked()?;
-    state
-        .session(&session_id)
-        .await?
-        .list_columns(&database)
-        .await
+    state.sql(&session_id).await?.list_columns(&database).await
 }
 
 #[tauri::command]
@@ -1111,12 +1152,100 @@ pub async fn admin_apply(
 }
 
 #[tauri::command]
+pub async fn pg_server_overview(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<pg_admin::PgOverview> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::overview(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_server_settings(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgSetting>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::settings(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_server_activity(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgActivity>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::activity(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_roles(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgRole>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::roles(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_role_privileges(
+    state: State<'_, AppState>,
+    session_id: String,
+    role: String,
+) -> Result<pg_admin::PgPrivileges> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::privileges(&*state.pg(&session_id).await?, &role).await
+}
+
+#[tauri::command]
+pub async fn pg_top_statements(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<Vec<pg_admin::PgStatement>>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::top_statements(&*state.pg(&session_id).await?).await
+}
+
+/// The statements a PostgreSQL admin change would run, passwords masked.
+#[tauri::command]
+pub async fn pg_admin_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: pg_admin::PgAdminChange,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::plan(&*state.pg(&session_id).await?, &change, true).await
+}
+
+/// Runs a PostgreSQL admin change; not recorded, like [`admin_apply`].
+#[tauri::command]
+pub async fn pg_admin_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: pg_admin::PgAdminChange,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::apply(&*state.pg(&session_id).await?, &change).await
+}
+
+/// Runs a schema-management call on the `ddl` (MySQL) or `pg_ddl`
+/// (PostgreSQL) module, whichever fits the session.
+macro_rules! schema {
+    ($state:ident, $id:ident, $s:ident => $f:ident($($arg:expr),*)) => {
+        match $state.sql(&$id).await? {
+            SqlSession::Mysql($s) => ddl::$f($($arg),*).await,
+            SqlSession::Postgres($s) => pg_ddl::$f($($arg),*).await,
+        }
+    };
+}
+
+#[tauri::command]
 pub async fn schema_meta(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<ddl::SchemaMeta> {
     state.lock.ensure_unlocked()?;
-    ddl::meta(&*state.session(&session_id).await?).await
+    schema!(state, session_id, s => meta(&s))
 }
 
 #[tauri::command]
@@ -1126,7 +1255,7 @@ pub async fn database_options(
     database: String,
 ) -> Result<ddl::DatabaseOptions> {
     state.lock.ensure_unlocked()?;
-    ddl::database_options(&*state.session(&session_id).await?, &database).await
+    schema!(state, session_id, s => database_options(&s, &database))
 }
 
 #[tauri::command]
@@ -1137,7 +1266,7 @@ pub async fn table_design(
     table: String,
 ) -> Result<ddl::TableDesign> {
     state.lock.ensure_unlocked()?;
-    ddl::table_design(&*state.session(&session_id).await?, &database, &table).await
+    schema!(state, session_id, s => table_design(&s, &database, &table))
 }
 
 /// `SHOW CREATE TABLE` (or VIEW) text.
@@ -1150,7 +1279,7 @@ pub async fn show_create_table(
 ) -> Result<String> {
     state.lock.ensure_unlocked()?;
     state
-        .session(&session_id)
+        .sql(&session_id)
         .await?
         .show_create_table(Some(&database), &table)
         .await
@@ -1163,7 +1292,7 @@ pub async fn schema_objects(
     database: String,
 ) -> Result<ddl::ObjectList> {
     state.lock.ensure_unlocked()?;
-    ddl::objects(&*state.session(&session_id).await?, &database).await
+    schema!(state, session_id, s => objects(&s, &database))
 }
 
 #[tauri::command]
@@ -1175,7 +1304,7 @@ pub async fn object_definition(
     name: String,
 ) -> Result<ddl::ObjectDefinition> {
     state.lock.ensure_unlocked()?;
-    ddl::definition(&*state.session(&session_id).await?, &database, kind, &name).await
+    schema!(state, session_id, s => definition(&s, &database, kind, &name))
 }
 
 /// The statements a schema change would run, for the user to confirm.
@@ -1186,7 +1315,7 @@ pub async fn schema_plan(
     change: ddl::SchemaChange,
 ) -> Result<ddl::DdlPlan> {
     state.lock.ensure_unlocked()?;
-    ddl::plan(&*state.session(&session_id).await?, &change).await
+    schema!(state, session_id, s => plan(&s, &change))
 }
 
 #[derive(Serialize)]
@@ -1208,8 +1337,11 @@ pub async fn schema_apply(
     change: ddl::SchemaChange,
 ) -> Result<SchemaApplied> {
     state.lock.ensure_unlocked()?;
-    let session = state.session(&session_id).await?;
-    let run = ddl::apply(&session, &change).await?;
+    let session = state.sql(&session_id).await?;
+    let run = match &session {
+        SqlSession::Mysql(s) => ddl::apply(s, &change).await?,
+        SqlSession::Postgres(s) => pg_ddl::apply(s, &change).await?,
+    };
     let p = session.profile();
     let mut rec = ExecutionRecord::from_outcome(
         RecordContext {
@@ -1223,6 +1355,7 @@ pub async fn schema_apply(
         &run.outcome,
     );
     rec.note = run.note;
+    rec.connection_kind = p.kind;
     let record_id = state.store.lock().unwrap().insert_record(&rec).ok();
     Ok(SchemaApplied {
         statements: run.outcome.results.iter().map(|r| r.sql.clone()).collect(),
@@ -1237,6 +1370,7 @@ pub async fn schema_apply(
 pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<bool> {
     match state.any_session(&session_id).await? {
         AnySession::Mysql(s) => s.cancel().await,
+        AnySession::Postgres(s) => s.cancel().await,
         AnySession::Redis(s) => Ok(s.cancel()),
     }
 }
@@ -1254,6 +1388,7 @@ pub async fn session_ping(state: State<'_, AppState>, session_id: String) -> Res
 pub async fn idle_timeout(state: State<'_, AppState>, session_id: String) -> Result<Option<u64>> {
     match state.any_session(&session_id).await? {
         AnySession::Mysql(s) => s.wait_timeout().await,
+        AnySession::Postgres(s) => s.idle_timeout().await,
         AnySession::Redis(_) => Ok(None),
     }
 }
@@ -1424,12 +1559,14 @@ pub async fn export_query(
     path: String,
 ) -> Result<u64> {
     state.lock.ensure_unlocked()?;
-    if !advisor::is_plain_read(&sql) {
+    let session = state.sql(&session_id).await?;
+    if !session.is_plain_read(&sql) {
         return Err(CoreError::Config {
             message: "只能匯出查詢（SELECT、SHOW 等）的結果，這句會修改資料或鎖定資料列。".into(),
         });
     }
-    let session = state.session(&session_id).await?;
+    let mut options = options;
+    options.postgres = session.is_postgres();
     let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
     let writer = Mutex::new(Some(RowWriter::new(file, options)));
     let streamed = session

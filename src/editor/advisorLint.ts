@@ -13,13 +13,14 @@ const SEVERITY: Record<Finding["level"], Diagnostic["severity"]> = {
  * ones that can destroy data, yellow for likely slow ones. Hovering shows
  * why and what to do instead.
  */
-export function advisorLint(keep: () => (f: Finding) => boolean) {
+export function advisorLint(postgres: () => boolean, keep: () => (f: Finding) => boolean) {
   return linter(
     async (view) => {
       const doc = view.state.doc.toString();
       // The server-side splitter treats DELIMITER blocks differently.
-      if (!doc.trim() || /^\s*delimiter\s/im.test(doc)) return [];
-      const findings = await api.checkSql(doc).catch(() => [] as Finding[]);
+      const pg = postgres();
+      if (!doc.trim() || (!pg && /^\s*delimiter\s/im.test(doc))) return [];
+      const findings = await api.checkSql(doc, pg).catch(() => [] as Finding[]);
       if (view.state.doc.toString() !== doc) return [];
       const ranges = statementRanges(doc);
       return findings.filter(keep()).flatMap((f): Diagnostic[] => {
