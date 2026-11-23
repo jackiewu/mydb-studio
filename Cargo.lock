@@ -2804,6 +2804,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mysql_async",
+ "postgres-protocol",
  "redis",
  "rusqlite",
  "russh",

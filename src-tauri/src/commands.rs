@@ -17,7 +17,7 @@ use mydb_core::{
     RecordContext, RecordFilter, RedisSession, Result, Session, SessionInfo, Snippet, SqlSession,
     Store, TableInfo,
 };
-use mydb_core::{ddl, pg_ddl};
+use mydb_core::{ddl, pg_admin, pg_ddl};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -80,6 +80,15 @@ impl AppState {
             .ok_or_else(|| CoreError::Config {
                 message: "這是 Redis 連線，不能執行 SQL。".into(),
             })
+    }
+
+    async fn pg(&self, id: &str) -> Result<Arc<PgSession>> {
+        match self.any_session(id).await? {
+            AnySession::Postgres(s) => Ok(s),
+            _ => Err(CoreError::Config {
+                message: "這不是 PostgreSQL 連線。".into(),
+            }),
+        }
     }
 
     async fn redis(&self, id: &str) -> Result<Arc<RedisSession>> {
@@ -1131,6 +1140,83 @@ pub async fn admin_apply(
 ) -> Result<Vec<String>> {
     state.lock.ensure_unlocked()?;
     admin::apply(&*state.session(&session_id).await?, &change).await
+}
+
+#[tauri::command]
+pub async fn pg_server_overview(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<pg_admin::PgOverview> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::overview(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_server_settings(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgSetting>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::settings(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_server_activity(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgActivity>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::activity(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_roles(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<pg_admin::PgRole>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::roles(&*state.pg(&session_id).await?).await
+}
+
+#[tauri::command]
+pub async fn pg_role_privileges(
+    state: State<'_, AppState>,
+    session_id: String,
+    role: String,
+) -> Result<pg_admin::PgPrivileges> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::privileges(&*state.pg(&session_id).await?, &role).await
+}
+
+#[tauri::command]
+pub async fn pg_top_statements(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<Vec<pg_admin::PgStatement>>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::top_statements(&*state.pg(&session_id).await?).await
+}
+
+/// The statements a PostgreSQL admin change would run, passwords masked.
+#[tauri::command]
+pub async fn pg_admin_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: pg_admin::PgAdminChange,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::plan(&*state.pg(&session_id).await?, &change, true).await
+}
+
+/// Runs a PostgreSQL admin change; not recorded, like [`admin_apply`].
+#[tauri::command]
+pub async fn pg_admin_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    change: pg_admin::PgAdminChange,
+) -> Result<Vec<String>> {
+    state.lock.ensure_unlocked()?;
+    pg_admin::apply(&*state.pg(&session_id).await?, &change).await
 }
 
 /// Runs a schema-management call on the `ddl` (MySQL) or `pg_ddl`
