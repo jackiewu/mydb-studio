@@ -29,6 +29,8 @@ pub struct AppState {
     /// The report shown in the print window, served by the `mydbreport:`
     /// protocol.
     pub print_html: Mutex<String>,
+    /// The report being saved as PDF, served on `mydbreport:` at `/pdf`.
+    pub pdf_html: Mutex<String>,
     /// The local AI model, started on demand.
     pub ai: mydb_core::ai::AiRuntime,
     pub lock: crate::lock::LockState,
@@ -568,9 +570,9 @@ pub fn print_report(app: AppHandle, state: State<'_, AppState>, html: String) ->
 pub const PRINT_WINDOW: &str = "report-print";
 pub const PRINT_PROTOCOL: &str = "mydbreport";
 #[cfg(any(windows, target_os = "android"))]
-const PRINT_URL: &str = "http://mydbreport.localhost/";
+pub const PRINT_URL: &str = "http://mydbreport.localhost/";
 #[cfg(not(any(windows, target_os = "android")))]
-const PRINT_URL: &str = "mydbreport://localhost/";
+pub const PRINT_URL: &str = "mydbreport://localhost/";
 
 /// Writes a generated report to the path the user picked in the save dialog.
 #[tauri::command]

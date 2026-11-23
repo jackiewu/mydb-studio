@@ -913,6 +913,11 @@ export const api = {
     invoke<string>("generate_report", { ids, options }),
   /** Opens an HTML report in a print window, where it can be saved as PDF. */
   printReport: (html: string) => invoke<void>("print_report", { html }),
+  /**
+   * Saves an HTML report as a PDF in the Downloads folder and returns its
+   * path; null where it opened the print window instead (not macOS).
+   */
+  saveReportPdf: (html: string, name: string) => invoke<string | null>("save_report_pdf", { html, name }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   useDatabase: (sessionId: string, database: string) =>
     invoke<void>("use_database", { sessionId, database }),
