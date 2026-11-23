@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { api, describeError, type AdminChange } from "../../api";
+import { api, describeError, type AdminChange, type PgAdminChange } from "../../api";
 
 interface Props {
   sessionId: string;
   title: string;
-  change: AdminChange;
+  change: AdminChange | PgAdminChange;
+  /** A PostgreSQL change (`PgAdminChange`). */
+  postgres?: boolean;
   /** Shown above the SQL, e.g. what dropping a user means. */
   warning?: string;
   danger?: boolean;
@@ -17,14 +19,17 @@ interface Props {
  * user agrees. The statements are built again on the Rust side when they
  * run, so what is shown is what runs.
  */
-export function PlanDialog({ sessionId, title, change, warning, danger, onDone, onCancel }: Props) {
+export function PlanDialog({ sessionId, title, change, postgres, warning, danger, onDone, onCancel }: Props) {
   const [plan, setPlan] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-    api.adminPlan(sessionId, change).then(setPlan, (e) => setError(describeError(e)));
-  }, [sessionId, change]);
+    const p = postgres
+      ? api.pgAdminPlan(sessionId, change as PgAdminChange)
+      : api.adminPlan(sessionId, change as AdminChange);
+    p.then(setPlan, (e) => setError(describeError(e)));
+  }, [sessionId, change, postgres]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && !running && onCancel();
@@ -36,7 +41,11 @@ export function PlanDialog({ sessionId, title, change, warning, danger, onDone, 
     setRunning(true);
     setError(null);
     try {
-      onDone(await api.adminApply(sessionId, change));
+      onDone(
+        await (postgres
+          ? api.pgAdminApply(sessionId, change as PgAdminChange)
+          : api.adminApply(sessionId, change as AdminChange)),
+      );
     } catch (e) {
       setError(describeError(e));
       setRunning(false);

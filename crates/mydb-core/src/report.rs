@@ -205,7 +205,7 @@ fn markdown(records: &[ExecutionRecord], opts: &ReportOptions, generated_at: &st
         }
         let lang = match r.connection_kind {
             crate::ConnectionKind::Redis => "redis",
-            crate::ConnectionKind::Mysql => "sql",
+            crate::ConnectionKind::Mysql | crate::ConnectionKind::Postgres => "sql",
         };
         out.push_str(&format!("\n```{lang}\n{}\n```\n\n", r.sql));
         if !r.statements.is_empty() {

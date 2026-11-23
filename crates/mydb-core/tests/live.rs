@@ -569,6 +569,7 @@ async fn export_streams_every_row() {
                     format: ExportFormat::Csv,
                     header: true,
                     table: None,
+                    postgres: false,
                 },
             ));
             let n = session

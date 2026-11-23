@@ -6,7 +6,7 @@ export interface Section<T> {
   list: T[];
 }
 
-const KINDS: ConnectionKind[] = ["mysql", "redis"];
+const KINDS: ConnectionKind[] = ["mysql", "postgres", "redis"];
 
 /**
  * The home page's headed lists, in order: favorites first, then the rest.

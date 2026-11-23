@@ -3,7 +3,7 @@ import { EditorView, basicSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { completeFromList, snippet, snippetCompletion } from "@codemirror/autocomplete";
-import { sql, MySQL, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
+import { sql, MySQL, MariaSQL, PostgreSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import { selectAll, toggleComment } from "@codemirror/commands";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Snippet } from "../api";
@@ -39,6 +39,8 @@ function selectionOr(v: EditorView) {
 interface Props {
   initialValue: string;
   mariadb: boolean;
+  /** PostgreSQL syntax, splitting and checks. */
+  postgres?: boolean;
   /** Databases, tables and columns to autocomplete; null turns that off. */
   schema: SchemaMap | null;
   /** Tables of this database complete without a prefix. */
@@ -70,11 +72,12 @@ interface Props {
 
 function language(
   mariadb: boolean,
+  postgres: boolean,
   schema: SchemaMap | null,
   defaultSchema: string | null | undefined,
   needColumns: (db: string) => void,
 ) {
-  const dialect = mariadb ? MariaSQL : MySQL;
+  const dialect = postgres ? PostgreSQL : mariadb ? MariaSQL : MySQL;
   if (!schema) return sql({ dialect, upperCaseKeywords: true });
   const columns = [{ autocomplete: columnSource(schema, defaultSchema, needColumns) }];
   return [
@@ -112,7 +115,7 @@ function look(theme: EditorTheme, fontSize: number) {
 }
 
 export function SqlEditor(props: Props) {
-  const { initialValue, mariadb, schema, defaultSchema, theme, fontSize, snippets, handle } = props;
+  const { initialValue, mariadb, postgres = false, schema, defaultSchema, theme, fontSize, snippets, handle } = props;
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   // Parts that change while the editor is open are swapped in place, so the
@@ -246,11 +249,11 @@ export function SqlEditor(props: Props) {
       extensions: [
         basicSetup,
         multiCursor(),
-        p.language.of(language(mariadb, schema, defaultSchema, needColumns)),
+        p.language.of(language(mariadb, postgres, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
         statementMarks(),
-        advisorLint(() => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
+        advisorLint(() => !!handlers.current.postgres, () => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
         EditorView.domEventHandlers({ contextmenu: contextMenu }),
         Prec.highest(
           keymap.of([
@@ -280,10 +283,10 @@ export function SqlEditor(props: Props) {
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: parts.current.language.reconfigure(language(mariadb, schema, defaultSchema, needColumns)),
+      effects: parts.current.language.reconfigure(language(mariadb, postgres, schema, defaultSchema, needColumns)),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mariadb, schema, defaultSchema]);
+  }, [mariadb, postgres, schema, defaultSchema]);
 
   // Coming back to a tab: re-measure (it was hidden), focus, and say what ▶ runs.
   useEffect(() => {

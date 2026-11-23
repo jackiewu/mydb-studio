@@ -20,6 +20,8 @@ use crate::session::{ExecutionOutcome, Session, TextRows};
 pub struct Flavor {
     pub mariadb: bool,
     pub version: (u32, u32, u32),
+    /// A PostgreSQL server (see [`crate::pg_ddl`]).
+    pub postgres: bool,
 }
 
 impl Flavor {
@@ -33,6 +35,7 @@ impl Flavor {
         Self {
             mariadb: version.to_ascii_lowercase().contains("mariadb"),
             version: (next(), next(), next()),
+            postgres: false,
         }
     }
 
@@ -1997,7 +2000,7 @@ pub fn qualified(database: &str, name: &str) -> String {
     format!("{}.{}", ident(database), ident(name))
 }
 
-fn invalid(message: &str) -> CoreError {
+pub(crate) fn invalid(message: &str) -> CoreError {
     CoreError::Config {
         message: message.to_string(),
     }
@@ -2103,6 +2106,7 @@ mod tests {
         flavor: Flavor {
             mariadb: false,
             version: (8, 0, 36),
+            postgres: false,
         },
     };
     const MARIA: Ctx = Ctx {
@@ -2112,6 +2116,7 @@ mod tests {
         flavor: Flavor {
             mariadb: true,
             version: (10, 11, 6),
+            postgres: false,
         },
     };
 
@@ -2180,7 +2185,8 @@ mod tests {
             Flavor::parse("10.11.6-MariaDB-1:10.11.6+maria~ubu2204"),
             Flavor {
                 mariadb: true,
-                version: (10, 11, 6)
+                version: (10, 11, 6),
+                postgres: false,
             }
         );
         assert_eq!(Flavor::parse("8.0.36").version, (8, 0, 36));
@@ -2263,6 +2269,7 @@ mod tests {
             flavor: Flavor {
                 mariadb: true,
                 version: (10, 3, 0),
+                postgres: false,
             },
             ..MARIA
         };

@@ -8,6 +8,9 @@ pub mod ai;
 pub mod ddl;
 pub mod error;
 pub mod export;
+pub mod pg;
+pub mod pg_admin;
+pub mod pg_ddl;
 pub mod profile;
 pub mod records;
 pub mod redis;
@@ -22,6 +25,7 @@ pub mod transfer;
 pub mod tunnel;
 
 pub use error::{CoreError, Result};
+pub use pg::PgSession;
 pub use profile::{
     ConnectionKind, ConnectionProfile, McpAccess, RecordMode, SshAuth, SshConfig, SslConfig,
     SslMode,
@@ -31,8 +35,8 @@ pub use redis::RedisSession;
 pub use report::{ReportFormat, ReportOptions};
 pub use session::{
     AnySession, ColumnDef, DEFAULT_MAX_ROWS, DatabaseInfo, ExecutionOutcome, Session, SessionInfo,
-    StatementResult, TableInfo, TextRows,
+    SqlSession, StatementResult, TableInfo, TextRows,
 };
 pub use settings::{AppSettings, LOCK_FLAG, PinnedTab, RUNNING_FLAG, Snippet};
-pub use split::split_statements;
+pub use split::{split_statements, split_statements_pg};
 pub use store::Store;
