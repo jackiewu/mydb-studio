@@ -106,6 +106,22 @@ ORDER BY size_mb DESC;');",
     ALTER TABLE pinned_tabs ADD COLUMN file_path TEXT;",
     // 8: records of Redis commands, told apart from SQL
     "ALTER TABLE executions ADD COLUMN connection_kind TEXT NOT NULL DEFAULT 'mysql';",
+    // 9: account snippets (MySQL 8 / MariaDB), skipping prefixes already in use
+    "WITH seed (name, prefix, body) AS (VALUES
+      ('建立使用者', 'cuser', 'CREATE USER ''${user}''@''${%}'' IDENTIFIED BY ''${password}'';'),
+      ('建立使用者並授權', 'newuser', 'CREATE USER ''${user}''@''${%}'' IDENTIFIED BY ''${password}'';
+GRANT ${SELECT, INSERT, UPDATE, DELETE} ON ${db}.${*} TO ''${user}''@''${%}'';
+SHOW GRANTS FOR ''${user}''@''${%}'';'),
+      ('授予權限', 'grant', 'GRANT ${SELECT, INSERT, UPDATE, DELETE} ON ${db}.${*} TO ''${user}''@''${%}'';'),
+      ('收回權限', 'revoke', 'REVOKE ${SELECT, INSERT, UPDATE, DELETE} ON ${db}.${*} FROM ''${user}''@''${%}'';'),
+      ('查看使用者權限', 'grants', 'SHOW GRANTS FOR ''${user}''@''${%}'';'),
+      ('修改密碼', 'pwd', 'ALTER USER ''${user}''@''${%}'' IDENTIFIED BY ''${password}'';'),
+      ('刪除使用者', 'duser', 'DROP USER ''${user}''@''${%}'';'),
+      ('列出使用者', 'users', 'SELECT User, Host FROM mysql.user ORDER BY User, Host;')
+    )
+    INSERT INTO snippets (name, prefix, body)
+    SELECT name, prefix, body FROM seed
+    WHERE prefix NOT IN (SELECT prefix FROM snippets);",
 ];
 
 const RECORD_COLUMNS: &str = "id, connection_id, connection_name, server, server_version, database,
@@ -1031,6 +1047,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let seeded = store.list_snippets().unwrap();
         assert!(seeded.iter().any(|s| s.prefix == "sel"));
+        let grant = seeded.iter().find(|s| s.prefix == "grant").unwrap();
+        assert_eq!(
+            grant.body,
+            "GRANT ${SELECT, INSERT, UPDATE, DELETE} ON ${db}.${*} TO '${user}'@'${%}';"
+        );
+        for prefix in [
+            "cuser", "newuser", "revoke", "grants", "pwd", "duser", "users",
+        ] {
+            assert!(seeded.iter().any(|s| s.prefix == prefix), "{prefix}");
+        }
 
         let mut mine = store
             .save_snippet(&Snippet {
@@ -1049,6 +1075,31 @@ mod tests {
 
         store.delete_snippet(mine.id).unwrap();
         assert_eq!(store.list_snippets().unwrap().len(), seeded.len());
+    }
+
+    #[test]
+    fn account_snippets_keep_prefixes_already_in_use() {
+        let mut store = Store::open_in_memory().unwrap();
+        // As if the database was at version 8 with a snippet of its own on "grant".
+        store
+            .db
+            .execute_batch("DELETE FROM snippets WHERE prefix != 'sel'")
+            .unwrap();
+        store
+            .db
+            .execute(
+                "INSERT INTO snippets (name, prefix, body) VALUES ('mine', 'grant', 'GRANT X;')",
+                [],
+            )
+            .unwrap();
+        store.db.pragma_update(None, "user_version", 8).unwrap();
+        store.migrate().unwrap();
+
+        let all = store.list_snippets().unwrap();
+        let grants: Vec<_> = all.iter().filter(|s| s.prefix == "grant").collect();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].body, "GRANT X;");
+        assert!(all.iter().any(|s| s.prefix == "cuser"));
     }
 
     #[test]
