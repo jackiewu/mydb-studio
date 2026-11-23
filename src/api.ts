@@ -414,7 +414,159 @@ export type AdminChange =
 export interface Flavor {
   mariadb: boolean;
   version: [number, number, number];
+  postgres?: boolean;
 }
+
+// PostgreSQL server page
+
+export interface PgDatabaseStat {
+  name: string;
+  size_bytes: number | null;
+  connections: number;
+  commits: number;
+  rollbacks: number;
+  blocks_read: number;
+  blocks_hit: number;
+  deadlocks: number;
+  temp_bytes: number;
+}
+
+export interface PgOverview {
+  version: string;
+  server_version: string;
+  current_user: string;
+  current_database: string;
+  uptime_seconds: number;
+  connections: number;
+  max_connections: number;
+  active: number;
+  idle_in_transaction: number;
+  oldest_transaction_seconds: number;
+  in_recovery: boolean;
+  databases: PgDatabaseStat[];
+  has_pg_stat_statements: boolean;
+}
+
+export interface PgSetting {
+  name: string;
+  setting: string;
+  unit: string;
+  category: string;
+  description: string;
+  source: string;
+  context: string;
+  pending_restart: boolean;
+}
+
+export interface PgActivity {
+  pid: number;
+  user: string;
+  application: string;
+  client: string;
+  database: string | null;
+  state: string;
+  wait: string | null;
+  backend_type: string;
+  query_seconds: number | null;
+  transaction_seconds: number | null;
+  query: string;
+}
+
+export interface PgRole {
+  name: string;
+  can_login: boolean;
+  superuser: boolean;
+  create_db: boolean;
+  create_role: boolean;
+  replication: boolean;
+  connection_limit: number;
+  valid_until: string | null;
+  member_of: string[];
+}
+
+export type PgObjectKind =
+  | "database"
+  | "schema"
+  | "table"
+  | "sequence"
+  | "function"
+  | "all_tables"
+  | "all_sequences"
+  | "all_functions";
+
+export interface PgTarget {
+  kind: PgObjectKind;
+  schema: string | null;
+  name: string | null;
+}
+
+export interface PgGrant {
+  target: PgTarget;
+  privileges: string[];
+  grantable: string[];
+}
+
+export interface PgDefaultGrant {
+  for_role: string;
+  schema: string | null;
+  object: string;
+  privileges: string[];
+}
+
+export interface PgPrivileges {
+  grants: PgGrant[];
+  defaults: PgDefaultGrant[];
+  owned: number;
+}
+
+export interface PgStatement {
+  query: string;
+  calls: number;
+  total_ms: number;
+  mean_ms: number;
+  rows: number;
+  database: string;
+  user: string;
+}
+
+export type PgAdminChange =
+  | {
+      kind: "create_role";
+      name: string;
+      password: string | null;
+      login: boolean;
+      create_db: boolean;
+      create_role: boolean;
+      connection_limit: number | null;
+      valid_until: string | null;
+      member_of: string[];
+    }
+  | {
+      kind: "alter_role";
+      name: string;
+      login: boolean;
+      create_db: boolean;
+      create_role: boolean;
+      connection_limit: number;
+      valid_until: string | null;
+    }
+  | { kind: "set_password"; name: string; password: string }
+  | { kind: "drop_role"; name: string; reassign_to: string | null }
+  | { kind: "grant_role"; role: string; member: string }
+  | { kind: "revoke_role"; role: string; member: string }
+  | { kind: "grant"; role: string; target: PgTarget; privileges: string[]; grant_option: boolean }
+  | { kind: "revoke"; role: string; target: PgTarget; privileges: string[] }
+  | {
+      kind: "default_privileges";
+      role: string;
+      schema: string | null;
+      object: "tables" | "sequences" | "functions";
+      privileges: string[];
+      revoke: boolean;
+      for_role: string | null;
+    }
+  | { kind: "cancel"; pid: number }
+  | { kind: "terminate"; pid: number };
 
 export interface CharsetInfo {
   name: string;
@@ -904,6 +1056,16 @@ export const api = {
   /** The statements a change would run, passwords masked. */
   adminPlan: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_plan", { sessionId, change }),
   adminApply: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_apply", { sessionId, change }),
+  pgServerOverview: (sessionId: string) => invoke<PgOverview>("pg_server_overview", { sessionId }),
+  pgServerSettings: (sessionId: string) => invoke<PgSetting[]>("pg_server_settings", { sessionId }),
+  pgServerActivity: (sessionId: string) => invoke<PgActivity[]>("pg_server_activity", { sessionId }),
+  pgRoles: (sessionId: string) => invoke<PgRole[]>("pg_roles", { sessionId }),
+  pgRolePrivileges: (sessionId: string, role: string) =>
+    invoke<PgPrivileges>("pg_role_privileges", { sessionId, role }),
+  pgTopStatements: (sessionId: string) => invoke<PgStatement[] | null>("pg_top_statements", { sessionId }),
+  pgAdminPlan: (sessionId: string, change: PgAdminChange) => invoke<string[]>("pg_admin_plan", { sessionId, change }),
+  pgAdminApply: (sessionId: string, change: PgAdminChange) =>
+    invoke<string[]>("pg_admin_apply", { sessionId, change }),
   schemaMeta: (sessionId: string) => invoke<SchemaMeta>("schema_meta", { sessionId }),
   databaseOptions: (sessionId: string, database: string) =>
     invoke<DatabaseOptions>("database_options", { sessionId, database }),

@@ -631,22 +631,30 @@ async fn target_sql(s: &PgSession, t: &PgTarget) -> Result<String> {
             quote_ident(need(&t.name, "序列")?)
         ),
         PgObjectKind::Function => {
-            // Resolved by the server, which also quotes it properly.
-            let text = format!(
-                "{}.{}",
-                quote_ident(need(&t.schema, "schema")?),
-                need(&t.name, "函式")?
-            );
+            // Resolved by the server, which also quotes it. The name is as
+            // listed (`f(n integer)`, with argument names) or typed with
+            // types only (`f(integer)`).
+            let schema = need(&t.schema, "schema")?;
+            let name = need(&t.name, "函式")?;
             let rows = s
-                .query("SELECT to_regprocedure($1)::text", &[&text])
+                .query(
+                    "SELECT coalesce(
+                       (SELECT p.oid::regprocedure::text FROM pg_proc p
+                         WHERE p.pronamespace = to_regnamespace($1)::oid
+                           AND p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' = $2
+                         LIMIT 1),
+                       to_regprocedure(quote_ident($1) || '.' || $2)::text)",
+                    &[&schema, &name],
+                )
                 .await?;
             let sig: Option<String> = rows.first().and_then(|r| r.get(0));
-            let sig = sig.ok_or_else(|| invalid(&format!("找不到函式 {text}")))?;
+            let sig = sig.ok_or_else(|| invalid(&format!("找不到函式 {schema}.{name}")))?;
             // A schema not on search_path comes back qualified already.
+            // ROUTINE covers procedures too (PostgreSQL 11+).
             if sig.contains('.') {
-                format!("FUNCTION {sig}")
+                format!("ROUTINE {sig}")
             } else {
-                format!("FUNCTION {}.{sig}", quote_ident(need(&t.schema, "schema")?))
+                format!("ROUTINE {}.{sig}", quote_ident(schema))
             }
         }
         PgObjectKind::AllTables => format!(

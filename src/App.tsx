@@ -38,6 +38,7 @@ import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
 import { RedisServerPage } from "./components/server/RedisServerPage";
+import { PgServerPage } from "./components/server/PgServerPage";
 import { ServerPage } from "./components/server/ServerPage";
 import { SchemaPage, type SchemaTarget } from "./components/schema/SchemaPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
@@ -862,15 +863,19 @@ export default function App() {
                 🗂 結構
               </button>
             )}
-            {!isPg && (
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
-              title={isRedis ? "伺服器狀態、用戶端、慢查詢、指令統計與設定" : "伺服器狀態、執行中的查詢、使用者與權限"}
+              title={
+                isRedis
+                  ? "伺服器狀態、用戶端、慢查詢、指令統計與設定"
+                  : isPg
+                    ? "伺服器狀態、執行中的查詢、角色與權限、慢查詢、設定"
+                    : "伺服器狀態、執行中的查詢、使用者與權限"
+              }
             >
               🖥 伺服器
             </button>
-            )}
             {view === "server" || view === "schema" ? (
               <button className="primary" onClick={() => setView("main")}>
                 ← 回到編輯器
@@ -964,7 +969,18 @@ export default function App() {
         {session && view === "server" && isRedis && (
           <RedisServerPage key={session.session_id} sessionId={session.session_id} confirmRisk={confirmRisk} />
         )}
-        {session && view === "server" && !isRedis && (
+        {session && view === "server" && isPg && (
+          <PgServerPage
+            key={session.session_id}
+            sessionId={session.session_id}
+            connectionId={session.info.connection_id}
+            onOpenSql={(sql) => {
+              setView("main");
+              tabs.add(sql);
+            }}
+          />
+        )}
+        {session && view === "server" && !isRedis && !isPg && (
           <ServerPage
             key={session.session_id}
             sessionId={session.session_id}

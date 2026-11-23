@@ -65,6 +65,7 @@ async fn roles_and_privileges() {
         "DROP SCHEMA IF EXISTS a_priv CASCADE; DROP ROLE IF EXISTS a_app; DROP ROLE IF EXISTS a_readers;
          CREATE SCHEMA a_priv; CREATE TABLE a_priv.t (id int); CREATE SEQUENCE a_priv.s;
          CREATE FUNCTION a_priv.f(n int) RETURNS int LANGUAGE sql AS 'SELECT n';
+         CREATE PROCEDURE a_priv.p(n int) LANGUAGE sql AS 'SELECT n';
          CREATE ROLE a_readers NOLOGIN;",
         0,
     )
@@ -118,6 +119,8 @@ async fn roles_and_privileges() {
     ok(grant(target(PgObjectKind::AllTables, Some("a_priv"), None), &["SELECT", "INSERT"], true)).await;
     ok(grant(target(PgObjectKind::Sequence, Some("a_priv"), Some("s")), &["USAGE"], false)).await;
     ok(grant(target(PgObjectKind::Function, Some("a_priv"), Some("f(integer)")), &["EXECUTE"], false)).await;
+    // A procedure, named as the schema page lists it.
+    ok(grant(target(PgObjectKind::Function, Some("a_priv"), Some("p(IN n integer)")), &["EXECUTE"], false)).await;
     ok(PgAdminChange::DefaultPrivileges {
         role: "a_app".into(),
         schema: Some("a_priv".into()),
@@ -150,7 +153,7 @@ async fn roles_and_privileges() {
     // A function named as it is listed (with argument names) resolves too.
     ok(PgAdminChange::Revoke {
         role: "a_app".into(),
-        target: target(PgObjectKind::Function, Some("a_priv"), Some("f(integer)")),
+        target: target(PgObjectKind::Function, Some("a_priv"), Some("f(n integer)")),
         privileges: vec![],
     })
     .await;
@@ -161,7 +164,13 @@ async fn roles_and_privileges() {
     })
     .await;
     let privs = pg_admin::privileges(&s, "a_app").await.unwrap();
-    assert!(!privs.grants.iter().any(|g| g.target.kind == PgObjectKind::Function));
+    let funcs: Vec<_> = privs
+        .grants
+        .iter()
+        .filter(|g| g.target.kind == PgObjectKind::Function)
+        .map(|g| g.target.name.clone().unwrap())
+        .collect();
+    assert_eq!(funcs, ["p(IN n integer)"]);
     let t = privs.grants.iter().find(|g| g.target.name.as_deref() == Some("t")).unwrap();
     assert_eq!(t.privileges, ["SELECT"]);
 
