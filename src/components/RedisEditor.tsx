@@ -11,6 +11,7 @@ import type { RunTarget } from "../editor/statementMarks";
 import type { EditorTheme } from "../editor/themes";
 import { REDIS_COMMANDS } from "../redis/commands";
 import type { EditorHandle } from "./SqlEditor";
+import { multiCursor } from "../editor/multiCursor";
 
 /** A line that runs: not blank and not a `#` or `//` comment. */
 const isCommand = (line: string) => {
@@ -157,6 +158,7 @@ export function RedisEditor(props: Props) {
       parent: host.current!,
       extensions: [
         basicSetup,
+        multiCursor(),
         lookPart.current.of(look(theme, fontSize)),
         // `#` comments, for ⌘/.
         EditorState.languageData.of(() => [{ commentTokens: { line: "#" } }]),

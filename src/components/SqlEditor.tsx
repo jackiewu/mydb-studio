@@ -14,6 +14,7 @@ import type { EditorTheme } from "../editor/themes";
 import { openMenu } from "../contextMenu";
 import { advisorLint } from "../editor/advisorLint";
 import { copyText } from "../copy";
+import { inSelection, multiCursor, selectNextOccurrence, selectSelectionMatches, selectedTexts } from "../editor/multiCursor";
 
 /** Lets the app insert text into the editor. */
 export interface EditorHandle {
@@ -28,6 +29,8 @@ export interface EditorHandle {
 }
 
 function selectionOr(v: EditorView) {
+  // Several cursors: the statements they are in (see `runTarget`).
+  if (v.state.selection.ranges.length > 1) return runTarget(v.state).text;
   const { from, to, head } = v.state.selection.main;
   if (from !== to) return v.state.sliceDoc(from, to);
   return statementAt(v.state.doc.toString(), head);
@@ -143,19 +146,19 @@ export function SqlEditor(props: Props) {
     };
     const askAi = (v: EditorView) => {
       const { from, to } = v.state.selection.main;
-      const selected = v.state.sliceDoc(from, to);
+      const selected = v.state.selection.ranges.length > 1 ? "" : v.state.sliceDoc(from, to);
       handlers.current.onAskAi?.((selected.trim() ? selected : runTarget(v.state).text).trim());
       return true;
     };
     const contextMenu = (e: MouseEvent, v: EditorView) => {
       // Right-clicking outside the selection moves the cursor there first.
       const at = v.posAtCoords({ x: e.clientX, y: e.clientY });
-      const sel = v.state.selection.main;
-      if (at != null && (at < sel.from || at > sel.to)) v.dispatch({ selection: { anchor: at } });
+      // Inside any of several cursors or selections keeps them all.
+      if (at != null && !inSelection(v.state, at)) v.dispatch({ selection: { anchor: at } });
       v.focus();
       const target = runTarget(v.state);
-      const { from, to } = v.state.selection.main;
-      const selected = v.state.sliceDoc(from, to);
+      const multi = v.state.selection.ranges.length > 1;
+      const selected = selectedTexts(v.state);
       const runLabel =
         target.kind === "all"
           ? `執行全部（${target.count} 句）`
@@ -186,7 +189,7 @@ export function SqlEditor(props: Props) {
           disabled: !selected,
           onClick: async () => {
             await copyText(selected);
-            v.dispatch(v.state.replaceSelection(""));
+            v.dispatch(v.state.replaceSelection(""), { userEvent: "delete.cut" });
             v.focus();
           },
         },
@@ -202,6 +205,17 @@ export function SqlEditor(props: Props) {
         },
         { label: "全選", hint: "⌘A", onClick: () => (selectAll(v), v.focus()) },
         "sep",
+        {
+          label: "選取下一個相同的字（多游標）",
+          hint: "⌘D",
+          onClick: () => (selectNextOccurrence(v), v.focus()),
+        },
+        {
+          label: "選取所有相同的字（多游標）",
+          hint: "⌃⌘G",
+          onClick: () => (selectSelectionMatches(v) || (selectNextOccurrence(v) && selectSelectionMatches(v)), v.focus()),
+        },
+        "sep",
         { label: "註解／取消註解", hint: "⌘/", onClick: () => (toggleComment(v), v.focus()) },
         {
           label: "複製這一句",
@@ -209,9 +223,9 @@ export function SqlEditor(props: Props) {
           onClick: () => copyText(target.text.trim()),
         },
         {
-          label: selected ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
-          disabled: !selected.trim() && target.count === 0,
-          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() ? selected : target.text).trim()),
+          label: selected && !multi ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
+          disabled: !(selected.trim() && !multi) && target.count === 0,
+          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() && !multi ? selected : target.text).trim()),
         },
       ]);
       return true;
@@ -231,6 +245,7 @@ export function SqlEditor(props: Props) {
       parent: host.current!,
       extensions: [
         basicSetup,
+        multiCursor(),
         p.language.of(language(mariadb, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),

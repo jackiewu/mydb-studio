@@ -1,6 +1,6 @@
 import { RangeSetBuilder, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
-import { startsMidStatement, statementIndexAt, statementRanges, type Range } from "./statements";
+import { startsMidStatement, statementIndexAt, statementRanges, type Range } from "./statements.ts";
 
 /** What ▶ / ⌘Enter would run right now. */
 export interface RunTarget {
@@ -23,9 +23,42 @@ const ranges = StateField.define<Range[]>({
   update: (value, tr) => (tr.docChanged ? statementRanges(tr.state.doc.toString()) : value),
 });
 
+/**
+ * Statements touched by any of several cursors or selections (multi-cursor
+ * editing), in document order: a cursor counts for the statement it is in,
+ * a selection for every statement it overlaps.
+ */
+function touchedByAll(state: EditorState, list: Range[]): number[] {
+  const hit = new Set<number>();
+  for (const r of state.selection.ranges) {
+    if (r.empty) {
+      const i = statementIndexAt(list, r.head);
+      if (i >= 0) hit.add(i);
+    } else {
+      list.forEach((s, i) => {
+        if (s.to > r.from && s.from < r.to) hit.add(i);
+      });
+    }
+  }
+  return [...hit].sort((a, b) => a - b);
+}
+
 export function runTarget(state: EditorState): RunTarget {
   const { from, to, head } = state.selection.main;
   const list = state.field(ranges);
+  // With several cursors (after ⌘D or a column selection) the selected bits
+  // are usually the same word in many places, not SQL to run on their own:
+  // run the whole statements they sit in.
+  if (state.selection.ranges.length > 1) {
+    const touched = touchedByAll(state, list);
+    const all = touched.length > 0 && touched.length === list.length;
+    return {
+      kind: all ? "all" : touched.length === 1 ? "statement" : "selection",
+      count: touched.length,
+      total: list.length,
+      text: touched.map((i) => state.sliceDoc(list[i].from, list[i].to)).join("\n"),
+    };
+  }
   if (from !== to) {
     const text = state.sliceDoc(from, to);
     const all = state.sliceDoc(0, from).trim() === "" && state.sliceDoc(to).trim() === "";
@@ -61,7 +94,8 @@ const current = Decoration.line({ class: "cm-stmt-current" });
 function decorate(state: EditorState): DecorationSet {
   const list = state.field(ranges);
   const { from, to, head } = state.selection.main;
-  const active = from === to ? statementIndexAt(list, head) : -1;
+  const multi = state.selection.ranges.length > 1;
+  const active = new Set(multi ? touchedByAll(state, list) : from === to ? [statementIndexAt(list, head)] : []);
   const builder = new RangeSetBuilder<Decoration>();
   list.forEach((r, i) => {
     const first = state.doc.lineAt(r.from).number;
@@ -70,7 +104,7 @@ function decorate(state: EditorState): DecorationSet {
       const line = state.doc.line(n);
       const classes = [];
       if (n === first && i > 0) classes.push(separator);
-      if (i === active) classes.push(current);
+      if (active.has(i)) classes.push(current);
       // Two line decorations at one position must be added in order.
       for (const d of classes) builder.add(line.from, line.from, d);
     }

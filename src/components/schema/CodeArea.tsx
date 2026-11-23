@@ -3,6 +3,7 @@ import { sql, MariaSQL, MySQL } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
 import type { EditorTheme } from "../../editor/themes";
+import { multiCursor } from "../../editor/multiCursor";
 
 interface Props {
   /** The text to start with; a new value replaces what is in the editor. */
@@ -27,6 +28,7 @@ export function CodeArea({ value, mariadb, theme, fontSize, onChange }: Props) {
         doc: value,
         extensions: [
           basicSetup,
+          multiCursor(),
           EditorView.lineWrapping,
           sql({ dialect: mariadb ? MariaSQL : MySQL, upperCaseKeywords: true }),
           theme.extension,
