@@ -2,6 +2,7 @@ mod commands;
 mod keychain;
 mod lock;
 mod mcp;
+mod pdf;
 mod windows;
 
 use std::collections::HashMap;
@@ -83,6 +84,7 @@ pub fn run() {
                 store: Mutex::new(store),
                 sessions: tokio::sync::RwLock::new(HashMap::new()),
                 print_html: Mutex::new(String::new()),
+                pdf_html: Mutex::new(String::new()),
                 ai,
                 lock,
                 crash: Mutex::new(crash),
@@ -116,14 +118,16 @@ pub fn run() {
                 windows::window_destroyed(window.app_handle(), window.label());
             }
         })
-        .register_uri_scheme_protocol(commands::PRINT_PROTOCOL, |ctx, _request| {
-            let html = ctx
-                .app_handle()
-                .state::<AppState>()
-                .print_html
-                .lock()
-                .unwrap()
-                .clone();
+        .register_uri_scheme_protocol(commands::PRINT_PROTOCOL, |ctx, request| {
+            let state = ctx.app_handle().state::<AppState>();
+            let html = if request.uri().path() == pdf::PDF_PATH {
+                &state.pdf_html
+            } else {
+                &state.print_html
+            }
+            .lock()
+            .unwrap()
+            .clone();
             tauri::http::Response::builder()
                 .header("Content-Type", "text/html; charset=utf-8")
                 .body(html.into_bytes())
@@ -192,6 +196,7 @@ pub fn run() {
             commands::generate_report,
             commands::save_text_file,
             commands::print_report,
+            pdf::save_report_pdf,
             commands::check_sql,
             commands::ai_status,
             commands::ai_context,

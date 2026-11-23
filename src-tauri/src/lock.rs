@@ -121,8 +121,12 @@ pub fn lock_status(state: State<'_, AppState>) -> LockStatus {
 fn lock_now(app: &AppHandle, state: &AppState) {
     state.lock.set_locked(true);
     state.print_html.lock().unwrap().clear();
+    state.pdf_html.lock().unwrap().clear();
     if let Some(w) = app.get_webview_window(crate::commands::PRINT_WINDOW) {
         let _ = w.close();
+    }
+    if let Some(w) = app.get_webview_window(crate::pdf::PDF_WINDOW) {
+        let _ = w.destroy();
     }
     let _ = app.emit("app-locked", ());
 }
