@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { quoteName } from "./dialect";
 
 // Mirrors of the Rust types in crates/mydb-core. Keep in sync.
 
@@ -25,7 +26,7 @@ export interface SshConfig {
   known_host_fingerprint?: string | null;
 }
 
-export type ConnectionKind = "mysql" | "redis";
+export type ConnectionKind = "mysql" | "redis" | "postgres";
 
 export interface ConnectionProfile {
   id: string;
@@ -128,6 +129,7 @@ export interface StatementResult {
 
 export type CoreError =
   | { kind: "server"; code: number; state: string; message: string }
+  | { kind: "postgres"; state: string; message: string }
   | { kind: "host_key_mismatch"; host: string; expected: string; actual: string }
   | { kind: "driver" | "connection" | "ssh" | "io" | "store" | "config" | "redis"; message: string }
   | { kind: "not_connected"; id: string }
@@ -412,7 +414,159 @@ export type AdminChange =
 export interface Flavor {
   mariadb: boolean;
   version: [number, number, number];
+  postgres?: boolean;
 }
+
+// PostgreSQL server page
+
+export interface PgDatabaseStat {
+  name: string;
+  size_bytes: number | null;
+  connections: number;
+  commits: number;
+  rollbacks: number;
+  blocks_read: number;
+  blocks_hit: number;
+  deadlocks: number;
+  temp_bytes: number;
+}
+
+export interface PgOverview {
+  version: string;
+  server_version: string;
+  current_user: string;
+  current_database: string;
+  uptime_seconds: number;
+  connections: number;
+  max_connections: number;
+  active: number;
+  idle_in_transaction: number;
+  oldest_transaction_seconds: number;
+  in_recovery: boolean;
+  databases: PgDatabaseStat[];
+  has_pg_stat_statements: boolean;
+}
+
+export interface PgSetting {
+  name: string;
+  setting: string;
+  unit: string;
+  category: string;
+  description: string;
+  source: string;
+  context: string;
+  pending_restart: boolean;
+}
+
+export interface PgActivity {
+  pid: number;
+  user: string;
+  application: string;
+  client: string;
+  database: string | null;
+  state: string;
+  wait: string | null;
+  backend_type: string;
+  query_seconds: number | null;
+  transaction_seconds: number | null;
+  query: string;
+}
+
+export interface PgRole {
+  name: string;
+  can_login: boolean;
+  superuser: boolean;
+  create_db: boolean;
+  create_role: boolean;
+  replication: boolean;
+  connection_limit: number;
+  valid_until: string | null;
+  member_of: string[];
+}
+
+export type PgObjectKind =
+  | "database"
+  | "schema"
+  | "table"
+  | "sequence"
+  | "function"
+  | "all_tables"
+  | "all_sequences"
+  | "all_functions";
+
+export interface PgTarget {
+  kind: PgObjectKind;
+  schema: string | null;
+  name: string | null;
+}
+
+export interface PgGrant {
+  target: PgTarget;
+  privileges: string[];
+  grantable: string[];
+}
+
+export interface PgDefaultGrant {
+  for_role: string;
+  schema: string | null;
+  object: string;
+  privileges: string[];
+}
+
+export interface PgPrivileges {
+  grants: PgGrant[];
+  defaults: PgDefaultGrant[];
+  owned: number;
+}
+
+export interface PgStatement {
+  query: string;
+  calls: number;
+  total_ms: number;
+  mean_ms: number;
+  rows: number;
+  database: string;
+  user: string;
+}
+
+export type PgAdminChange =
+  | {
+      kind: "create_role";
+      name: string;
+      password: string | null;
+      login: boolean;
+      create_db: boolean;
+      create_role: boolean;
+      connection_limit: number | null;
+      valid_until: string | null;
+      member_of: string[];
+    }
+  | {
+      kind: "alter_role";
+      name: string;
+      login: boolean;
+      create_db: boolean;
+      create_role: boolean;
+      connection_limit: number;
+      valid_until: string | null;
+    }
+  | { kind: "set_password"; name: string; password: string }
+  | { kind: "drop_role"; name: string; reassign_to: string | null }
+  | { kind: "grant_role"; role: string; member: string }
+  | { kind: "revoke_role"; role: string; member: string }
+  | { kind: "grant"; role: string; target: PgTarget; privileges: string[]; grant_option: boolean }
+  | { kind: "revoke"; role: string; target: PgTarget; privileges: string[] }
+  | {
+      kind: "default_privileges";
+      role: string;
+      schema: string | null;
+      object: "tables" | "sequences" | "functions";
+      privileges: string[];
+      revoke: boolean;
+      for_role: string | null;
+    }
+  | { kind: "cancel"; pid: number }
+  | { kind: "terminate"; pid: number };
 
 export interface CharsetInfo {
   name: string;
@@ -600,6 +754,20 @@ export interface PinnedTab {
 }
 
 export function newProfile(kind: ConnectionKind = "mysql"): ConnectionProfile {
+  if (kind === "postgres")
+    return {
+      id: "",
+      name: "",
+      kind: "postgres",
+      host: "127.0.0.1",
+      port: 5432,
+      user: "postgres",
+      password: "",
+      database: "postgres",
+      ssl: { mode: "disabled" },
+      ssh: null,
+      mcp: "read_only",
+    };
   if (kind === "redis")
     return {
       id: "",
@@ -635,7 +803,7 @@ export function serverLabel(p: ConnectionProfile) {
   return p.kind === "redis" && !p.user ? `${p.host}:${p.port}` : `${p.user}@${p.host}:${p.port}`;
 }
 
-export const KIND_LABEL: Record<ConnectionKind, string> = { mysql: "MySQL", redis: "Redis" };
+export const KIND_LABEL: Record<ConnectionKind, string> = { mysql: "MySQL", redis: "Redis", postgres: "PostgreSQL" };
 
 // Redis, mirroring crates/mydb-core/src/redis.
 
@@ -807,6 +975,8 @@ export function describeError(e: unknown): string {
   switch (err?.kind) {
     case "server":
       return `錯誤 ${err.code} (${err.state})：${err.message}`;
+    case "postgres":
+      return `錯誤 ${err.state}：${err.message}`;
     case "host_key_mismatch":
       return `SSH 主機金鑰已變更（${err.host}）。記錄的是 ${err.expected}，這次收到 ${err.actual}。如果確定主機有換金鑰，請在連線設定中清除指紋後再連。`;
     case "connection":
@@ -868,7 +1038,7 @@ export const api = {
   listAiChats: () => invoke<AiChatSummary[]>("list_ai_chats"),
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),
   deleteAiChat: (id: number) => invoke<void>("delete_ai_chat", { id }),
-  checkSql: (sql: string) => invoke<Finding[]>("check_sql", { sql }),
+  checkSql: (sql: string, postgres = false) => invoke<Finding[]>("check_sql", { sql, postgres }),
   mcpSetup: () => invoke<McpSetup>("mcp_setup"),
   cancelQuery: (sessionId: string) => invoke<boolean>("cancel_query", { sessionId }),
   /** Round trip in ms; null while the connection is busy. Never reconnects. */
@@ -886,6 +1056,16 @@ export const api = {
   /** The statements a change would run, passwords masked. */
   adminPlan: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_plan", { sessionId, change }),
   adminApply: (sessionId: string, change: AdminChange) => invoke<string[]>("admin_apply", { sessionId, change }),
+  pgServerOverview: (sessionId: string) => invoke<PgOverview>("pg_server_overview", { sessionId }),
+  pgServerSettings: (sessionId: string) => invoke<PgSetting[]>("pg_server_settings", { sessionId }),
+  pgServerActivity: (sessionId: string) => invoke<PgActivity[]>("pg_server_activity", { sessionId }),
+  pgRoles: (sessionId: string) => invoke<PgRole[]>("pg_roles", { sessionId }),
+  pgRolePrivileges: (sessionId: string, role: string) =>
+    invoke<PgPrivileges>("pg_role_privileges", { sessionId, role }),
+  pgTopStatements: (sessionId: string) => invoke<PgStatement[] | null>("pg_top_statements", { sessionId }),
+  pgAdminPlan: (sessionId: string, change: PgAdminChange) => invoke<string[]>("pg_admin_plan", { sessionId, change }),
+  pgAdminApply: (sessionId: string, change: PgAdminChange) =>
+    invoke<string[]>("pg_admin_apply", { sessionId, change }),
   schemaMeta: (sessionId: string) => invoke<SchemaMeta>("schema_meta", { sessionId }),
   databaseOptions: (sessionId: string, database: string) =>
     invoke<DatabaseOptions>("database_options", { sessionId, database }),
@@ -913,6 +1093,11 @@ export const api = {
     invoke<string>("generate_report", { ids, options }),
   /** Opens an HTML report in a print window, where it can be saved as PDF. */
   printReport: (html: string) => invoke<void>("print_report", { html }),
+  /**
+   * Saves an HTML report as a PDF in the Downloads folder and returns its
+   * path; null where it opened the print window instead (not macOS).
+   */
+  saveReportPdf: (html: string, name: string) => invoke<string | null>("save_report_pdf", { html, name }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   useDatabase: (sessionId: string, database: string) =>
     invoke<void>("use_database", { sessionId, database }),
@@ -955,5 +1140,5 @@ export const api = {
 
 /** Quotes an identifier with backticks. */
 export function quoteIdent(name: string): string {
-  return "`" + name.replace(/`/g, "``") + "`";
+  return quoteName(name);
 }

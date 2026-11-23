@@ -10,12 +10,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use mydb_core::export::json_value;
 use mydb_core::records::{ExecutionRecord, RecordContext};
 use mydb_core::session::StatementResult;
-use mydb_core::{ConnectionProfile, CoreError, McpAccess, Session, Store, advisor};
+use mydb_core::{ConnectionProfile, CoreError, McpAccess, SqlSession, Store, advisor};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -30,7 +30,8 @@ const MAX_ROWS: usize = 1000;
 /// Longer cells are cut, so one big column cannot flood the AI's context.
 const MAX_CELL_CHARS: usize = 2000;
 
-const INSTRUCTIONS: &str = "Tools for the MySQL/MariaDB connections saved in MyDB Studio. \
+const INSTRUCTIONS: &str = "Tools for the MySQL/MariaDB and PostgreSQL connections saved in MyDB Studio. \
+Each connection lists its kind; on PostgreSQL connections \"database\" means a schema of the connected database. \
 Start with list_connections; pass a connection's name or id to the other tools. \
 Connections marked read_only accept only SELECT, SHOW, DESCRIBE and EXPLAIN. \
 Results are capped (max_rows, default 100); add LIMIT or aggregate instead of fetching whole tables. \
@@ -39,7 +40,7 @@ Every query is saved in MyDB Studio's execution records.";
 pub struct Server {
     store: Mutex<Store>,
     /// Open sessions by connection id, reused across calls.
-    sessions: tokio::sync::Mutex<HashMap<String, Arc<Session>>>,
+    sessions: tokio::sync::Mutex<HashMap<String, SqlSession>>,
     /// The app data folder, to follow the app lock; see [`Server::locked`].
     lock_dir: Option<PathBuf>,
 }
@@ -111,9 +112,11 @@ impl Server {
             }
         }
         for (_, session) in self.sessions.lock().await.drain() {
-            if let Ok(s) = Arc::try_unwrap(session) {
-                let _ = s.close().await;
-            }
+            let any = match session {
+                SqlSession::Mysql(s) => mydb_core::AnySession::Mysql(s),
+                SqlSession::Postgres(s) => mydb_core::AnySession::Postgres(s),
+            };
+            let _ = any.close().await;
         }
         Ok(())
     }
@@ -178,6 +181,7 @@ impl Server {
                 json!({
                     "id": p.id,
                     "name": p.name,
+                    "kind": if p.kind == mydb_core::ConnectionKind::Postgres { "postgresql" } else { "mysql" },
                     "server": format!("{}@{}:{}", p.user, p.host, p.port),
                     "default_database": p.database,
                     "access": access_name(p.mcp),
@@ -220,7 +224,7 @@ impl Server {
         }
         let read_only = profile.mcp == McpAccess::ReadOnly;
         if read_only {
-            check_read_only(&sql)?;
+            check_read_only(session.is_postgres(), &sql)?;
             transaction(&session, "START TRANSACTION READ ONLY").await?;
         }
         let outcome = session.execute(&sql, max_rows).await;
@@ -249,7 +253,7 @@ impl Server {
     async fn explain_query(&self, args: &Value) -> ToolResult {
         let (profile, session) = self.open(args).await?;
         let sql = required(args, "sql")?;
-        let stmt = explain_target(&sql)?;
+        let stmt = explain_target(session.is_postgres(), &sql)?;
         if let Some(db) = str_arg(args, "database") {
             session.use_database(&db).await?;
         }
@@ -261,7 +265,7 @@ impl Server {
         if read_only {
             // The server refuses EXPLAIN of a change in a read-only
             // transaction anyway; say why up front.
-            check_read_only(&stmt)?;
+            check_read_only(session.is_postgres(), &stmt)?;
             transaction(&session, "START TRANSACTION READ ONLY").await?;
         }
         let outcome = session.execute(&explain, MAX_ROWS).await;
@@ -274,12 +278,12 @@ impl Server {
         }
         Ok(json!({
             "plan": outcome.results.iter().map(statement_json).collect::<Vec<_>>(),
-            "findings": advisor::check_sql(&stmt),
+            "findings": if session.is_postgres() { advisor::check_sql_pg(&stmt) } else { advisor::check_sql(&stmt) },
         }))
     }
 
     /// The connection named by `args.connection` (name or id), opened.
-    async fn open(&self, args: &Value) -> Result<(ConnectionProfile, Arc<Session>), ToolError> {
+    async fn open(&self, args: &Value) -> Result<(ConnectionProfile, SqlSession), ToolError> {
         let wanted = required(args, "connection")?;
         let profile = {
             let store = self.store.lock().unwrap();
@@ -303,7 +307,7 @@ impl Server {
         let session = match sessions.get(&profile.id) {
             Some(s) => s.clone(),
             None => {
-                let s = Arc::new(Session::connect(&profile).await?);
+                let s = SqlSession::connect(&profile).await?;
                 // Trust on first use, as the app does: remember the SSH
                 // host key so a different one is refused next time.
                 let pinned = s.profile();
@@ -320,7 +324,7 @@ impl Server {
         Ok((profile, session))
     }
 
-    fn database_arg(&self, args: &Value, session: &Session) -> Result<String, ToolError> {
+    fn database_arg(&self, args: &Value, session: &SqlSession) -> Result<String, ToolError> {
         str_arg(args, "database")
             .or_else(|| session.current_database())
             .ok_or_else(|| ToolError("pass database: this connection has no default".into()))
@@ -330,11 +334,11 @@ impl Server {
     fn record(
         &self,
         profile: &ConnectionProfile,
-        session: &Session,
+        session: &SqlSession,
         sql: &str,
         outcome: &mydb_core::ExecutionOutcome,
     ) {
-        let rec = ExecutionRecord::from_outcome(
+        let mut rec = ExecutionRecord::from_outcome(
             RecordContext {
                 connection_id: &profile.id,
                 connection_name: &profile.name,
@@ -345,6 +349,7 @@ impl Server {
             sql,
             outcome,
         );
+        rec.connection_kind = profile.kind;
         let store = self.store.lock().unwrap();
         match store.insert_record(&rec) {
             Ok(id) => {
@@ -358,8 +363,8 @@ impl Server {
 /// The one statement to explain. Refuses more than one, anything the
 /// server would run as more than one (see
 /// [`advisor::has_hidden_statements`]), and `ANALYZE`, which runs it.
-fn explain_target(sql: &str) -> Result<String, ToolError> {
-    let mut statements = mydb_core::split_statements(sql);
+fn explain_target(postgres: bool, sql: &str) -> Result<String, ToolError> {
+    let mut statements = split(postgres, sql);
     if statements.len() > 1 {
         return Err(ToolError("explain_query takes one statement".into()));
     }
@@ -367,7 +372,9 @@ fn explain_target(sql: &str) -> Result<String, ToolError> {
         .pop()
         .ok_or_else(|| ToolError("sql is empty".into()))?;
     let first = stmt.split_whitespace().next().unwrap_or("");
-    if advisor::has_hidden_statements(&stmt) || first.eq_ignore_ascii_case("ANALYZE") {
+    // PostgreSQL also takes options in parentheses: EXPLAIN (ANALYZE) runs it.
+    let options = stmt.trim_start().starts_with('(');
+    if advisor::has_hidden_statements(&stmt) || first.eq_ignore_ascii_case("ANALYZE") || options {
         return Err(ToolError(
             "explain_query takes a plain statement, without `;`, executable comments or ANALYZE"
                 .into(),
@@ -379,12 +386,19 @@ fn explain_target(sql: &str) -> Result<String, ToolError> {
 /// Refuses anything but plain reads, statement by statement.
 /// [`advisor::is_plain_read`] also refuses a statement that would run as
 /// several, as one bundled with `DELIMITER` would.
-fn check_read_only(sql: &str) -> Result<(), ToolError> {
-    let statements = mydb_core::split_statements(sql);
+fn check_read_only(postgres: bool, sql: &str) -> Result<(), ToolError> {
+    let statements = split(postgres, sql);
     if statements.is_empty() {
         return Err(ToolError("sql is empty".into()));
     }
-    match statements.iter().find(|s| !advisor::is_plain_read(s)) {
+    let plain = |s: &str| {
+        if postgres {
+            advisor::is_plain_read_pg(s)
+        } else {
+            advisor::is_plain_read(s)
+        }
+    };
+    match statements.iter().find(|s| !plain(s)) {
         Some(s) => Err(ToolError(format!(
             "this connection is read-only for AI tools; only SELECT, SHOW, DESCRIBE and EXPLAIN \
              are allowed. Refused: {}. The user can allow changes in MyDB Studio's connection \
@@ -395,7 +409,15 @@ fn check_read_only(sql: &str) -> Result<(), ToolError> {
     }
 }
 
-async fn transaction(session: &Session, sql: &str) -> Result<(), ToolError> {
+fn split(postgres: bool, sql: &str) -> Vec<String> {
+    if postgres {
+        mydb_core::split_statements_pg(sql)
+    } else {
+        mydb_core::split_statements(sql)
+    }
+}
+
+async fn transaction(session: &SqlSession, sql: &str) -> Result<(), ToolError> {
     match session.execute(sql, 0).await.error {
         Some(e) => Err(e.into()),
         None => Ok(()),
@@ -606,21 +628,34 @@ mod tests {
 
     #[test]
     fn read_only_refuses_bundled_and_hidden_statements() {
-        assert!(check_read_only("SELECT 1; SHOW TABLES").is_ok());
+        assert!(check_read_only(false, "SELECT 1; SHOW TABLES").is_ok());
         for sql in [
             // DELIMITER makes the whole line one "statement" for the check.
             "DELIMITER $$\nSELECT 1; COMMIT; DROP TABLE t$$",
             "SELECT * /*!50000 INTO OUTFILE '/tmp/x' */ FROM t",
             "SELECT 1 --x\nINTO OUTFILE '/tmp/x'",
         ] {
-            assert!(check_read_only(sql).is_err(), "{sql}");
+            assert!(check_read_only(false, sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn postgres_read_only_checks() {
+        assert!(check_read_only(true, "SELECT 1; SHOW search_path").is_ok());
+        for sql in [
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+            "SELECT pg_terminate_backend(42)",
+            "SELECT 1; SET TRANSACTION READ WRITE",
+        ] {
+            assert!(check_read_only(true, sql).is_err(), "{sql}");
+        }
+        assert!(explain_target(true, "(ANALYZE) DELETE FROM t").is_err());
     }
 
     #[test]
     fn explain_takes_one_plain_statement() {
         assert_eq!(
-            explain_target("DELETE FROM t WHERE a = 1").unwrap(),
+            explain_target(false, "DELETE FROM t WHERE a = 1").unwrap(),
             "DELETE FROM t WHERE a = 1"
         );
         for sql in [
@@ -630,7 +665,7 @@ mod tests {
             "SELECT /*! 1; DELETE FROM t */",
             "",
         ] {
-            assert!(explain_target(sql).is_err(), "{sql}");
+            assert!(explain_target(false, sql).is_err(), "{sql}");
         }
     }
 
@@ -694,7 +729,7 @@ mod tests {
 
     #[test]
     fn read_only_refuses_changes() {
-        assert!(check_read_only("SELECT 1; SHOW TABLES").is_ok());
+        assert!(check_read_only(false, "SELECT 1; SHOW TABLES").is_ok());
         for sql in [
             "DELETE FROM t",
             "SELECT 1; DROP TABLE t",
@@ -702,7 +737,7 @@ mod tests {
             "SET GLOBAL read_only = 0",
             "",
         ] {
-            assert!(check_read_only(sql).is_err(), "{sql}");
+            assert!(check_read_only(false, sql).is_err(), "{sql}");
         }
     }
 

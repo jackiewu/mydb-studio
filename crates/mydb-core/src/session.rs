@@ -626,6 +626,7 @@ impl Session {
 pub enum AnySession {
     Mysql(std::sync::Arc<Session>),
     Redis(std::sync::Arc<crate::redis::RedisSession>),
+    Postgres(std::sync::Arc<crate::pg::PgSession>),
 }
 
 impl AnySession {
@@ -633,6 +634,7 @@ impl AnySession {
         match self {
             AnySession::Mysql(s) => s.info(),
             AnySession::Redis(s) => s.info(),
+            AnySession::Postgres(s) => s.info(),
         }
     }
 
@@ -641,6 +643,7 @@ impl AnySession {
         match self {
             AnySession::Mysql(s) => s.ping().await,
             AnySession::Redis(s) => s.ping().await,
+            AnySession::Postgres(s) => s.ping().await,
         }
     }
 
@@ -657,6 +660,154 @@ impl AnySession {
                 }
                 Ok(())
             }
+            AnySession::Postgres(s) => {
+                if let Ok(s) = std::sync::Arc::try_unwrap(s) {
+                    s.close().await;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The SQL session, unless this is Redis.
+    pub fn sql(&self) -> Option<SqlSession> {
+        match self {
+            AnySession::Mysql(s) => Some(SqlSession::Mysql(s.clone())),
+            AnySession::Postgres(s) => Some(SqlSession::Postgres(s.clone())),
+            AnySession::Redis(_) => None,
+        }
+    }
+}
+
+/// A session that runs SQL: MySQL / MariaDB or PostgreSQL. The editor,
+/// sidebar, records, exports and MCP server go through this, so they work
+/// the same on both. On PostgreSQL "database" means a schema of the
+/// connected database (see [`crate::pg`]).
+#[derive(Clone)]
+pub enum SqlSession {
+    Mysql(std::sync::Arc<Session>),
+    Postgres(std::sync::Arc<crate::pg::PgSession>),
+}
+
+macro_rules! both {
+    ($self:ident, $s:ident => $e:expr) => {
+        match $self {
+            SqlSession::Mysql($s) => $e,
+            SqlSession::Postgres($s) => $e,
+        }
+    };
+}
+
+impl SqlSession {
+    /// Connects to a MySQL or PostgreSQL profile.
+    pub async fn connect(profile: &ConnectionProfile) -> Result<Self> {
+        Ok(match profile.kind {
+            crate::ConnectionKind::Postgres => SqlSession::Postgres(std::sync::Arc::new(
+                crate::pg::PgSession::connect(profile).await?,
+            )),
+            crate::ConnectionKind::Mysql => {
+                SqlSession::Mysql(std::sync::Arc::new(Session::connect(profile).await?))
+            }
+            crate::ConnectionKind::Redis => {
+                return Err(CoreError::Config {
+                    message: "這是 Redis 連線，不能執行 SQL。".into(),
+                });
+            }
+        })
+    }
+
+    pub fn is_postgres(&self) -> bool {
+        matches!(self, SqlSession::Postgres(_))
+    }
+
+    pub fn info(&self) -> &SessionInfo {
+        both!(self, s => s.info())
+    }
+
+    pub fn profile(&self) -> &ConnectionProfile {
+        both!(self, s => s.profile())
+    }
+
+    /// MySQL: the database in use. PostgreSQL: the schema in use.
+    pub fn current_database(&self) -> Option<String> {
+        both!(self, s => s.current_database())
+    }
+
+    /// Statements in `sql`, split the way this server's CLI would.
+    pub fn split(&self, sql: &str) -> Vec<String> {
+        match self {
+            SqlSession::Mysql(_) => split_statements(sql),
+            SqlSession::Postgres(_) => crate::split::split_statements_pg(sql),
+        }
+    }
+
+    /// Whether `stmt` only reads, by this server's rules.
+    pub fn is_plain_read(&self, stmt: &str) -> bool {
+        match self {
+            SqlSession::Mysql(_) => crate::advisor::is_plain_read(stmt),
+            SqlSession::Postgres(_) => crate::advisor::is_plain_read_pg(stmt),
+        }
+    }
+
+    pub async fn execute(&self, sql: &str, max_rows: usize) -> ExecutionOutcome {
+        both!(self, s => s.execute(sql, max_rows).await)
+    }
+
+    pub async fn execute_limited(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        auto_limit: Option<u64>,
+    ) -> ExecutionOutcome {
+        both!(self, s => s.execute_limited(sql, max_rows, auto_limit).await)
+    }
+
+    pub async fn cancel(&self) -> Result<bool> {
+        both!(self, s => s.cancel().await)
+    }
+
+    pub async fn stream_rows(
+        &self,
+        sql: &str,
+        on_columns: impl FnOnce(&[ColumnInfo]) -> std::io::Result<()>,
+        on_row: impl FnMut(Vec<serde_json::Value>) -> std::io::Result<()>,
+    ) -> Result<u64> {
+        both!(self, s => s.stream_rows(sql, on_columns, on_row).await)
+    }
+
+    pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
+        both!(self, s => s.list_databases().await)
+    }
+
+    pub async fn list_tables(&self, database: &str) -> Result<Vec<TableInfo>> {
+        both!(self, s => s.list_tables(database).await)
+    }
+
+    pub async fn show_create_table(&self, database: Option<&str>, table: &str) -> Result<String> {
+        both!(self, s => s.show_create_table(database, table).await)
+    }
+
+    pub async fn use_database(&self, database: &str) -> Result<()> {
+        both!(self, s => s.use_database(database).await)
+    }
+
+    pub async fn list_all_tables(&self) -> Result<Vec<(String, String)>> {
+        both!(self, s => s.list_all_tables().await)
+    }
+
+    pub async fn list_columns(&self, database: &str) -> Result<Vec<ColumnDef>> {
+        both!(self, s => s.list_columns(database).await)
+    }
+
+    pub async fn query_text(&self, sql: &str) -> Result<TextRows> {
+        both!(self, s => s.query_text(sql).await)
+    }
+
+    /// Seconds the server keeps an idle connection, when it says.
+    pub async fn idle_timeout(&self) -> Result<Option<u64>> {
+        match self {
+            SqlSession::Mysql(s) => s.wait_timeout().await,
+            SqlSession::Postgres(s) => s.idle_timeout().await,
         }
     }
 }

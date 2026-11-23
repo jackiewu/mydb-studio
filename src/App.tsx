@@ -38,6 +38,7 @@ import { SchemaTree } from "./components/SchemaTree";
 import { ResultsPanel, type AskAi } from "./components/ResultsPanel";
 import { RiskDialog } from "./components/RiskDialog";
 import { RedisServerPage } from "./components/server/RedisServerPage";
+import { PgServerPage } from "./components/server/PgServerPage";
 import { ServerPage } from "./components/server/ServerPage";
 import { SchemaPage, type SchemaTarget } from "./components/schema/SchemaPage";
 import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDialog";
@@ -47,6 +48,7 @@ import { StatusBar, type Problem } from "./components/StatusBar";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
+import { setSqlDialect } from "./dialect";
 import { editorTheme } from "./editor/themes";
 import { useSchema } from "./schema";
 import { useSessionStatus } from "./status/useSessionStatus";
@@ -110,6 +112,9 @@ export default function App() {
   // What ▶ would run; drives its label.
   const [runTarget, setRunTarget] = useState<RunTarget | null>(null);
   const isRedis = session?.kind === "redis";
+  const isPg = session?.kind === "postgres";
+  // Quoting and statement splitting follow the window's connection.
+  setSqlDialect(isPg ? "postgres" : "mysql");
   // Redis: the editor's database (SELECT), the key in the value view, and
   // which of the two the lower panel shows.
   const [redisDb, setRedisDb] = useState(0);
@@ -454,7 +459,7 @@ export default function App() {
 
   const confirmRisk = async (text: string) => {
     if (!settings.confirm_dangerous) return true;
-    const found = isRedis ? api.redisCheck(text) : api.checkSql(text);
+    const found = isRedis ? api.redisCheck(text) : api.checkSql(text, isPg);
     const dangers = (await found.catch(() => [] as Finding[])).filter((f) => f.level === "danger");
     if (dangers.length === 0) return true;
     return new Promise<boolean>((resolve) =>
@@ -824,8 +829,15 @@ export default function App() {
                 </select>
               </label>
             ) : (
-            <label className="db-picker" title="目前資料庫（USE）。左側雙擊資料庫也可以切換。">
-              資料庫
+            <label
+              className="db-picker"
+              title={
+                isPg
+                  ? `目前的 schema（放在 search_path 最前面）。PostgreSQL 一條連線只連一個資料庫：${active.database || "postgres"}；要換資料庫請另建連線。`
+                  : "目前資料庫（USE）。左側雙擊資料庫也可以切換。"
+              }
+            >
+              {isPg ? `${active.database || "postgres"} · Schema` : "資料庫"}
               <select value={currentDb ?? ""} onChange={(e) => e.target.value && switchDatabase(e.target.value)}>
                 {!currentDb && <option value="">（未選擇）</option>}
                 {currentDb && !databaseNames.includes(currentDb) && <option value={currentDb}>{currentDb}</option>}
@@ -842,7 +854,11 @@ export default function App() {
               <button
                 className={view === "schema" ? "active" : undefined}
                 onClick={() => setView(view === "schema" ? "main" : "schema")}
-                title="資料庫、資料表結構與索引、檢視、預存程序、觸發器、事件"
+                title={
+                  isPg
+                    ? "Schema、資料表結構與索引、檢視、函式、預存程序、觸發器"
+                    : "資料庫、資料表結構與索引、檢視、預存程序、觸發器、事件"
+                }
               >
                 🗂 結構
               </button>
@@ -850,7 +866,13 @@ export default function App() {
             <button
               className={view === "server" ? "active" : undefined}
               onClick={() => setView(view === "server" ? "main" : "server")}
-              title={isRedis ? "伺服器狀態、用戶端、慢查詢、指令統計與設定" : "伺服器狀態、執行中的查詢、使用者與權限"}
+              title={
+                isRedis
+                  ? "伺服器狀態、用戶端、慢查詢、指令統計與設定"
+                  : isPg
+                    ? "伺服器狀態、執行中的查詢、角色與權限、慢查詢、設定"
+                    : "伺服器狀態、執行中的查詢、使用者與權限"
+              }
             >
               🖥 伺服器
             </button>
@@ -947,7 +969,18 @@ export default function App() {
         {session && view === "server" && isRedis && (
           <RedisServerPage key={session.session_id} sessionId={session.session_id} confirmRisk={confirmRisk} />
         )}
-        {session && view === "server" && !isRedis && (
+        {session && view === "server" && isPg && (
+          <PgServerPage
+            key={session.session_id}
+            sessionId={session.session_id}
+            connectionId={session.info.connection_id}
+            onOpenSql={(sql) => {
+              setView("main");
+              tabs.add(sql);
+            }}
+          />
+        )}
+        {session && view === "server" && !isRedis && !isPg && (
           <ServerPage
             key={session.session_id}
             sessionId={session.session_id}
@@ -964,6 +997,7 @@ export default function App() {
             key={session.session_id}
             sessionId={session.session_id}
             mariadb={isMaria}
+            postgres={isPg}
             databases={schema.databases}
             showSystem={settings.show_system_databases}
             currentDb={currentDb}
@@ -1115,6 +1149,7 @@ export default function App() {
                   active={t.key === tab?.key}
                   initialValue={t.sql}
                   mariadb={isMaria}
+                  postgres={isPg}
                   schema={settings.schema_autocomplete ? schema.namespace : null}
                   defaultSchema={currentDb}
                   theme={editorTheme(settings.editor_theme, systemDark)}

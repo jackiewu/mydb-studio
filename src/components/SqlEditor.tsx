@@ -3,7 +3,7 @@ import { EditorView, basicSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { completeFromList, snippet, snippetCompletion } from "@codemirror/autocomplete";
-import { sql, MySQL, MariaSQL, type SQLNamespace } from "@codemirror/lang-sql";
+import { sql, MySQL, MariaSQL, PostgreSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import { selectAll, toggleComment } from "@codemirror/commands";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import type { Snippet } from "../api";
@@ -14,6 +14,7 @@ import type { EditorTheme } from "../editor/themes";
 import { openMenu } from "../contextMenu";
 import { advisorLint } from "../editor/advisorLint";
 import { copyText } from "../copy";
+import { inSelection, multiCursor, selectNextOccurrence, selectSelectionMatches, selectedTexts } from "../editor/multiCursor";
 
 /** Lets the app insert text into the editor. */
 export interface EditorHandle {
@@ -28,6 +29,8 @@ export interface EditorHandle {
 }
 
 function selectionOr(v: EditorView) {
+  // Several cursors: the statements they are in (see `runTarget`).
+  if (v.state.selection.ranges.length > 1) return runTarget(v.state).text;
   const { from, to, head } = v.state.selection.main;
   if (from !== to) return v.state.sliceDoc(from, to);
   return statementAt(v.state.doc.toString(), head);
@@ -36,6 +39,8 @@ function selectionOr(v: EditorView) {
 interface Props {
   initialValue: string;
   mariadb: boolean;
+  /** PostgreSQL syntax, splitting and checks. */
+  postgres?: boolean;
   /** Databases, tables and columns to autocomplete; null turns that off. */
   schema: SchemaMap | null;
   /** Tables of this database complete without a prefix. */
@@ -67,11 +72,12 @@ interface Props {
 
 function language(
   mariadb: boolean,
+  postgres: boolean,
   schema: SchemaMap | null,
   defaultSchema: string | null | undefined,
   needColumns: (db: string) => void,
 ) {
-  const dialect = mariadb ? MariaSQL : MySQL;
+  const dialect = postgres ? PostgreSQL : mariadb ? MariaSQL : MySQL;
   if (!schema) return sql({ dialect, upperCaseKeywords: true });
   const columns = [{ autocomplete: columnSource(schema, defaultSchema, needColumns) }];
   return [
@@ -109,7 +115,7 @@ function look(theme: EditorTheme, fontSize: number) {
 }
 
 export function SqlEditor(props: Props) {
-  const { initialValue, mariadb, schema, defaultSchema, theme, fontSize, snippets, handle } = props;
+  const { initialValue, mariadb, postgres = false, schema, defaultSchema, theme, fontSize, snippets, handle } = props;
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   // Parts that change while the editor is open are swapped in place, so the
@@ -143,19 +149,19 @@ export function SqlEditor(props: Props) {
     };
     const askAi = (v: EditorView) => {
       const { from, to } = v.state.selection.main;
-      const selected = v.state.sliceDoc(from, to);
+      const selected = v.state.selection.ranges.length > 1 ? "" : v.state.sliceDoc(from, to);
       handlers.current.onAskAi?.((selected.trim() ? selected : runTarget(v.state).text).trim());
       return true;
     };
     const contextMenu = (e: MouseEvent, v: EditorView) => {
       // Right-clicking outside the selection moves the cursor there first.
       const at = v.posAtCoords({ x: e.clientX, y: e.clientY });
-      const sel = v.state.selection.main;
-      if (at != null && (at < sel.from || at > sel.to)) v.dispatch({ selection: { anchor: at } });
+      // Inside any of several cursors or selections keeps them all.
+      if (at != null && !inSelection(v.state, at)) v.dispatch({ selection: { anchor: at } });
       v.focus();
       const target = runTarget(v.state);
-      const { from, to } = v.state.selection.main;
-      const selected = v.state.sliceDoc(from, to);
+      const multi = v.state.selection.ranges.length > 1;
+      const selected = selectedTexts(v.state);
       const runLabel =
         target.kind === "all"
           ? `執行全部（${target.count} 句）`
@@ -186,7 +192,7 @@ export function SqlEditor(props: Props) {
           disabled: !selected,
           onClick: async () => {
             await copyText(selected);
-            v.dispatch(v.state.replaceSelection(""));
+            v.dispatch(v.state.replaceSelection(""), { userEvent: "delete.cut" });
             v.focus();
           },
         },
@@ -202,6 +208,17 @@ export function SqlEditor(props: Props) {
         },
         { label: "全選", hint: "⌘A", onClick: () => (selectAll(v), v.focus()) },
         "sep",
+        {
+          label: "選取下一個相同的字（多游標）",
+          hint: "⌘D",
+          onClick: () => (selectNextOccurrence(v), v.focus()),
+        },
+        {
+          label: "選取所有相同的字（多游標）",
+          hint: "⌃⌘G",
+          onClick: () => (selectSelectionMatches(v) || (selectNextOccurrence(v) && selectSelectionMatches(v)), v.focus()),
+        },
+        "sep",
         { label: "註解／取消註解", hint: "⌘/", onClick: () => (toggleComment(v), v.focus()) },
         {
           label: "複製這一句",
@@ -209,9 +226,9 @@ export function SqlEditor(props: Props) {
           onClick: () => copyText(target.text.trim()),
         },
         {
-          label: selected ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
-          disabled: !selected.trim() && target.count === 0,
-          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() ? selected : target.text).trim()),
+          label: selected && !multi ? "把選取的內容存成 Snippet…" : "把這一句存成 Snippet…",
+          disabled: !(selected.trim() && !multi) && target.count === 0,
+          onClick: () => handlers.current.onSaveSnippet?.((selected.trim() && !multi ? selected : target.text).trim()),
         },
       ]);
       return true;
@@ -231,11 +248,12 @@ export function SqlEditor(props: Props) {
       parent: host.current!,
       extensions: [
         basicSetup,
-        p.language.of(language(mariadb, schema, defaultSchema, needColumns)),
+        multiCursor(),
+        p.language.of(language(mariadb, postgres, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
         p.look.of(look(theme, fontSize)),
         statementMarks(),
-        advisorLint(() => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
+        advisorLint(() => !!handlers.current.postgres, () => (f) => !(f.rule === "select_all_rows" && (handlers.current.autoLimit ?? 0) > 0)),
         EditorView.domEventHandlers({ contextmenu: contextMenu }),
         Prec.highest(
           keymap.of([
@@ -265,10 +283,10 @@ export function SqlEditor(props: Props) {
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: parts.current.language.reconfigure(language(mariadb, schema, defaultSchema, needColumns)),
+      effects: parts.current.language.reconfigure(language(mariadb, postgres, schema, defaultSchema, needColumns)),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mariadb, schema, defaultSchema]);
+  }, [mariadb, postgres, schema, defaultSchema]);
 
   // Coming back to a tab: re-measure (it was hidden), focus, and say what ▶ runs.
   useEffect(() => {

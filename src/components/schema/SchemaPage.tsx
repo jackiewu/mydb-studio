@@ -18,6 +18,7 @@ import { Loading, LoadError } from "./Loading";
 import type { EditorTheme } from "../../editor/themes";
 import { SYSTEM_DBS } from "../../schema";
 import { CodeArea } from "./CodeArea";
+import { quoteName } from "../../dialect";
 import { DdlPlanDialog } from "./DdlPlanDialog";
 import { TableDesigner } from "./TableDesigner";
 
@@ -31,6 +32,8 @@ export interface SchemaTarget {
 interface Props {
   sessionId: string;
   mariadb: boolean;
+  /** A PostgreSQL connection: the list holds schemas of the database. */
+  postgres?: boolean;
   databases: DatabaseInfo[] | null;
   showSystem: boolean;
   currentDb: string | null;
@@ -46,10 +49,15 @@ type Tab = "tables" | ObjectKind;
 
 /** What loadDb fetches, named for the loading and error messages. */
 type LoadKey = "options" | "tables" | "objects";
-const LOAD_LABEL: Record<LoadKey, string> = {
+const MY_LOAD_LABEL: Record<LoadKey, string> = {
   options: "資料庫字元集",
   tables: "資料表清單",
   objects: "檢視、程序、觸發器與事件",
+};
+const PG_LOAD_LABEL: Record<LoadKey, string> = {
+  options: "schema 擁有者",
+  tables: "資料表清單",
+  objects: "檢視、函式、程序與觸發器",
 };
 
 const TABS: { id: Tab; label: string }[] = [
@@ -70,6 +78,11 @@ interface Pending {
 
 export function SchemaPage(props: Props) {
   const { sessionId, mariadb, databases, showSystem, currentDb, target, onChanged } = props;
+  const pg = !!props.postgres;
+  // What the left list holds: databases, or a PostgreSQL database's schemas.
+  const dbWord = pg ? "schema" : "資料庫";
+  const LOAD_LABEL = pg ? PG_LOAD_LABEL : MY_LOAD_LABEL;
+  const tabs = pg ? TABS.filter((t) => t.id !== "event") : TABS;
   const [db, setDb] = useState<string | null>(target?.database ?? currentDb);
   const [filter, setFilter] = useState("");
   const [meta, setMeta] = useState<SchemaMeta | null>(null);
@@ -155,12 +168,12 @@ export function SchemaPage(props: Props) {
     <div className="users-panel schema-page">
       <div className="users-list">
         <div className="users-list-head">
-          <input type="search" placeholder="篩選資料庫…" value={filter} onChange={(e) => setFilter(e.target.value)} />
-          <button className="small" onClick={() => setDbDialog("create")} title="建立資料庫">
+          <input type="search" placeholder={`篩選${dbWord}…`} value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <button className="small" onClick={() => setDbDialog("create")} title={`建立${dbWord}`}>
             ＋
           </button>
         </div>
-        {databases == null && <Loading what="資料庫清單" />}
+        {databases == null && <Loading what={`${dbWord}清單`} />}
         <ul>
           {shown.map((d) => (
             <li
@@ -188,15 +201,20 @@ export function SchemaPage(props: Props) {
             {message}
           </div>
         )}
-        {error && <LoadError what="伺服器字元集與引擎清單" error={error} onRetry={loadMeta} />}
-        {!db && databases != null && <div className="hint pad">選擇左邊的資料庫。</div>}
+        {error && <LoadError what={pg ? "伺服器資訊" : "伺服器字元集與引擎清單"} error={error} onRetry={loadMeta} />}
+        {!db && databases != null && <div className="hint pad">選擇左邊的{dbWord}。</div>}
         {db && (
           <div className="schema-detail">
             <div className="user-head schema-head">
               <h2>{db}</h2>
-              {options && (
+              {options && !pg && (
                 <span className="badge" title="資料庫預設字元集與定序">
                   {options.charset} · {options.collation}
+                </span>
+              )}
+              {options && pg && options.charset && (
+                <span className="badge" title="schema 擁有者">
+                  擁有者 {options.charset}
                 </span>
               )}
               {!options && loading.options && <Loading what={LOAD_LABEL.options} inline />}
@@ -204,29 +222,31 @@ export function SchemaPage(props: Props) {
                 <Loading what={`最新的${refreshing.map((k) => LOAD_LABEL[k]).join("、")}`} inline />
               )}
               <span className="spacer" />
-              <button onClick={() => setDbDialog("alter")} disabled={!options || !meta}>
-                字元集／定序…
-              </button>
+              {!pg && (
+                <button onClick={() => setDbDialog("alter")} disabled={!options || !meta}>
+                  字元集／定序…
+                </button>
+              )}
               <button
                 className="danger"
-                disabled={SYSTEM_DBS.has(db)}
+                disabled={!pg && SYSTEM_DBS.has(db)}
                 onClick={() =>
                   run({
-                    title: `刪除資料庫 ${db}`,
+                    title: `刪除${dbWord} ${db}`,
                     change: { kind: "drop_database", name: db },
                     confirmName: db,
                     after: (r) => {
-                      ran(r, `已刪除資料庫 ${db}`);
+                      ran(r, `已刪除${dbWord} ${db}`);
                       setDb(null);
                     },
                   })
                 }
               >
-                刪除資料庫
+                刪除{dbWord}
               </button>
             </div>
             <div className="tabs schema-tabs">
-              {TABS.map((t) => (
+              {tabs.map((t) => (
                 <button
                   key={t.id}
                   className={tab === t.id ? "active" : undefined}
@@ -245,13 +265,14 @@ export function SchemaPage(props: Props) {
             </div>
             {loadError("options")}
 
-            {tab === "tables" && designing != null && !meta && !error && <Loading what="伺服器字元集與引擎清單" />}
+            {tab === "tables" && designing != null && !meta && !error && <Loading what={pg ? "伺服器資訊" : "伺服器字元集與引擎清單"} />}
             {tab === "tables" && designing != null && meta && (
               <TableDesigner
                 key={`${db}/${designing}/${designVersion}`}
                 sessionId={sessionId}
                 database={db}
                 table={designing || null}
+                postgres={pg}
                 meta={meta}
                 dbCharset={options?.charset ?? null}
                 dbCollation={options?.collation ?? null}
@@ -280,6 +301,7 @@ export function SchemaPage(props: Props) {
                 }
                 onOpenSql={props.onOpenSql}
                 database={db}
+                postgres={pg}
               />
             )}
 
@@ -346,6 +368,7 @@ export function SchemaPage(props: Props) {
                     object={kindObjects(selected.kind).find((o) => o.name === selected.name) ?? null}
                     tables={baseTables.map((t) => t.name)}
                     mariadb={mariadb}
+                    postgres={pg}
                     onRun={(p) => run(p)}
                     onSaved={(name, r) => {
                       ran(r, `已儲存${OBJECT_LABEL[selected.kind]} ${name}`);
@@ -363,7 +386,21 @@ export function SchemaPage(props: Props) {
         )}
       </div>
 
-      {dbDialog && meta && (
+      {dbDialog && pg && (
+        <SchemaNameDialog
+          onCancel={() => setDbDialog(null)}
+          onNext={(change) => {
+            setDbDialog(null);
+            const name = "name" in change ? change.name : "";
+            run({ title: `建立 schema ${name}`, change, after: (r) => {
+                ran(r, `已建立 schema ${name}`);
+                setDb(name);
+              },
+            });
+          }}
+        />
+      )}
+      {dbDialog && meta && !pg && (
         <DatabaseDialog
           mode={dbDialog}
           meta={meta}
@@ -373,10 +410,10 @@ export function SchemaPage(props: Props) {
             setDbDialog(null);
             const name = "name" in change ? change.name : "";
             run({
-              title: change.kind === "create_database" ? `建立資料庫 ${name}` : `變更資料庫 ${name} 的字元集`,
+              title: change.kind === "create_database" ? `建立${dbWord} ${name}` : `變更資料庫 ${name} 的字元集`,
               change,
               after: (r) => {
-                ran(r, change.kind === "create_database" ? `已建立資料庫 ${name}` : `已變更 ${name} 的字元集`);
+                ran(r, change.kind === "create_database" ? `已建立${dbWord} ${name}` : `已變更 ${name} 的字元集`);
                 setDb(name);
               },
             });
@@ -407,6 +444,7 @@ export function SchemaPage(props: Props) {
 
 function TableList(props: {
   database: string;
+  postgres: boolean;
   tables: TableInfo[];
   onDesign: (t: string) => void;
   onNew: () => void;
@@ -426,7 +464,7 @@ function TableList(props: {
         <thead>
           <tr>
             <th>名稱</th>
-            <th>引擎</th>
+            {!props.postgres && <th>引擎</th>}
             <th>筆數（估計）</th>
             <th>大小</th>
             <th>註解</th>
@@ -444,7 +482,9 @@ function TableList(props: {
                   {
                     label: "在編輯器查詢前 100 筆",
                     onClick: () =>
-                      props.onOpenSql(`SELECT * FROM \`${props.database.replace(/`/g, "``")}\`.\`${t.name.replace(/`/g, "``")}\` LIMIT 100;`),
+                      props.onOpenSql(
+                        `SELECT * FROM ${quoteName(props.database)}.${quoteName(t.name)} LIMIT 100;`,
+                      ),
                   },
                   "sep",
                   { label: "刪除資料表…", danger: true, onClick: () => props.onDrop(t.name) },
@@ -452,7 +492,7 @@ function TableList(props: {
               }
             >
               <td>{t.name}</td>
-              <td>{t.engine}</td>
+              {!props.postgres && <td>{t.engine}</td>}
               <td className="num">{t.rows_estimate?.toLocaleString() ?? ""}</td>
               <td className="num">{t.size_bytes != null ? sizeText(t.size_bytes) : ""}</td>
               <td className="muted">{t.comment}</td>
@@ -468,7 +508,7 @@ function TableList(props: {
           ))}
           {tables.length === 0 && (
             <tr>
-              <td colSpan={6} className="hint">
+              <td colSpan={props.postgres ? 5 : 6} className="hint">
                 沒有資料表
               </td>
             </tr>
@@ -498,6 +538,7 @@ function ObjectEditor(props: {
   object: SchemaObject | null;
   tables: string[];
   mariadb: boolean;
+  postgres: boolean;
   theme: EditorTheme;
   fontSize: number;
   onRun: (p: Pending) => void;
@@ -513,7 +554,7 @@ function ObjectEditor(props: {
 
   useEffect(() => {
     if (name == null) {
-      const t = objectTemplate(kind, props.tables);
+      const t = objectTemplate(kind, props.tables, props.postgres);
       setLoaded(t);
       setText(t);
       return;
@@ -534,7 +575,7 @@ function ObjectEditor(props: {
     props.onRun({
       title: name ? `儲存${label} ${name}` : `建立${label}`,
       change: { kind: "save_object", database, object_kind: kind, original: name, definition: text },
-      after: (r) => props.onSaved(nameIn(text) ?? name ?? "", r),
+      after: (r) => props.onSaved(nameIn(text, props.postgres) ?? name ?? "", r),
     });
 
   return (
@@ -583,17 +624,28 @@ function ObjectEditor(props: {
       </div>
       {loadError && <LoadError what={`${label} ${name} 的定義`} error={loadError} />}
       {name != null && loaded == null && !loadError && <Loading what={`${label} ${name} 的定義`} />}
-      <p className="muted small-text object-hint">
-        整段 CREATE 語句會當成一句送出，不需要 DELIMITER。
-        {name &&
-          (props.mariadb || kind === "view"
-            ? "儲存時用 CREATE OR REPLACE，失敗的話原本的不受影響。"
-            : "MySQL 會先刪除再建立；建立失敗時會自動用原本的定義還原。")}
-        {sqlMode && ` 建立時的 sql_mode：${sqlMode}`}
-      </p>
+      {props.postgres ? (
+        <p className="muted small-text object-hint">
+          只能有一句 CREATE；函式本體請放在 $$ … $$ 之間。沒寫 schema 的名稱會用 {database}。
+          整個變更在同一個交易裡執行，失敗時不會留下一半的修改。
+          {name &&
+            (kind === "view" || kind === "function" || kind === "procedure"
+              ? " 儲存時用 CREATE OR REPLACE；改了參數型別會變成另一個新的函式。"
+              : " 儲存時會先刪除再建立（同一個交易）。")}
+        </p>
+      ) : (
+        <p className="muted small-text object-hint">
+          整段 CREATE 語句會當成一句送出，不需要 DELIMITER。
+          {name &&
+            (props.mariadb || kind === "view"
+              ? "儲存時用 CREATE OR REPLACE，失敗的話原本的不受影響。"
+              : "MySQL 會先刪除再建立；建立失敗時會自動用原本的定義還原。")}
+          {sqlMode && ` 建立時的 sql_mode：${sqlMode}`}
+        </p>
+      )}
       {loaded != null && (
         <div className="object-code">
-          <CodeArea value={text} mariadb={props.mariadb} theme={props.theme} fontSize={props.fontSize} onChange={setText} />
+          <CodeArea value={text} mariadb={props.mariadb} postgres={props.postgres} theme={props.theme} fontSize={props.fontSize} onChange={setText} />
         </div>
       )}
     </div>
@@ -601,12 +653,17 @@ function ObjectEditor(props: {
 }
 
 /** The object name in a CREATE statement, to select it after saving. */
-function nameIn(sql: string): string | null {
-  const id = "(`(?:[^`]|``)+`|[\\w$]+)";
-  const m = new RegExp(`\\b(?:VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT)\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${id}(?:\\s*\\.\\s*${id})?`, "i").exec(sql);
+function nameIn(sql: string, postgres = false): string | null {
+  const id = postgres ? '("(?:[^"]|"")+"|[\\w$]+)' : "(`(?:[^`]|``)+`|[\\w$]+)";
+  // Comments come first in some templates; skip them.
+  const code = sql.replace(/^\s*(--[^\n]*\n\s*)+/, "");
+  const m = new RegExp(`\\b(?:VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT)\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${id}(?:\\s*\\.\\s*${id})?`, "i").exec(code);
   if (!m) return null;
   const name = m[2] ?? m[1];
-  return name.startsWith("`") ? name.slice(1, -1).replace(/``/g, "`") : name;
+  if (name.startsWith("`")) return name.slice(1, -1).replace(/``/g, "`");
+  if (name.startsWith('"')) return name.slice(1, -1).replace(/""/g, '"');
+  // PostgreSQL folds unquoted names to lower case.
+  return postgres ? name.toLowerCase() : name;
 }
 
 function DatabaseDialog(props: {
@@ -684,6 +741,34 @@ function DatabaseDialog(props: {
                   : { kind: "alter_database", name: options!.name, charset, collation, convert_tables: convert },
               )
             }
+          >
+            預覽 SQL…
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** PostgreSQL: a new schema needs only a name. */
+function SchemaNameDialog(props: { onCancel: () => void; onNext: (change: SchemaChange) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && props.onCancel()}>
+      <div className="risk-dialog plan-dialog admin-form" role="dialog">
+        <h2>建立 schema</h2>
+        <label>
+          名稱
+          <input value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} autoFocus />
+        </label>
+        <p className="field-note">建立在目前連線的資料庫裡；要建立另一個資料庫，請用 SQL（CREATE DATABASE）再新增一個連線。</p>
+        <div className="actions">
+          <span className="spacer" />
+          <button onClick={props.onCancel}>取消</button>
+          <button
+            className="primary"
+            disabled={!name.trim()}
+            onClick={() => props.onNext({ kind: "create_database", name: name.trim(), charset: null, collation: null })}
           >
             預覽 SQL…
           </button>

@@ -44,6 +44,31 @@ export const COMMON_TYPES = [
   "enum('a','b')",
 ];
 
+/** PostgreSQL suggestions for the type field. */
+export const PG_COMMON_TYPES = [
+  "integer",
+  "bigint",
+  "smallint",
+  "boolean",
+  "numeric(10,2)",
+  "double precision",
+  "real",
+  "varchar(255)",
+  "varchar(64)",
+  "text",
+  "uuid",
+  "jsonb",
+  "json",
+  "date",
+  "timestamptz",
+  "timestamp",
+  "time",
+  "interval",
+  "bytea",
+  "inet",
+  "text[]",
+];
+
 export const FK_RULES = ["RESTRICT", "CASCADE", "SET NULL", "NO ACTION"];
 
 /** Types that take a character set and collation. */
@@ -65,7 +90,7 @@ function isNumericType(type: string): boolean {
  * date column gets quotes; NULL, numbers, CURRENT_TIMESTAMP, b'…' and
  * (expressions) are kept as typed. Empty means no default.
  */
-export function defaultSql(input: string, type: string): string | null {
+export function defaultSql(input: string, type: string, postgres = false): string | null {
   const v = input.trim();
   if (!v) return null;
   if (/^'.*'$/s.test(v) || /^\(.*\)$/s.test(v) || /^b'[01]*'$/i.test(v)) return v;
@@ -76,7 +101,9 @@ export function defaultSql(input: string, type: string): string | null {
   if (/^[a-z_][a-z0-9_]*\(.*\)$/is.test(v)) return v;
   if (/^[+-]?\d+(\.\d+)?$/.test(v) && (isNumericType(type) || !isTextType(type))) return v;
   if (isNumericType(type) && /^(true|false)$/i.test(v)) return v;
-  return `'${v.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+  // PostgreSQL strings take backslashes as they are.
+  const body = postgres ? v : v.replace(/\\/g, "\\\\");
+  return `'${body.replace(/'/g, "''")}'`;
 }
 
 export function newColumn(name = ""): ColumnDesign {
@@ -98,11 +125,16 @@ export function newColumn(name = ""): ColumnDesign {
 }
 
 /** A new table with an `id` primary key, in the database's defaults. */
-export function newTable(engine: string | null, charset: string | null, collation: string | null): TableDesign {
+export function newTable(
+  engine: string | null,
+  charset: string | null,
+  collation: string | null,
+  postgres = false,
+): TableDesign {
   return {
     name: "",
     columns: [
-      { ...newColumn("id"), column_type: "bigint unsigned", nullable: false, auto_increment: true },
+      { ...newColumn("id"), column_type: postgres ? "bigint" : "bigint unsigned", nullable: false, auto_increment: true },
     ],
     indexes: [
       { original: null, name: "PRIMARY", kind: "primary", parts: [part("id")], using: null, comment: "" },
@@ -171,8 +203,9 @@ export function moveColumn(design: TableDesign, i: number, delta: number): Table
 }
 
 /** A starting definition for a new object. */
-export function objectTemplate(kind: ObjectKind, tables: string[]): string {
+export function objectTemplate(kind: ObjectKind, tables: string[], postgres = false): string {
   const table = tables[0] ?? "my_table";
+  if (postgres) return pgObjectTemplate(kind, table);
   switch (kind) {
     case "view":
       return `CREATE VIEW \`v_new\` AS\nSELECT *\nFROM \`${table}\``;
@@ -184,5 +217,25 @@ export function objectTemplate(kind: ObjectKind, tables: string[]): string {
       return `CREATE TRIGGER \`trg_${table}_before_insert\`\nBEFORE INSERT ON \`${table}\`\nFOR EACH ROW\nBEGIN\n  -- SET NEW.created_at = NOW();\nEND`;
     case "event":
       return `CREATE EVENT \`ev_new\`\nON SCHEDULE EVERY 1 DAY\nSTARTS CURRENT_TIMESTAMP + INTERVAL 1 HOUR\nDO\n  DELETE FROM \`${table}\` WHERE created_at < NOW() - INTERVAL 30 DAY`;
+  }
+}
+
+/**
+ * PostgreSQL starting points. A trigger needs a trigger function, which
+ * is saved first on the 函式 tab.
+ */
+function pgObjectTemplate(kind: ObjectKind, table: string): string {
+  const t = '"' + table.replace(/"/g, '""') + '"';
+  switch (kind) {
+    case "view":
+      return `CREATE OR REPLACE VIEW v_new AS\nSELECT *\nFROM ${t}`;
+    case "procedure":
+      return `CREATE OR REPLACE PROCEDURE p_new(p_id integer)\nLANGUAGE plpgsql\nAS $$\nBEGIN\n  DELETE FROM ${t} WHERE id = p_id;\nEND\n$$`;
+    case "function":
+      return `CREATE OR REPLACE FUNCTION f_new(p_value integer)\nRETURNS integer\nLANGUAGE plpgsql\nIMMUTABLE\nAS $$\nBEGIN\n  RETURN p_value * 2;\nEND\n$$`;
+    case "trigger":
+      return `-- 觸發器要呼叫一個 RETURNS trigger 的函式，請先在「函式」分頁建立，例如：\n-- CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$\n-- BEGIN NEW.updated_at := now(); RETURN NEW; END $$\nCREATE TRIGGER trg_${table.replace(/\W/g, "_")}_before_update\nBEFORE UPDATE ON ${t}\nFOR EACH ROW\nEXECUTE FUNCTION set_updated_at()`;
+    case "event":
+      return "-- PostgreSQL 沒有事件";
   }
 }

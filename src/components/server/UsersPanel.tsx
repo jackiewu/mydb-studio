@@ -573,7 +573,7 @@ function AddTarget({
   );
 }
 
-function PasswordFields({
+export function PasswordFields({
   password,
   setPassword,
   required,

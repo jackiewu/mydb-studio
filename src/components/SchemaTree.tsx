@@ -15,7 +15,8 @@ interface Props {
   /** Called when a table is clicked. */
   onOpenTable: (database: string, table: string) => void;
   /** Opens the schema page on a database, or the designer of a table. */
-  onManage: (database: string, table?: string) => void;
+  /** Opens the schema page; leave out where it isn't available. */
+  onManage?: (database: string, table?: string) => void;
 }
 
 /** `text` with the part matching `filter` marked. */
@@ -136,8 +137,9 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                       onClick: () => onUseDatabase(d.name),
                     },
                     { label: isOpen ? "收合" : "展開", disabled: onlyTables, onClick: () => expand(d.name, !isOpen) },
-                    "sep",
-                    { label: "管理結構（資料表、程序、事件…）", onClick: () => onManage(d.name) },
+                    ...(onManage
+                      ? (["sep", { label: "管理結構（資料表、程序、事件…）", onClick: () => onManage(d.name) }] as const)
+                      : []),
                     "sep",
                     { label: "複製名稱", onClick: () => copyText(d.name) },
                     "sep",
@@ -187,7 +189,7 @@ export function SchemaTree({ schema, currentDb, showSystem, onShowSystemChange, 
                             const full = `${quoteIdent(d.name)}.${quoteIdent(t.name)}`;
                             openMenu(e, [
                               { label: "查詢前 100 筆", onClick: () => onOpenTable(d.name, t.name) },
-                              ...(t.kind === "BASE TABLE"
+                              ...(t.kind === "BASE TABLE" && onManage
                                 ? [{ label: "設計資料表（欄位、索引）…", onClick: () => onManage(d.name, t.name) }]
                                 : []),
                               "sep",
