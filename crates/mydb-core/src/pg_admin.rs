@@ -323,27 +323,26 @@ pub async fn overview(s: &PgSession) -> Result<PgOverview> {
 }
 
 pub async fn settings(s: &PgSession) -> Result<Vec<PgSetting>> {
-    Ok(s
-        .query(
-            "SELECT name::text, coalesce(setting, ''), coalesce(unit, ''), coalesce(category, ''),
+    Ok(s.query(
+        "SELECT name::text, coalesce(setting, ''), coalesce(unit, ''), coalesce(category, ''),
                     coalesce(short_desc, ''), coalesce(source, ''), coalesce(context, ''),
                     coalesce(pending_restart, false)
                FROM pg_settings ORDER BY name",
-            &[],
-        )
-        .await?
-        .iter()
-        .map(|r| PgSetting {
-            name: r.get(0),
-            setting: r.get(1),
-            unit: r.get(2),
-            category: r.get(3),
-            description: r.get(4),
-            source: r.get(5),
-            context: r.get(6),
-            pending_restart: r.get(7),
-        })
-        .collect())
+        &[],
+    )
+    .await?
+    .iter()
+    .map(|r| PgSetting {
+        name: r.get(0),
+        setting: r.get(1),
+        unit: r.get(2),
+        category: r.get(3),
+        description: r.get(4),
+        source: r.get(5),
+        context: r.get(6),
+        pending_restart: r.get(7),
+    })
+    .collect())
 }
 
 pub async fn activity(s: &PgSession) -> Result<Vec<PgActivity>> {
@@ -379,9 +378,8 @@ pub async fn activity(s: &PgSession) -> Result<Vec<PgActivity>> {
 }
 
 pub async fn roles(s: &PgSession) -> Result<Vec<PgRole>> {
-    Ok(s
-        .query(
-            "SELECT r.rolname::text, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole,
+    Ok(s.query(
+        "SELECT r.rolname::text, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole,
                     r.rolreplication, r.rolconnlimit, r.rolvaliduntil::text,
                     array(SELECT b.rolname::text FROM pg_auth_members m
                             JOIN pg_roles b ON b.oid = m.roleid
@@ -389,22 +387,22 @@ pub async fn roles(s: &PgSession) -> Result<Vec<PgRole>> {
                FROM pg_roles r
               WHERE r.rolname !~ '^pg_'
               ORDER BY 1",
-            &[],
-        )
-        .await?
-        .iter()
-        .map(|r| PgRole {
-            name: r.get(0),
-            can_login: r.get(1),
-            superuser: r.get(2),
-            create_db: r.get(3),
-            create_role: r.get(4),
-            replication: r.get(5),
-            connection_limit: r.get(6),
-            valid_until: r.get(7),
-            member_of: r.get(8),
-        })
-        .collect())
+        &[],
+    )
+    .await?
+    .iter()
+    .map(|r| PgRole {
+        name: r.get(0),
+        can_login: r.get(1),
+        superuser: r.get(2),
+        create_db: r.get(3),
+        create_role: r.get(4),
+        replication: r.get(5),
+        connection_limit: r.get(6),
+        valid_until: r.get(7),
+        member_of: r.get(8),
+    })
+    .collect())
 }
 
 /// What `role` was granted in the connected database.
@@ -590,7 +588,11 @@ fn privilege_list(kind: &PgObjectKind, privileges: &[String]) -> Result<String> 
     let mut out = Vec::new();
     for p in privileges {
         let p = p.trim().to_ascii_uppercase();
-        let p = if p == "TEMP" { "TEMPORARY".to_string() } else { p };
+        let p = if p == "TEMP" {
+            "TEMPORARY".to_string()
+        } else {
+            p
+        };
         if p == "ALL" || p == "ALL PRIVILEGES" {
             return Ok("ALL PRIVILEGES".into());
         }

@@ -28,7 +28,11 @@ async fn overview_settings_and_activity() {
     let o = pg_admin::overview(&s).await.unwrap();
     assert!(o.version.starts_with("PostgreSQL"));
     assert!(o.connections >= 1 && o.max_connections > 0);
-    assert!(o.databases.iter().any(|d| d.name == o.current_database && d.size_bytes.is_some()));
+    assert!(
+        o.databases
+            .iter()
+            .any(|d| d.name == o.current_database && d.size_bytes.is_some())
+    );
 
     let settings = pg_admin::settings(&s).await.unwrap();
     let wm = settings.iter().find(|x| x.name == "work_mem").unwrap();
@@ -38,14 +42,20 @@ async fn overview_settings_and_activity() {
     let list = pg_admin::activity(&s).await.unwrap();
     assert!(list.iter().any(|a| a.pid == me && a.state == "active"));
     // Its own connection is refused.
-    assert!(pg_admin::apply(&s, &PgAdminChange::Terminate { pid: me }).await.is_err());
+    assert!(
+        pg_admin::apply(&s, &PgAdminChange::Terminate { pid: me })
+            .await
+            .is_err()
+    );
 
     // A second connection with a long query, cancelled from the first.
     let other = PgSession::connect(&p).await.unwrap();
     let pid = other.info().connection_id as i32;
     let run = tokio::spawn(async move { other.execute("SELECT pg_sleep(30)", 0).await });
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    pg_admin::apply(&s, &PgAdminChange::Cancel { pid }).await.unwrap();
+    pg_admin::apply(&s, &PgAdminChange::Cancel { pid })
+        .await
+        .unwrap();
     let out = tokio::time::timeout(std::time::Duration::from_secs(5), run)
         .await
         .unwrap()
@@ -91,7 +101,12 @@ async fn roles_and_privileges() {
         .query_text("SELECT rolpassword FROM pg_authid WHERE rolname = 'a_app'")
         .await
         .unwrap();
-    assert!(stored.rows[0][0].as_deref().unwrap().starts_with("SCRAM-SHA-256$"));
+    assert!(
+        stored.rows[0][0]
+            .as_deref()
+            .unwrap()
+            .starts_with("SCRAM-SHA-256$")
+    );
     let mut login = p.clone();
     login.user = "a_app".into();
     login.password = Some("s3cret pw".into());
@@ -114,13 +129,47 @@ async fn roles_and_privileges() {
         grant_option: opt,
     };
     let db = o_db(&s).await;
-    ok(grant(target(PgObjectKind::Database, None, Some(&db)), &["CONNECT", "TEMP"], false)).await;
-    ok(grant(target(PgObjectKind::Schema, None, Some("a_priv")), &["USAGE"], false)).await;
-    ok(grant(target(PgObjectKind::AllTables, Some("a_priv"), None), &["SELECT", "INSERT"], true)).await;
-    ok(grant(target(PgObjectKind::Sequence, Some("a_priv"), Some("s")), &["USAGE"], false)).await;
-    ok(grant(target(PgObjectKind::Function, Some("a_priv"), Some("f(integer)")), &["EXECUTE"], false)).await;
+    ok(grant(
+        target(PgObjectKind::Database, None, Some(&db)),
+        &["CONNECT", "TEMP"],
+        false,
+    ))
+    .await;
+    ok(grant(
+        target(PgObjectKind::Schema, None, Some("a_priv")),
+        &["USAGE"],
+        false,
+    ))
+    .await;
+    ok(grant(
+        target(PgObjectKind::AllTables, Some("a_priv"), None),
+        &["SELECT", "INSERT"],
+        true,
+    ))
+    .await;
+    ok(grant(
+        target(PgObjectKind::Sequence, Some("a_priv"), Some("s")),
+        &["USAGE"],
+        false,
+    ))
+    .await;
+    ok(grant(
+        target(PgObjectKind::Function, Some("a_priv"), Some("f(integer)")),
+        &["EXECUTE"],
+        false,
+    ))
+    .await;
     // A procedure, named as the schema page lists it.
-    ok(grant(target(PgObjectKind::Function, Some("a_priv"), Some("p(IN n integer)")), &["EXECUTE"], false)).await;
+    ok(grant(
+        target(
+            PgObjectKind::Function,
+            Some("a_priv"),
+            Some("p(IN n integer)"),
+        ),
+        &["EXECUTE"],
+        false,
+    ))
+    .await;
     ok(PgAdminChange::DefaultPrivileges {
         role: "a_app".into(),
         schema: Some("a_priv".into()),
@@ -139,13 +188,19 @@ async fn roles_and_privileges() {
             .find(|g| g.target.kind == kind && g.target.name.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("{kind:?} {name}: {:?}", privs.grants))
     };
-    assert_eq!(find(PgObjectKind::Database, &db).privileges, ["CONNECT", "TEMPORARY"]);
+    assert_eq!(
+        find(PgObjectKind::Database, &db).privileges,
+        ["CONNECT", "TEMPORARY"]
+    );
     assert_eq!(find(PgObjectKind::Schema, "a_priv").privileges, ["USAGE"]);
     let t = find(PgObjectKind::Table, "t");
     assert_eq!(t.privileges, ["INSERT", "SELECT"]);
     assert_eq!(t.grantable, ["INSERT", "SELECT"]);
     assert_eq!(find(PgObjectKind::Sequence, "s").privileges, ["USAGE"]);
-    assert_eq!(find(PgObjectKind::Function, "f(n integer)").privileges, ["EXECUTE"]);
+    assert_eq!(
+        find(PgObjectKind::Function, "f(n integer)").privileges,
+        ["EXECUTE"]
+    );
     assert_eq!(privs.defaults.len(), 1);
     assert_eq!(privs.defaults[0].object, "tables");
     assert_eq!(privs.defaults[0].schema.as_deref(), Some("a_priv"));
@@ -171,7 +226,11 @@ async fn roles_and_privileges() {
         .map(|g| g.target.name.clone().unwrap())
         .collect();
     assert_eq!(funcs, ["p(IN n integer)"]);
-    let t = privs.grants.iter().find(|g| g.target.name.as_deref() == Some("t")).unwrap();
+    let t = privs
+        .grants
+        .iter()
+        .find(|g| g.target.name.as_deref() == Some("t"))
+        .unwrap();
     assert_eq!(t.privileges, ["SELECT"]);
 
     ok(PgAdminChange::AlterRole {
@@ -191,7 +250,12 @@ async fn roles_and_privileges() {
     let roles = pg_admin::roles(&s).await.unwrap();
     let app = roles.iter().find(|r| r.name == "a_app").unwrap();
     assert!(!app.can_login && app.create_db && app.member_of.is_empty());
-    assert!(app.valid_until.as_deref().unwrap().starts_with("2099-01-01"));
+    assert!(
+        app.valid_until
+            .as_deref()
+            .unwrap()
+            .starts_with("2099-01-01")
+    );
 
     // It owns a table: a plain DROP ROLE fails and changes nothing...
     s.execute("ALTER TABLE a_priv.t OWNER TO a_app", 0).await;
@@ -211,8 +275,15 @@ async fn roles_and_privileges() {
         reassign_to: Some(p.user.clone()),
     })
     .await;
-    assert!(!pg_admin::roles(&s).await.unwrap().iter().any(|r| r.name == "a_app"));
-    s.execute("DROP SCHEMA a_priv CASCADE; DROP ROLE a_readers", 0).await;
+    assert!(
+        !pg_admin::roles(&s)
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.name == "a_app")
+    );
+    s.execute("DROP SCHEMA a_priv CASCADE; DROP ROLE a_readers", 0)
+        .await;
 }
 
 async fn o_db(s: &PgSession) -> String {
@@ -229,11 +300,16 @@ async fn top_statements_when_installed() {
         .query_text("SELECT current_setting('shared_preload_libraries')")
         .await
         .unwrap();
-    if !preload.rows[0][0].as_deref().unwrap_or("").contains("pg_stat_statements") {
+    if !preload.rows[0][0]
+        .as_deref()
+        .unwrap_or("")
+        .contains("pg_stat_statements")
+    {
         eprintln!("pg_stat_statements not preloaded, skipping");
         return;
     }
-        s.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements", 0).await;
+    s.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements", 0)
+        .await;
     s.execute("SELECT count(*) FROM pg_class", 0).await;
     let list = pg_admin::top_statements(&s).await.unwrap().unwrap();
     assert!(list.iter().any(|x| x.calls > 0 && !x.query.is_empty()));

@@ -84,7 +84,8 @@ function cards(o: PgOverview): Card[] {
   const out: Card[] = [];
   out.push({
     title: "版本",
-    value: `PostgreSQL ${o.server_version}`,
+    // Distribution builds append their own tag, e.g. "16.4 (Ubuntu …)".
+    value: `PostgreSQL ${o.server_version.split(" ")[0]}`,
     detail: o.version.replace(/^PostgreSQL \S+\s*/, ""),
     hint: "伺服器版本與編譯平台。",
   });
@@ -244,7 +245,8 @@ function Activity({ sessionId, ownPid, onOpenSql }: { sessionId: string; ownPid:
   }, [sessionId]);
   usePolling(load, auto && !pending, 3000);
 
-  const seconds = (a: PgActivity) => (a.state === "active" ? a.query_seconds : a.transaction_seconds) ?? 0;
+  // Clock differences can make a just-started query a little negative.
+  const seconds = (a: PgActivity) => Math.max(0, (a.state === "active" ? a.query_seconds : a.transaction_seconds) ?? 0);
   const f = filter.trim().toLowerCase();
   const shown = (list ?? [])
     .filter((a) => !hideIdle || (a.backend_type === "client backend" && a.state !== "idle"))
@@ -1061,7 +1063,7 @@ function CreateRoleDialog({ roles, onNext, onCancel }: { roles: PgRole[]; onNext
         </label>
         <div>
           <span>加入群組</span>
-          <div className="priv-checks">
+          <div className="pg-priv-checks">
             {options.map((g) => (
               <label key={g} className="check">
                 <input type="checkbox" checked={groups.includes(g)} onChange={() => toggle(g)} /> {g}
@@ -1321,7 +1323,7 @@ function GrantDialog({
               </button>
             </span>
           )}
-          <div className="priv-checks">
+          <div className="pg-priv-checks">
             {available.map((p) => (
               <label key={p} className="check">
                 <input type="checkbox" checked={privs.includes(p)} onChange={() => toggle(p)} /> {p}

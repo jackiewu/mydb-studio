@@ -344,7 +344,11 @@ async fn views_functions_and_triggers() {
     s.use_database("public").await.unwrap();
     apply_ok(
         &s,
-        &save(ObjectKind::View, None, "CREATE VIEW plain AS SELECT name FROM items"),
+        &save(
+            ObjectKind::View,
+            None,
+            "CREATE VIEW plain AS SELECT name FROM items",
+        ),
     )
     .await;
     assert_eq!(s.current_database().as_deref(), Some("public"));

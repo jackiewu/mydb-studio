@@ -822,7 +822,9 @@ function ListPicker({ values, options, onChange }: { values: string[]; options: 
 }
 
 function indexChanged(original: TableDesign | null, ix: IndexDesign) {
-  const o = original?.indexes.find((x) => x.name === ix.original);
+  // By the name it had when loaded: PostgreSQL's primary key shows as
+  // PRIMARY but keeps its own constraint name in `original`.
+  const o = original?.indexes.find((x) => x.original === ix.original);
   return !o || JSON.stringify(o) !== JSON.stringify(ix);
 }
 
@@ -844,7 +846,7 @@ function countChanges(original: TableDesign | null, d: TableDesign, convert: boo
   const order = (t: TableDesign) => t.columns.map((c) => c.original ?? "").join("\n");
   if (n === 0 && order(original) !== order(d)) n++;
   for (const ix of d.indexes) if (indexChanged(original, ix)) n++;
-  n += original.indexes.filter((o) => !d.indexes.some((x) => x.original === o.name)).length;
+  n += original.indexes.filter((o) => !d.indexes.some((x) => x.original === o.original)).length;
   for (const fk of d.foreign_keys) if (fkChanged(original, fk)) n++;
   n += original.foreign_keys.filter((o) => !d.foreign_keys.some((x) => x.original === o.name)).length;
   if (d.name !== original.name) n++;
