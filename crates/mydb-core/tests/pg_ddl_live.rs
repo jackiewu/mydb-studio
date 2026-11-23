@@ -340,6 +340,24 @@ async fn views_functions_and_triggers() {
     )
     .await;
 
+    // Unqualified names mean the page's schema, whatever the session uses.
+    s.use_database("public").await.unwrap();
+    apply_ok(
+        &s,
+        &save(ObjectKind::View, None, "CREATE VIEW plain AS SELECT name FROM items"),
+    )
+    .await;
+    assert_eq!(s.current_database().as_deref(), Some("public"));
+    apply_ok(
+        &s,
+        &SchemaChange::DropObject {
+            database: "d_obj".into(),
+            object_kind: ObjectKind::View,
+            name: "plain".into(),
+        },
+    )
+    .await;
+
     let list = pg_ddl::objects(&s, "d_obj").await.unwrap();
     let mut found: Vec<(ObjectKind, String)> = list
         .objects

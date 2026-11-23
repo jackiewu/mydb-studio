@@ -803,14 +803,10 @@ export default function App() {
             onShowSystemChange={(show) => updateSettings({ ...settings, show_system_databases: show })}
             onUseDatabase={switchDatabase}
             onOpenTable={openTable}
-            onManage={
-              isPg
-                ? undefined
-                : (database, table) => {
-                    setSchemaTarget({ database, table, nonce: Date.now() });
-                    setView("schema");
-                  }
-            }
+            onManage={(database, table) => {
+              setSchemaTarget({ database, table, nonce: Date.now() });
+              setView("schema");
+            }}
           />
           )}
         </aside>
@@ -853,11 +849,15 @@ export default function App() {
             </label>
             )}
             <span className="spacer" />
-            {!isRedis && !isPg && (
+            {!isRedis && (
               <button
                 className={view === "schema" ? "active" : undefined}
                 onClick={() => setView(view === "schema" ? "main" : "schema")}
-                title="資料庫、資料表結構與索引、檢視、預存程序、觸發器、事件"
+                title={
+                  isPg
+                    ? "Schema、資料表結構與索引、檢視、函式、預存程序、觸發器"
+                    : "資料庫、資料表結構與索引、檢視、預存程序、觸發器、事件"
+                }
               >
                 🗂 結構
               </button>
@@ -981,6 +981,7 @@ export default function App() {
             key={session.session_id}
             sessionId={session.session_id}
             mariadb={isMaria}
+            postgres={isPg}
             databases={schema.databases}
             showSystem={settings.show_system_databases}
             currentDb={currentDb}

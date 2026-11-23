@@ -914,7 +914,12 @@ pub async fn plan(s: &PgSession, change: &SchemaChange) -> Result<DdlPlan> {
                 return Err(invalid("定義是空的"));
             }
             let replaces = def.to_ascii_uppercase().contains("OR REPLACE");
-            let mut st = Vec::new();
+            // Unqualified names in the definition mean this schema; only for
+            // this transaction.
+            let mut st = vec![format!(
+                "SET LOCAL search_path TO {}, public",
+                quote_ident(database)
+            )];
             if let Some(orig) = original {
                 match object_kind {
                     ObjectKind::View => {
