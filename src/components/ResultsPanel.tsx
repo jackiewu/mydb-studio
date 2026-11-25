@@ -1,14 +1,13 @@
-import { useEffect, useState } from "react";
-import { describeError, type ExecutionOutcome, type StatementResult } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, describeError, quickReportOptions, type ExecutionOutcome, type StatementResult } from "../api";
 import { openMenu } from "../contextMenu";
-import { copyText } from "../copy";
+import { copyText, formatBlock } from "../copy";
 import { isExplain, readPlan } from "../explain";
 import { ResultGrid } from "./ResultGrid";
 
-/** Start of a statement, for its result tab. */
-function label(sql: string) {
-  const s = sql.replace(/\s+/g, " ").trim();
-  return s.length > 28 ? s.slice(0, 27) + "…" : s;
+/** A statement on one line, for the statement list (CSS cuts it to fit). */
+function oneLine(sql: string) {
+  return sql.replace(/\s+/g, " ").trim();
 }
 
 function ms(n: number) {
@@ -21,6 +20,38 @@ function summary(r: StatementResult) {
     return `回傳 ${r.total_rows.toLocaleString()} 筆${shown}`;
   }
   return `影響 ${r.affected_rows.toLocaleString()} 筆`;
+}
+
+/** Short status for the statement list. */
+function brief(r: StatementResult) {
+  if (r.columns.length > 0) return `${r.total_rows.toLocaleString()} 筆`;
+  return r.affected_rows > 0 ? `影響 ${r.affected_rows.toLocaleString()}` : "OK";
+}
+
+const MD_ROWS = 20;
+
+/** A run as a Markdown report, for runs that were not recorded. */
+export function outcomeMarkdown(outcome: ExecutionOutcome) {
+  const out = [
+    "# SQL 執行報表",
+    "",
+    `- 時間：${new Date(outcome.started_at).toLocaleString()}`,
+    `- 陳述式：${outcome.results.length} 個，共 ${ms(outcome.duration_ms)}`,
+    "",
+  ];
+  outcome.results.forEach((r, i) => {
+    out.push(`## #${i + 1}`, "", "```sql", r.sql.trim(), "```", "", `${summary(r)} · ${ms(r.duration_ms)}`, "");
+    if (r.columns.length > 0) {
+      out.push(formatBlock({ columns: r.columns, rows: r.rows.slice(0, MD_ROWS) }, "markdown", true), "");
+      if (r.rows.length > MD_ROWS) out.push(`（只列出前 ${MD_ROWS} 筆）`, "");
+    }
+  });
+  if (outcome.error) {
+    out.push(`## ${outcome.cancelled ? "已停止" : "錯誤"}`, "");
+    if (outcome.failed_statement) out.push("```sql", outcome.failed_statement.trim(), "```", "");
+    if (!outcome.cancelled) out.push(describeError(outcome.error), "");
+  }
+  return out.join("\n");
 }
 
 /** A result set as a `|`-separated text table, for the AI. */
@@ -51,6 +82,29 @@ export function ResultsPanel({
   onAskAi?: (ask: AskAi) => void;
 }) {
   const [tab, setTab] = useState(0);
+  const [listOpen, setListOpen] = useState(true);
+  const [copied, setCopied] = useState<string | null>(null);
+  const list = useRef<HTMLDivElement>(null);
+
+  // Keep the chosen statement in view in the list.
+  useEffect(() => {
+    list.current?.querySelector(".statement-row.active")?.scrollIntoView({ block: "nearest" });
+  }, [tab, outcome, listOpen]);
+
+  const copyMarkdown = async () => {
+    if (!outcome) return;
+    try {
+      const md =
+        outcome.record_id != null
+          ? await api.generateReport([outcome.record_id], quickReportOptions("markdown"))
+          : outcomeMarkdown(outcome);
+      await copyText(md);
+      setCopied("已複製 Markdown 報表");
+    } catch (e) {
+      setCopied(describeError(e));
+    }
+    setTimeout(() => setCopied(null), 2500);
+  };
 
   // Jump to the last result set (usually the one the user cares about).
   useEffect(() => {
@@ -72,27 +126,66 @@ export function ResultsPanel({
   // Danger was already confirmed before running; show what is still useful.
   const notes = (outcome.findings ?? []).filter((f) => f.level !== "danger");
   const plan = current && isExplain(current) ? readPlan(current) : null;
+  const multi = outcome.results.length > 1 || (outcome.results.length > 0 && !!outcome.failed_statement);
   return (
-    <div className="results">
+    <div className="results sql-results">
       <div className="results-bar">
         <span>
           完成 {outcome.results.length} 個陳述式，共 {ms(outcome.duration_ms)}
         </span>
         {outcome.record_id != null && <span className="recorded">📝 已記錄 #{outcome.record_id}</span>}
-        <div className="result-tabs">
+        {multi && (
+          <button className="link" onClick={() => setListOpen((o) => !o)}>
+            {listOpen ? "收合清單" : "展開清單"}
+          </button>
+        )}
+        <span className="spacer" />
+        {copied && <span className="copied-note">{copied}</span>}
+        <button
+          className="small"
+          title={
+            outcome.record_id != null
+              ? "用預設選項（隱藏連線資訊、含查詢結果）產生這次執行的報表並複製 Markdown"
+              : "把這次執行的語句與結果（每個結果前 20 筆）複製成 Markdown"
+          }
+          onClick={copyMarkdown}
+        >
+          複製 MD
+        </button>
+      </div>
+      {multi && listOpen && (
+        <div className="statement-list" ref={list} role="listbox" aria-label="陳述式">
           {outcome.results.map((r, i) => (
-            <button
+            <div
               key={i}
-              className={i === tab ? "active" : ""}
+              role="option"
+              aria-selected={i === tab}
+              className={`statement-row${i === tab ? " active" : ""}`}
               title={`${r.sql}\n\n右鍵：複製 SQL`}
               onClick={() => setTab(i)}
               onContextMenu={(e) => openMenu(e, [{ label: "複製 SQL", onClick: () => copyText(r.sql) }])}
             >
-              <span className="tab-no">#{i + 1}</span> {label(r.sql)}
-            </button>
+              <span className="stmt-no">#{i + 1}</span>
+              <span className="stmt-status ok">✓</span>
+              <span className="stmt-sql">{oneLine(r.sql)}</span>
+              <span className={`stmt-rows${r.warnings > 0 ? " warn" : ""}`}>
+                {brief(r)}
+                {r.warnings > 0 ? ` · ${r.warnings} 警告` : ""}
+              </span>
+              <span className="stmt-time">{ms(r.duration_ms)}</span>
+            </div>
           ))}
+          {outcome.error && outcome.failed_statement && (
+            <div className="statement-row failed" title={outcome.failed_statement}>
+              <span className="stmt-no">#{outcome.results.length + 1}</span>
+              <span className={`stmt-status ${outcome.cancelled ? "warn" : "bad"}`}>{outcome.cancelled ? "⏹" : "✗"}</span>
+              <span className="stmt-sql">{oneLine(outcome.failed_statement)}</span>
+              <span className="stmt-rows">{outcome.cancelled ? "已停止" : "失敗"}</span>
+              <span className="stmt-time" />
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {outcome.error && outcome.cancelled && (
         <div className="cancelled-box">
@@ -174,6 +267,7 @@ export function ResultsPanel({
       {current && (
         <>
           <div className="statement-meta">
+            {multi && <span className="tab-no">#{tab + 1}</span>}
             <span>{summary(current)}</span>
             <span>{ms(current.duration_ms)}</span>
             {current.warnings > 0 && <span className="warn">{current.warnings} 個警告</span>}

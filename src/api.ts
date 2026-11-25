@@ -240,6 +240,15 @@ export interface ReportOptions {
   hide_connection: boolean;
 }
 
+/** Report options for the one-click 複製 MD / 下載 PDF buttons. */
+export const quickReportOptions = (format: ReportFormat): ReportOptions => ({
+  format,
+  title: "SQL 執行報表",
+  include_results: true,
+  max_result_rows: 20,
+  hide_connection: true,
+});
+
 export interface DatabaseInfo {
   name: string;
   table_count: number;
