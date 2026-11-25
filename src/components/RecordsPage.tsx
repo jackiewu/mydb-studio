@@ -4,6 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   describeError,
+  quickReportOptions,
   type ConnectionKind,
   type ConnectionProfile,
   type ExecutionRecord,
@@ -64,13 +65,7 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
 
 /** What the report dialog starts with, and what the quick buttons use. */
 const DEFAULT_TITLE = "SQL 執行報表";
-const quickOptions = (format: ReportFormat): ReportOptions => ({
-  format,
-  title: DEFAULT_TITLE,
-  include_results: true,
-  max_result_rows: 20,
-  hide_connection: true,
-});
+const quickOptions = quickReportOptions;
 
 export function RecordsPage({ connections, onBack, onOpenInEditor }: Props) {
   const [connectionId, setConnectionId] = useState("");

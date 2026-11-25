@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { EditorView, basicSetup } from "codemirror";
+import { zhTwPhrases } from "../editor/phrases";
 import { keymap } from "@codemirror/view";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { autocompletion, type Completion, type CompletionContext } from "@codemirror/autocomplete";
@@ -158,6 +159,7 @@ export function RedisEditor(props: Props) {
       parent: host.current!,
       extensions: [
         basicSetup,
+        zhTwPhrases,
         multiCursor(),
         lookPart.current.of(look(theme, fontSize)),
         // `#` comments, for ⌘/.

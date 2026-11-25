@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ask } from "./ask";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -90,6 +91,10 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = usePaneSize("mydb.sidebarWidth");
   const [editorHeight, setEditorHeight] = usePaneSize("mydb.editorHeight");
   const splitRef = useRef<HTMLDivElement>(null);
+  // Height of the editor/results split, to keep a dragged editor height from
+  // hiding the results when the window gets shorter.
+  const [splitHeight, setSplitHeight] = useState(0);
+  const [dropping, setDropping] = useState(false);
   const [running, setRunning] = useState(false);
   const [view, setView] = useState<"main" | "records" | "server" | "schema">("main");
   // Where the schema page opens, set from the tree.
@@ -654,15 +659,8 @@ export default function App() {
     }
   };
 
-  const openSqlFiles = async () => {
-    const picked = await openDialog({
-      multiple: true,
-      filters: [
-        { name: "SQL", extensions: ["sql", "txt"] },
-        { name: "所有檔案", extensions: ["*"] },
-      ],
-    });
-    const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+  /** Opens files in new tabs (or switches to the tab that has one open). */
+  const openPaths = async (paths: string[]) => {
     for (const path of paths) {
       const already = tabs.tabs.find((t) => t.filePath === path);
       if (already) {
@@ -677,6 +675,61 @@ export default function App() {
       }
     }
   };
+
+  const openSqlFiles = async () => {
+    const picked = await openDialog({
+      multiple: true,
+      filters: [
+        { name: "SQL", extensions: ["sql", "txt"] },
+        { name: "所有檔案", extensions: ["*"] },
+      ],
+    });
+    await openPaths(picked == null ? [] : Array.isArray(picked) ? picked : [picked]);
+  };
+
+  // Dropping .sql files on the window opens them in new tabs.
+  const dropRef = useRef({ openPaths, session, isRedis });
+  dropRef.current = { openPaths, session, isRedis };
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let gone = false;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setDropping(true);
+          return;
+        }
+        setDropping(false);
+        if (p.type !== "drop") return;
+        const files = p.paths.filter((f) => /\.(sql|txt)$/i.test(f));
+        const { session, isRedis, openPaths } = dropRef.current;
+        if (files.length === 0) {
+          if (p.paths.length) setNotice({ text: "只能拖放 .sql 或 .txt 檔。", kind: "error" });
+          return;
+        }
+        if (!session || isRedis) {
+          setNotice({ text: "請先連線到 MySQL／MariaDB／PostgreSQL，再拖放 .sql 檔開啟。", kind: "error" });
+          return;
+        }
+        setView("main");
+        openPaths(files);
+      })
+      .then((u) => (gone ? u() : (unlisten = u)))
+      .catch(() => {});
+    return () => {
+      gone = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = splitRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSplitHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [session, view]);
 
   // ⌘S saves the tab to its file (asking where the first time), ⌘⇧S saves
   // as, ⌘O opens .sql files in new tabs.
@@ -744,15 +797,22 @@ export default function App() {
     </div>
   );
 
+  const dropOverlay = dropping && <div className="drop-overlay">放開即可在新分頁開啟 .sql 檔</div>;
+
   if (view === "records") {
     return (
       <div className="app">
         <RecordsPage connections={connections} onBack={() => setView("main")} onOpenInEditor={openRecordInEditor} />
         {dialogs}
         {lockScreen}
+        {dropOverlay}
       </div>
     );
   }
+
+  // A dragged editor height never leaves the results less than 140px.
+  const shownEditorHeight =
+    editorHeight && splitHeight > 0 ? Math.max(80, Math.min(editorHeight, splitHeight - 140)) : editorHeight;
 
   const databaseNames = (schema.databases ?? []).map((d) => d.name);
   const runLabel = isRedis
@@ -1019,12 +1079,12 @@ export default function App() {
             className="split"
             hidden={view === "server" || view === "schema"}
             ref={splitRef}
-            style={editorHeight ? { gridTemplateRows: `${editorHeight}px minmax(0, 1fr)` } : undefined}
+            style={shownEditorHeight ? { gridTemplateRows: `${shownEditorHeight}px minmax(0, 1fr)` } : undefined}
           >
             <Splitter
               dir="row"
               className="editor-splitter"
-              style={editorHeight ? { top: editorHeight } : undefined}
+              style={shownEditorHeight ? { top: shownEditorHeight } : undefined}
               onDrag={(y) => {
                 const box = splitRef.current?.getBoundingClientRect();
                 if (box) setEditorHeight(Math.min(Math.max(y - box.top, 80), box.height - 80));
@@ -1255,6 +1315,7 @@ export default function App() {
       {bug && <BugReportDialog info={bug} onClose={() => setBug(null)} />}
       {lockScreen}
       {dialogs}
+      {dropOverlay}
       {risk && (
         <RiskDialog
           findings={risk.findings}

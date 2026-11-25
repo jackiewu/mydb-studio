@@ -200,7 +200,11 @@ input, select, textarea {
 .editor { min-height: 0; border-bottom: 1px solid var(--border); background: var(--panel); }
 .editor .cm-editor { height: 100%; font-size: 13px; }
 
+/* Scrolls as a whole when the window is too short for its notes and the grid. */
 .results { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
+.sql-results { overflow: auto; }
+.sql-results > * { flex-shrink: 0; }
+.sql-results > .grid-wrap { flex: 1 1 0; min-height: 120px; }
 .results.empty { color: var(--muted); padding: 16px; }
 .results-bar {
   display: flex;
@@ -214,6 +218,38 @@ input, select, textarea {
 .result-tabs { display: flex; gap: 4px; overflow-x: auto; }
 .result-tabs button { font-size: 12px; padding: 1px 8px; }
 .result-tabs button.active { border-color: var(--accent); color: var(--accent); }
+.sql-results .results-bar > .spacer { flex: 1; }
+.sql-results .results-bar > * { flex-shrink: 0; white-space: nowrap; }
+.sql-results .results-bar .copied-note { color: var(--good); }
+/* One line per statement of a multi-statement run; scrolls past a few rows. */
+.statement-list {
+  flex-shrink: 0;
+  max-height: min(180px, 35%);
+  min-height: 48px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.statement-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto 70px;
+  gap: 10px;
+  align-items: center;
+  padding: 3px 12px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.statement-row:hover { background: var(--row-alt); }
+.statement-row.active { background: color-mix(in srgb, var(--accent) 14%, transparent); border-left-color: var(--accent); }
+.statement-row.failed { cursor: default; }
+.stmt-no { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.5em; }
+.stmt-status.ok { color: var(--good); }
+.stmt-status.bad { color: var(--bad); }
+.stmt-status.warn { color: var(--warn); }
+.stmt-sql { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.stmt-rows { color: var(--muted); white-space: nowrap; text-align: right; }
+.stmt-rows.warn { color: var(--warn); }
+.stmt-time { color: var(--muted); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .statement-meta { display: flex; gap: 4px 16px; flex-wrap: wrap; align-items: center; padding: 6px 12px; font-size: 12px; color: var(--muted); }
 .statement-meta .warn { color: var(--warn); }
 .error-box { margin: 8px 12px; padding: 8px 12px; border-left: 3px solid var(--bad); background: var(--code-bg); }
@@ -462,7 +498,7 @@ table.grid.records-table { width: 100%; font-family: inherit; font-size: 13px; }
 .plan-notes .ok { color: var(--good); }
 .grid td.bad { color: var(--bad); font-weight: 600; }
 .grid td.warn { color: var(--warn); font-weight: 600; }
-.result-tabs .tab-no { color: var(--muted); }
+.statement-meta .tab-no { color: var(--accent); font-weight: 600; }
 .results.empty p { margin: 0 0 6px; }
 
 /* Editor tabs */
@@ -924,4 +960,24 @@ td.row-actions button + button { margin-left: 4px; }
 }
 .pg-priv-checks label.check {
   margin: 0;
+}
+
+/* CodeMirror's find/replace panel: the global `input { width: 100% }` pushed
+   the labels of its checkboxes out of view. */
+.cm-panel.cm-search { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 6px 8px; }
+.cm-panel.cm-search input.cm-textfield { width: 220px; padding: 3px 6px; margin: 0; font-size: 13px; }
+.cm-panel.cm-search br { flex-basis: 100%; height: 0; content: ""; }
+.cm-panel.cm-search label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; margin: 0 4px; }
+.cm-panel.cm-search input[type="checkbox"] { width: auto; margin: 0; padding: 0; }
+.cm-panel.cm-search button { margin: 0; padding: 2px 8px; font-size: 12px; }
+.cm-panel.cm-search button[name="close"] { position: absolute; top: 4px; right: 6px; border: none; background: none; }
+.cm-panel.cm-search { position: relative; padding-right: 28px; }
+
+/* Shown while a file is dragged over the window. */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 100; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 3px dashed var(--accent);
+  font-size: 18px; color: var(--accent);
 }
