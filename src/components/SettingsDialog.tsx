@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, describeError, type AiStatus, type AppSettings, type ConnectionProfile, type McpSetup, type ModelFile } from "../api";
 import { copyText } from "../copy";
 import { EDITOR_THEMES } from "../editor/themes";
+import type { Updates } from "../update/useUpdate";
 
 interface Props {
   settings: AppSettings;
@@ -16,9 +17,11 @@ interface Props {
   onReportBug?: () => void;
   /** Whether this computer can confirm the owner (Touch ID / login password). */
   lockAvailable?: boolean;
+  /** Version and updates; absent hides 關於與更新. */
+  updates?: Updates;
 }
 
-export type Tab = "editor" | "run" | "ai" | "mcp" | "lock" | "system";
+export type Tab = "editor" | "run" | "ai" | "mcp" | "lock" | "system" | "about";
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "editor", label: "編輯器", icon: "✎" },
@@ -27,6 +30,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "mcp", label: "AI 工具（MCP）", icon: "⇄" },
   { id: "lock", label: "App 鎖定", icon: "🔒" },
   { id: "system", label: "系統", icon: "⚙" },
+  { id: "about", label: "關於與更新", icon: "ⓘ" },
 ];
 
 /** One setting: a title, a grey caption under it, and its control on the right. */
@@ -389,6 +393,118 @@ function LockSection({
   );
 }
 
+function mb(bytes: number) {
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function dateText(iso: string | null) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("zh-TW");
+}
+
+/** The version, and checking for and installing a newer release. */
+function AboutSection({
+  updates,
+  settings,
+  set,
+}: {
+  updates: Updates;
+  settings: AppSettings;
+  set: (patch: Partial<AppSettings>) => void;
+}) {
+  const { info, state } = updates;
+  const blocked = info?.update_blocked ?? null;
+  const update =
+    state.phase === "available" || state.phase === "downloading" || state.phase === "installing"
+      ? state.update
+      : state.phase === "error"
+        ? state.update
+        : undefined;
+  const working = state.phase === "downloading" || state.phase === "installing";
+
+  return (
+    <>
+      <div className="set-subhead">版本</div>
+      <div className="about-version">
+        <strong>MyDB Studio {info ? info.version : "…"}</strong>
+        {info?.flavor && <span className="about-flavor">{info.flavor}</span>}
+      </div>
+      {info?.flavor && (
+        <div className="set-caption">
+          含 {info.flavor} 的本機版本，沒有公開發布。會檢查有沒有新版本，但不會在 app 內安裝。
+        </div>
+      )}
+
+      <div className="set-subhead">更新</div>
+      <Row title="自動檢查更新" caption="打開 app 後和每 12 小時到 GitHub 看有沒有新版本，只會提示，不會自己安裝。">
+        <Switch checked={settings.auto_check_updates} onChange={(v) => set({ auto_check_updates: v })} />
+      </Row>
+
+      {update ? (
+        <div className="update-box">
+          <div className="set-title">
+            有新版本 {update.version}
+            {dateText(update.date) && <span className="muted">（{dateText(update.date)} 發布）</span>}
+          </div>
+          {update.notes && <div className="update-notes">{update.notes}</div>}
+          {state.phase === "downloading" && (
+            <>
+              <div className="update-progress">
+                <span style={{ width: state.total ? `${Math.min(100, (state.downloaded / state.total) * 100)}%` : "30%" }} />
+              </div>
+              <div className="set-caption">
+                下載中 {mb(state.downloaded)}
+                {state.total ? ` / ${mb(state.total)}` : ""}
+              </div>
+            </>
+          )}
+          {state.phase === "installing" && <div className="set-caption">驗證簽章並安裝中…</div>}
+          {state.phase === "error" && <p className="set-warn">{state.message}</p>}
+          {blocked ? (
+            <p className="set-caption">{blocked}</p>
+          ) : (
+            <div className="update-actions">
+              <button className="primary" disabled={working} onClick={updates.install}>
+                {state.phase === "error" ? "再試一次" : "下載並安裝"}
+              </button>
+              <span className="set-caption">
+                下載後會先檢查簽章，裝好後重新啟動 app 才換成新版本。正在跑的查詢請先等它跑完。
+              </span>
+            </div>
+          )}
+        </div>
+      ) : state.phase === "ready" ? (
+        <div className="update-box">
+          <div className="set-title">已安裝 {state.version}</div>
+          <div className="update-actions">
+            <button className="primary" onClick={updates.restart}>
+              重新啟動
+            </button>
+            <span className="set-caption">重新啟動會關閉所有視窗和連線。</span>
+          </div>
+        </div>
+      ) : (
+        <Row
+          title="檢查更新"
+          caption={
+            state.phase === "latest"
+              ? `已經是最新版本（${state.checkedAt.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })} 檢查）。`
+              : state.phase === "checking"
+                ? "檢查中…"
+                : "從 GitHub Releases 取得最新版本。"
+          }
+        >
+          <button disabled={state.phase === "checking"} onClick={updates.check}>
+            立即檢查
+          </button>
+        </Row>
+      )}
+      {state.phase === "error" && !update && <p className="set-warn">{state.message}</p>}
+    </>
+  );
+}
+
 export function SettingsDialog({
   settings,
   onChange,
@@ -396,6 +512,7 @@ export function SettingsDialog({
   onOpenSnippets,
   onReportBug,
   lockAvailable = false,
+  updates,
   initialTab = "editor",
 }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -406,7 +523,7 @@ export function SettingsDialog({
     <div className="settings-dialog" role="dialog">
       <nav className="settings-tabs">
         <h2>設定</h2>
-        {TABS.map((t) => (
+        {TABS.filter((t) => t.id !== "about" || updates).map((t) => (
           <button key={t.id} type="button" className={tab === t.id ? "active" : ""} onClick={() => setTab(t.id)}>
             <span className="tab-icon">{t.icon}</span>
             {t.label}
@@ -512,6 +629,8 @@ export function SettingsDialog({
         {tab === "mcp" && <McpSection />}
 
         {tab === "lock" && <LockSection settings={settings} onChange={onChange} available={lockAvailable} />}
+
+        {tab === "about" && updates && <AboutSection updates={updates} settings={settings} set={set} />}
 
         {tab === "system" && (
           <>

@@ -294,6 +294,8 @@ export interface AppSettings {
   ai_idle_minutes: number;
   /** 0 picks half the CPU threads. */
   ai_threads: number;
+  /** Look for a new release at startup and twice a day. */
+  auto_check_updates: boolean;
 }
 
 export interface ModelFile {
@@ -739,7 +741,28 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ai_server_url: "http://127.0.0.1:39282",
   ai_idle_minutes: 10,
   ai_threads: 0,
+  auto_check_updates: true,
 };
+
+export interface AppInfo {
+  version: string;
+  /** Empty for releases; e.g. "IAP" for a local build with unreleased features. */
+  flavor: string;
+  /** Why this build can't install updates; null when it can. */
+  update_blocked: string | null;
+}
+
+export interface UpdateInfo {
+  version: string;
+  current_version: string;
+  /** Release notes, Markdown. */
+  notes: string | null;
+  date: string | null;
+}
+
+export type DownloadEvent =
+  | { event: "progress"; downloaded: number; total: number | null }
+  | { event: "installing" };
 
 export interface Snippet {
   /** 0 until saved. */
@@ -1043,6 +1066,16 @@ export const api = {
     return invoke<string>("ai_chat", { context, messages, onEvent: channel });
   },
   aiCancel: () => invoke<void>("ai_cancel"),
+  appInfo: () => invoke<AppInfo>("app_info"),
+  /** The newer release, or null when this is the latest. */
+  checkUpdate: () => invoke<UpdateInfo | null>("check_update"),
+  /** Downloads, verifies and installs the newest release; returns its version. Takes effect after restartApp. */
+  installUpdate: (onEvent: (e: DownloadEvent) => void) => {
+    const channel = new Channel<DownloadEvent>();
+    channel.onmessage = onEvent;
+    return invoke<string>("install_update", { onEvent: channel });
+  },
+  restartApp: () => invoke<void>("restart_app"),
   saveAiChat: (chat: AiChat) => invoke<number>("save_ai_chat", { chat }),
   listAiChats: () => invoke<AiChatSummary[]>("list_ai_chats"),
   getAiChat: (id: number) => invoke<AiChat | null>("get_ai_chat", { id }),

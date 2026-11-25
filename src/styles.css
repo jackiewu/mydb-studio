@@ -866,6 +866,25 @@ body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-sel
 }
 .status-icon:hover { background: var(--border); color: var(--text); }
 .status-icon.bad { color: var(--bad); }
+.status-version {
+  height: 20px; padding: 0 6px; border: none; border-radius: 4px; background: none;
+  font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
+}
+.status-version:hover { background: var(--border); color: var(--text); }
+.status-version.update { color: var(--accent-text); background: var(--accent); }
+.status-version.update:hover { color: var(--accent-text); filter: brightness(1.1); }
+
+/* 設定 → 關於與更新 */
+.about-version { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 2px; }
+.about-version strong { font-size: 20px; }
+.about-flavor { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--border); color: var(--text); }
+.update-box { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 8px 0; font-size: 13px; }
+.update-box .set-title { margin-bottom: 6px; }
+.update-notes { white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--border); font-size: 12px; line-height: 1.6; }
+.update-progress { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin: 8px 0 4px; }
+.update-progress > span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
+.update-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.update-actions button { white-space: nowrap; flex-shrink: 0; }
 
 /* App lock */
 .lock-screen {
