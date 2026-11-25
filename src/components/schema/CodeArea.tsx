@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { sql, MariaSQL, MySQL, PostgreSQL } from "@codemirror/lang-sql";
 import { EditorState } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
+import { zhTwPhrases } from "../../editor/phrases";
 import type { EditorTheme } from "../../editor/themes";
 import { multiCursor } from "../../editor/multiCursor";
 
@@ -29,6 +30,7 @@ export function CodeArea({ value, mariadb, postgres, theme, fontSize, onChange }
         doc: value,
         extensions: [
           basicSetup,
+          zhTwPhrases,
           multiCursor(),
           EditorView.lineWrapping,
           sql({ dialect: postgres ? PostgreSQL : mariadb ? MariaSQL : MySQL, upperCaseKeywords: true }),

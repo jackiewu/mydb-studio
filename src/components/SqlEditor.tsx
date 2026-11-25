@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { EditorView, basicSetup } from "codemirror";
+import { zhTwPhrases } from "../editor/phrases";
 import { keymap } from "@codemirror/view";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { completeFromList, snippet, snippetCompletion } from "@codemirror/autocomplete";
@@ -248,6 +249,7 @@ export function SqlEditor(props: Props) {
       parent: host.current!,
       extensions: [
         basicSetup,
+        zhTwPhrases,
         multiCursor(),
         p.language.of(language(mariadb, postgres, schema, defaultSchema, needColumns)),
         p.snippets.of(snippetSource(snippets)),
