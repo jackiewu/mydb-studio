@@ -41,7 +41,9 @@ fn update_blocked() -> Option<String> {
         ));
     }
     if cfg!(debug_assertions) {
-        return Some("開發模式（npm run tauri dev）不會安裝更新，請用 git pull 更新原始碼。".into());
+        return Some(
+            "開發模式（npm run tauri dev）不會安裝更新，請用 git pull 更新原始碼。".into(),
+        );
     }
     None
 }
@@ -85,9 +87,10 @@ pub async fn check_update<R: Runtime>(app: AppHandle<R>) -> Result<Option<Update
         version: u.version,
         current_version: u.current_version,
         notes: u.body.filter(|b| !b.trim().is_empty()),
-        date: u
-            .date
-            .and_then(|d| d.format(&time::format_description::well_known::Rfc3339).ok()),
+        date: u.date.and_then(|d| {
+            d.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        }),
     }))
 }
 
