@@ -18,7 +18,7 @@ SERVICE="mydb-studio-updater-key"
 cd "$(git rev-parse --show-toplevel)"
 
 if [[ -e "$KEY" ]]; then
-  echo "已經有金鑰：$KEY（不覆蓋）。公鑰："
+  echo "已經有金鑰：${KEY}（不覆蓋）。公鑰："
   cat "$KEY.pub"
   echo
   exit 0
@@ -35,8 +35,8 @@ npx tauri signer generate --ci -p "$PW" -w "$KEY"
 chmod 600 "$KEY"
 
 echo
-echo "私鑰：$KEY（請備份，不要放進 git）"
-echo "密碼：存在鑰匙圈「$SERVICE」（請一起備份）"
+echo "私鑰：${KEY}（請備份，不要放進 git）"
+echo "密碼：存在鑰匙圈「${SERVICE}」（請一起備份）"
 echo "公鑰（放進 src-tauri/tauri.conf.json → plugins.updater.pubkey）："
 cat "$KEY.pub"
 echo

@@ -36,20 +36,20 @@ fail() { echo "✗ $*" >&2; exit 1; }
 [[ "$(uname -m)" == arm64 ]] || fail "只支援 Apple silicon（arm64）。"
 [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || fail "請在 main 分支上發版（IAP 等本機分支不能發布）。"
 [[ -z "$(git status --porcelain)" ]] || fail "工作目錄有未提交的變更。"
-[[ -z "${MYDB_FLAVOR:-}" ]] || fail "MYDB_FLAVOR=$MYDB_FLAVOR：本機版本不能發布。"
+[[ -z "${MYDB_FLAVOR:-}" ]] || fail "MYDB_FLAVOR=${MYDB_FLAVOR}：本機版本不能發布。"
 grep -q 'None => "",' src-tauri/src/update.rs || fail "src-tauri/src/update.rs 的 FLAVOR 不是空的：這是本機版本，不能發布。"
-grep -q "^version = \"$VERSION\"" src-tauri/Cargo.toml || fail "src-tauri/Cargo.toml 的版本和 tauri.conf.json（$VERSION）不一樣。"
+grep -q "^version = \"$VERSION\"" src-tauri/Cargo.toml || fail "src-tauri/Cargo.toml 的版本和 tauri.conf.json（${VERSION}）不一樣。"
 grep -q REPLACE_WITH src-tauri/tauri.conf.json && fail "tauri.conf.json 還沒填更新公鑰。"
-[[ -f "$KEY" ]] || fail "找不到更新簽章私鑰 $KEY（先跑 scripts/updater-keygen.sh，或從備份放回）。"
+[[ -f "$KEY" ]] || fail "找不到更新簽章私鑰 ${KEY}（先跑 scripts/updater-keygen.sh，或從備份放回）。"
 [[ "$(cat "$KEY.pub" 2>/dev/null)" == "$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")" ]] \
   || fail "$KEY.pub 和 tauri.conf.json 的公鑰不一樣。"
-PW="$(security find-generic-password -s "$SERVICE" -a updater -w)" || fail "鑰匙圈裡沒有「$SERVICE」密碼。"
+PW="$(security find-generic-password -s "$SERVICE" -a updater -w)" || fail "鑰匙圈裡沒有「${SERVICE}」密碼。"
 [[ -z "$NOTES_FILE" || -f "$NOTES_FILE" ]] || fail "找不到 $NOTES_FILE"
 pgrep -fq "MyDB Studio.app/Contents/MacOS" && fail "請先結束 MyDB Studio。"
 mkdir -p "$OUT"
 [[ -z "$(ls -A "$OUT")" ]] || fail "$OUT 不是空的，請先移走裡面的檔案。"
 
-echo "== 建置 $TAG（$(git rev-parse --short HEAD)）"
+echo "== 建置 ${TAG}（$(git rev-parse --short HEAD)）"
 npm ci
 APPLE_SIGNING_IDENTITY="$IDENTITY" npm run tauri build -- --bundles app
 codesign --verify --deep --strict "$APP"
