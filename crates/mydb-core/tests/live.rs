@@ -2,6 +2,9 @@
 //! `MYDB_TEST_HOST` is set; see `scripts/test-env.sh` for a local setup.
 //!
 //! Optional: `MYDB_TEST_CA` (TLS tests) and `MYDB_TEST_SSH_*` (tunnel tests).
+//! `MYDB_TEST_SSH_SOCKET` with `MYDB_TEST_SOCKET_USER`/`_PASSWORD` tests
+//! reaching the server's Unix socket on the jump host, as an account that
+//! may only log in from `localhost`.
 
 use mydb_core::{ConnectionProfile, CoreError, Session, SshAuth, SshConfig, SslMode};
 
@@ -173,7 +176,38 @@ fn ssh_config() -> Option<SshConfig> {
         user: env("MYDB_TEST_SSH_USER")?,
         auth,
         known_host_fingerprint: None,
+        socket_path: None,
     })
+}
+
+#[tokio::test]
+async fn ssh_to_the_server_socket_logs_in_as_localhost() {
+    let (Some(mut ssh), Some(socket), Some(user)) = (
+        ssh_config(),
+        env("MYDB_TEST_SSH_SOCKET"),
+        env("MYDB_TEST_SOCKET_USER"),
+    ) else {
+        eprintln!("MYDB_TEST_SSH_SOCKET not set, skipping");
+        return;
+    };
+    ssh.socket_path = Some(socket);
+    // Host and port are not used with a socket.
+    let mut profile = ConnectionProfile::new("sock", "unused", user);
+    profile.password = env("MYDB_TEST_SOCKET_PASSWORD");
+    profile.ssh = Some(ssh);
+
+    let session = Session::connect(&profile).await.unwrap();
+    let out = session.execute("SELECT CURRENT_USER()", 10).await;
+    let who = out.results[0].rows[0][0].as_str().unwrap().to_string();
+    assert!(who.ends_with("@localhost"), "{who}");
+    session.close().await.unwrap();
+
+    // A wrong path is reported when connecting, not as a closed connection.
+    profile.ssh.as_mut().unwrap().socket_path = Some("/nonexistent/mysql.sock".into());
+    let Err(CoreError::Ssh { message }) = Session::connect(&profile).await else {
+        panic!("expected an SSH error");
+    };
+    assert!(message.contains("no such socket"), "{message}");
 }
 
 #[tokio::test]

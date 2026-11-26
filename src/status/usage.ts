@@ -23,7 +23,7 @@ export function statementCount(o: RunSummary) {
 
 /** Errors that mean the connection itself is in trouble. */
 export function isConnectionError(e: CoreError | null | undefined) {
-  return !!e && ["connection", "ssh", "not_connected", "host_key_mismatch"].includes(e.kind);
+  return !!e && ["connection", "ssh", "iap", "not_connected", "host_key_mismatch"].includes(e.kind);
 }
 
 export type Light = "ok" | "busy" | "bad";

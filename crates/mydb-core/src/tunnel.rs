@@ -1,4 +1,5 @@
-//! SSH local port forwarding (the equivalent of `ssh -L`).
+//! SSH local port forwarding (the equivalent of `ssh -L`), optionally over
+//! a GCP IAP tunnel.
 //!
 //! The tunnel listens on an ephemeral port on 127.0.0.1 and forwards every
 //! accepted connection through a `direct-tcpip` channel to the database host,
@@ -12,7 +13,74 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use crate::error::{CoreError, Result};
-use crate::profile::{SshAuth, SshConfig};
+use crate::iap::IapTunnel;
+use crate::profile::{ConnectionProfile, SshAuth, SshConfig};
+
+/// The tunnels a profile asks for: GCP IAP, SSH, or IAP carrying SSH to a
+/// VM used as the jump host. Connect to 127.0.0.1 on [`Tunnel::local_port`].
+pub struct Tunnel {
+    // SSH first, so it closes before the IAP tunnel it may run through.
+    ssh: Option<SshTunnel>,
+    iap: Option<IapTunnel>,
+}
+
+impl Tunnel {
+    /// Opens the profile's tunnels, or returns `None` when it connects
+    /// directly.
+    pub async fn open(profile: &ConnectionProfile) -> Result<Option<Self>> {
+        let host = profile.host.trim();
+        // With SSH as well, IAP reaches the VM's SSH server instead.
+        let iap = match &profile.iap {
+            Some(cfg) => {
+                let port = profile.ssh.as_ref().map_or(profile.port, |s| s.port);
+                Some(IapTunnel::open(cfg, port).await?)
+            }
+            None => None,
+        };
+        let ssh = match (&profile.ssh, &iap) {
+            (Some(cfg), None) => Some(SshTunnel::open(cfg, host, profile.port).await?),
+            (Some(cfg), Some(iap)) => {
+                let via = SshConfig {
+                    host: "127.0.0.1".into(),
+                    port: iap.local_port(),
+                    ..cfg.clone()
+                };
+                let tunnel =
+                    SshTunnel::open(&via, host, profile.port)
+                        .await
+                        .map_err(|e| match e {
+                            CoreError::HostKeyMismatch {
+                                expected, actual, ..
+                            } => CoreError::HostKeyMismatch {
+                                host: cfg.host.clone(),
+                                expected,
+                                actual,
+                            },
+                            e => e,
+                        })?;
+                Some(tunnel)
+            }
+            (None, _) => None,
+        };
+        Ok((ssh.is_some() || iap.is_some()).then_some(Self { ssh, iap }))
+    }
+
+    pub fn local_port(&self) -> u16 {
+        match (&self.ssh, &self.iap) {
+            (Some(s), _) => s.local_port(),
+            (None, Some(i)) => i.local_port(),
+            (None, None) => unreachable!("a tunnel has at least one hop"),
+        }
+    }
+
+    /// The SSH host key seen, when the connection went through SSH.
+    pub fn ssh_host_fingerprint(&self) -> Option<&str> {
+        self.ssh.as_ref().map(|s| s.host_fingerprint())
+    }
+}
+
+/// How long reaching the SSH server and its handshake may take.
+const SSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub struct SshTunnel {
     local_port: u16,
@@ -36,25 +104,30 @@ impl SshTunnel {
             ..Default::default()
         });
 
-        let mut session =
-            match client::connect(config, (cfg.host.as_str(), cfg.port), handler).await {
-                Ok(s) => s,
-                Err(e) => {
-                    // A rejected host key surfaces as a generic russh error, so
-                    // report the mismatch explicitly when we know about it.
-                    if let (Some(expected), Some(actual)) =
-                        (&cfg.known_host_fingerprint, seen.lock().unwrap().clone())
-                        && *expected != actual
-                    {
-                        return Err(CoreError::HostKeyMismatch {
-                            host: cfg.host.clone(),
-                            expected: expected.clone(),
-                            actual,
-                        });
-                    }
-                    return Err(e.into());
+        let mut session = match tokio::time::timeout(
+            SSH_TIMEOUT,
+            client::connect(config, (cfg.host.as_str(), cfg.port), handler),
+        )
+        .await
+        .unwrap_or(Err(russh::Error::ConnectionTimeout))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                // A rejected host key surfaces as a generic russh error, so
+                // report the mismatch explicitly when we know about it.
+                if let (Some(expected), Some(actual)) =
+                    (&cfg.known_host_fingerprint, seen.lock().unwrap().clone())
+                    && *expected != actual
+                {
+                    return Err(CoreError::HostKeyMismatch {
+                        host: cfg.host.clone(),
+                        expected: expected.clone(),
+                        actual,
+                    });
                 }
-            };
+                return Err(e.into());
+            }
+        };
 
         let auth =
             match &cfg.auth {
@@ -91,22 +164,61 @@ impl SshTunnel {
         let local_port = listener.local_addr()?.port();
         let session = Arc::new(session);
         let target_host = target_host.to_string();
+        let socket_path = cfg
+            .socket_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
+        // Try the socket once now: a wrong path or a server that forbids
+        // socket forwarding would otherwise only show as a closed connection.
+        if let Some(path) = &socket_path {
+            match session.channel_open_direct_streamlocal(path.clone()).await {
+                Ok(channel) => {
+                    let _ = channel.close().await;
+                }
+                Err(e) => {
+                    let why = match e {
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::ConnectFailed,
+                        ) => "no such socket, or no permission to use it".to_string(),
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::AdministrativelyProhibited,
+                        ) => "the SSH server does not allow socket forwarding \
+                              (AllowStreamLocalForwarding)"
+                            .to_string(),
+                        e => e.to_string(),
+                    };
+                    return Err(CoreError::Ssh {
+                        message: format!("cannot open the socket {path} on {}: {why}", cfg.host),
+                    });
+                }
+            }
+        }
 
         let fwd_session = session.clone();
         let accept_task = tokio::spawn(async move {
             while let Ok((mut socket, peer)) = listener.accept().await {
                 let session = fwd_session.clone();
                 let target_host = target_host.clone();
+                let socket_path = socket_path.clone();
                 tokio::spawn(async move {
-                    let channel = match session
-                        .channel_open_direct_tcpip(
-                            target_host,
-                            target_port as u32,
-                            peer.ip().to_string(),
-                            peer.port() as u32,
-                        )
-                        .await
-                    {
+                    let channel = match socket_path {
+                        // Like `ssh -L port:/run/mysqld/mysqld.sock`: the
+                        // server sees a local socket connection.
+                        Some(path) => session.channel_open_direct_streamlocal(path).await,
+                        None => {
+                            session
+                                .channel_open_direct_tcpip(
+                                    target_host,
+                                    target_port as u32,
+                                    peer.ip().to_string(),
+                                    peer.port() as u32,
+                                )
+                                .await
+                        }
+                    };
+                    let channel = match channel {
                         Ok(c) => c,
                         Err(_) => return,
                     };
@@ -166,7 +278,7 @@ impl client::Handler for HostKeyCheck {
     }
 }
 
-fn expand_home(path: &str) -> String {
+pub(crate) fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
     {

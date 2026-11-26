@@ -29,7 +29,7 @@ use crate::error::{CoreError, Result};
 use crate::profile::{ConnectionKind, ConnectionProfile, SslMode};
 use crate::records::{ExecutionRecord, RECORD_PREVIEW_ROWS, RecordedStatement};
 use crate::session::SessionInfo;
-use crate::tunnel::SshTunnel;
+use crate::tunnel::Tunnel;
 
 /// Databases shown in the key tree.
 pub const DATABASES: u8 = 16;
@@ -68,7 +68,7 @@ struct Link {
     /// Database the browse connection has selected.
     browse_db: u8,
     // Last, so the connections close before the tunnel.
-    _tunnel: Option<SshTunnel>,
+    _tunnel: Option<Tunnel>,
 }
 
 /// Sends every connection to the tunnel, while TLS still checks the
@@ -963,10 +963,7 @@ fn client(profile: &ConnectionProfile, db: u8) -> Result<Client> {
 }
 
 async fn open_link(profile: &ConnectionProfile, db: u8) -> Result<Link> {
-    let tunnel = match &profile.ssh {
-        Some(ssh) => Some(SshTunnel::open(ssh, profile.host.trim(), profile.port).await?),
-        None => None,
-    };
+    let tunnel = Tunnel::open(profile).await?;
     let via = tunnel
         .as_ref()
         .map(|t| SocketAddr::from(([127, 0, 0, 1], t.local_port())));
@@ -1009,7 +1006,8 @@ async fn server_info(profile: &ConnectionProfile, link: &mut Link) -> Result<Ses
         ssh_host_fingerprint: link
             ._tunnel
             .as_ref()
-            .map(|t| t.host_fingerprint().to_string()),
+            .and_then(|t| t.ssh_host_fingerprint())
+            .map(str::to_string),
     })
 }
 

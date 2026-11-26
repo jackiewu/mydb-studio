@@ -8,6 +8,7 @@ pub mod ai;
 pub mod ddl;
 pub mod error;
 pub mod export;
+pub mod iap;
 pub mod pg;
 pub mod pg_admin;
 pub mod pg_ddl;
@@ -37,8 +38,8 @@ pub fn install_tls_provider() {
 }
 pub use pg::PgSession;
 pub use profile::{
-    ConnectionKind, ConnectionProfile, McpAccess, RecordMode, SshAuth, SshConfig, SslConfig,
-    SslMode,
+    ConnectionKind, ConnectionProfile, IapConfig, McpAccess, RecordMode, SshAuth, SshConfig,
+    SslConfig, SslMode,
 };
 pub use records::{ExecutionRecord, RecordContext, RecordFilter, RecordedStatement};
 pub use redis::RedisSession;

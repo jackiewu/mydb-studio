@@ -26,6 +26,9 @@ pub enum CoreError {
         expected: String,
         actual: String,
     },
+    /// `gcloud compute start-iap-tunnel` failed, with what gcloud said.
+    #[error("GCP IAP error: {message}")]
+    Iap { message: String },
     #[error("I/O error: {message}")]
     Io { message: String },
     #[error("storage error: {message}")]

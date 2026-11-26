@@ -100,6 +100,11 @@ function Card({
       <div className="card-foot">
         <span className={`badge kind-${kind}`}>{KIND_LABEL[kind]}</span>
         {c.ssl.mode !== "disabled" && <span className="badge good">TLS</span>}
+        {c.iap && (
+          <span className="badge good" title={`經由 GCP IAP 連到 VM ${c.iap.instance}`}>
+            IAP
+          </span>
+        )}
         {c.ssh && (
           <span className="badge good" title={`經由 SSH ${c.ssh.user}@${c.ssh.host}`}>
             SSH
@@ -164,7 +169,7 @@ function useChoice<T extends string>(key: string, allowed: readonly T[], fallbac
 
 function matches(c: ConnectionProfile, text: string) {
   if (!text) return true;
-  const hay = [c.name, c.host, c.user, c.database ?? "", String(c.port), c.ssh?.host ?? ""].join(" ").toLowerCase();
+  const hay = [c.name, c.host, c.user, c.database ?? "", String(c.port), c.ssh?.host ?? "", c.iap?.instance ?? "", c.iap?.project ?? ""].join(" ").toLowerCase();
   return text
     .toLowerCase()
     .split(/\s+/)

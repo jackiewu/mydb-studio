@@ -279,6 +279,7 @@ mod tests {
                 passphrase: Some("secret-phrase".into()),
             },
             known_host_fingerprint: Some("SHA256:abc".into()),
+            socket_path: None,
         });
         p
     }
@@ -336,7 +337,7 @@ mod tests {
         let text = r#"{
           "format": "mydb-studio-connections", "version": 2, "something_new": true,
           "connections": [
-            {"name":"a","host":"h","port":3306,"user":"u","password":"pw","iap":{"zone":"x"}},
+            {"name":"a","host":"h","port":3306,"user":"u","password":"pw","future_tunnel":{"zone":"x"}},
             {"name":"broken"},
             {"id":"r1","name":"cache","kind":"redis","host":"h","port":6379,"user":"",
              "ssh":{"host":"j","user":"u","auth":{"method":"password","password":"jump"}}}
