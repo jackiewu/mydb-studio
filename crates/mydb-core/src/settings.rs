@@ -54,6 +54,8 @@ pub struct AppSettings {
     pub ai_idle_minutes: u32,
     /// CPU threads the model may use; 0 picks half of them.
     pub ai_threads: u32,
+    /// Look for a new release at startup (and twice a day while open).
+    pub auto_check_updates: bool,
 }
 
 impl Default for AppSettings {
@@ -82,6 +84,7 @@ impl Default for AppSettings {
             ai_server_url: "http://127.0.0.1:39282".into(),
             ai_idle_minutes: 10,
             ai_threads: 0,
+            auto_check_updates: true,
         }
     }
 }
