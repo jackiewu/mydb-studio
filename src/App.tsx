@@ -46,6 +46,7 @@ import { SettingsDialog, type Tab as SettingsTab } from "./components/SettingsDi
 import { SnippetsDialog } from "./components/SnippetsDialog";
 import { Splitter, usePaneSize } from "./components/Splitter";
 import { StatusBar, type Problem } from "./components/StatusBar";
+import { useUpdate } from "./update/useUpdate";
 import { SqlEditor, type EditorHandle } from "./components/SqlEditor";
 import type { RunTarget } from "./editor/statementMarks";
 import { statementRanges } from "./editor/statements";
@@ -103,6 +104,8 @@ export default function App() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [dialog, setDialog] = useState<"settings" | "snippets" | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const updates = useUpdate(settings.auto_check_updates, settingsLoaded);
   // The AI drawer, and what it was last opened about.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiRequest, setAiRequest] = useState<AiRequest | null>(null);
@@ -161,7 +164,10 @@ export default function App() {
 
   useEffect(() => {
     reload().catch((e) => setNotice({ text: describeError(e), kind: "error" }));
-    api.getSettings().then(setSettings, () => {});
+    api
+      .getSettings()
+      .then(setSettings, () => {})
+      .finally(() => setSettingsLoaded(true));
     reloadSnippets().catch(() => {});
   }, [reload, reloadSnippets]);
 
@@ -768,6 +774,7 @@ export default function App() {
       {dialog === "settings" ? (
         <SettingsDialog
           initialTab={settingsTab}
+          updates={updates}
           settings={settings}
           lockAvailable={lockAvailable}
           onChange={updateSettings}
@@ -1304,6 +1311,11 @@ export default function App() {
         status={sessionStatus.status}
         aiEnabled={settings.ai_enabled}
         problem={lastError}
+        updates={updates}
+        onOpenAbout={() => {
+          setSettingsTab("about");
+          setDialog("settings");
+        }}
         onLock={lockOn ? lockNow : undefined}
         onOpenProblem={() => {
           if (!lastError) return;

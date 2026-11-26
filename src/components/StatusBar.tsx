@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type ConnectionProfile, type ExecutionOutcome, type OpenedSession, type RedisOutcome } from "../api";
 import { idleText } from "../status/usage";
 import type { SessionStatus } from "../status/useSessionStatus";
+import { versionLabel, type Updates } from "../update/useUpdate";
 
 /** Something to offer reporting: a crash (error) or an unclean exit (notice). */
 export interface Problem {
@@ -19,6 +20,9 @@ interface Props {
   aiEnabled: boolean;
   problem: Problem | null;
   onOpenProblem: () => void;
+  updates: Updates;
+  /** Opens 設定 → 關於與更新. */
+  onOpenAbout: () => void;
   /** Locks the app now; absent when the lock is off. */
   onLock?: () => void;
 }
@@ -89,6 +93,32 @@ function useAiRunning(enabled: boolean) {
   return enabled && up;
 }
 
+/** The version, or the newer release when one is out; opens 關於與更新. */
+function VersionItem({ updates, onClick }: { updates: Updates; onClick: () => void }) {
+  const { info, state, newer } = updates;
+  if (!info) return null;
+  const current = `v${versionLabel(info)}`;
+  if (state.phase === "ready") {
+    return (
+      <button className="status-version update" onClick={onClick} title="新版本已安裝，重新啟動後生效">
+        重新啟動以更新到 v{state.version}
+      </button>
+    );
+  }
+  if (newer) {
+    return (
+      <button className="status-version update" onClick={onClick} title={`目前 ${current}，按一下查看新版本`}>
+        {state.phase === "downloading" || state.phase === "installing" ? `更新中 v${newer}…` : `有新版本 v${newer}`}
+      </button>
+    );
+  }
+  return (
+    <button className="status-version" onClick={onClick} title="版本與更新">
+      {current}
+    </button>
+  );
+}
+
 const LIGHT_TITLE = {
   ok: "連線正常",
   bad: "最近一次連線失敗。下次執行會自動重新連線。",
@@ -110,6 +140,8 @@ export function StatusBar({
   aiEnabled,
   problem,
   onOpenProblem,
+  updates,
+  onOpenAbout,
   onLock,
 }: Props) {
   const aiUp = useAiRunning(aiEnabled);
@@ -182,6 +214,7 @@ export function StatusBar({
           AI：{aiUp ? "已載入" : "未啟動"}
         </span>
       )}
+      <VersionItem updates={updates} onClick={onOpenAbout} />
       {onLock && (
         <button className="status-icon" onClick={onLock} title="立即鎖定（⌘⇧L）" aria-label="立即鎖定">
           <LockIcon />

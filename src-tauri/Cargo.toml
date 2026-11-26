@@ -1,6 +1,6 @@
 [package]
 name = "mydb-studio"
-version = "0.4.1"
+version = "0.5.0"
 description = "MySQL / MariaDB client with execution records, reports and an error advisor"
 authors = ["jackiewu"]
 edition = "2024"
@@ -25,6 +25,9 @@ tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-clipboard-manager = "2"
+# In-app updates from GitHub Releases (see src/update.rs).
+tauri-plugin-updater = "2"
+time = { version = "0.3", features = ["formatting"] }
 
 # Connection passwords go to the macOS Keychain / Windows Credential Manager.
 [target.'cfg(target_os = "macos")'.dependencies]
