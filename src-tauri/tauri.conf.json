@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE_WITH_UPDATER_PUBKEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQxQzVGNTk0MTlDRDdGRTAKUldUZ2Y4MFpsUFhGMFg1TjYzd1FaUlpmSDlqcDZuRHFTYWJOS2dvTTZBekZjdnFNcjZDZWdKVjgK",
       "endpoints": [
         "https://github.com/jackiewu/mydb-studio/releases/latest/download/latest.json"
       ],
