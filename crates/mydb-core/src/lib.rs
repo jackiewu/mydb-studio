@@ -26,6 +26,16 @@ pub mod transfer;
 pub mod tunnel;
 
 pub use error::{CoreError, Result};
+
+/// Picks aws-lc-rs as rustls' process-wide crypto provider. Call once at
+/// startup, before any TLS connection. Other crates (the updater pulls in
+/// ring) enable a second provider, and with two compiled in rustls can't
+/// choose one itself: `ClientConfig::builder()` in mysql_async, redis and
+/// reqwest would panic.
+pub fn install_tls_provider() {
+    // Err only means one is already installed, which is fine.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
 pub use pg::PgSession;
 pub use profile::{
     ConnectionKind, ConnectionProfile, IapConfig, McpAccess, RecordMode, SshAuth, SshConfig,

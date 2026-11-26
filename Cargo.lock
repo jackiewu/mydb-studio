@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "mydb-studio"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "block2",
  "chrono",
@@ -2913,6 +2913,7 @@ dependencies = [
  "mydb-sysauth",
  "objc2-foundation",
  "objc2-web-kit",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",

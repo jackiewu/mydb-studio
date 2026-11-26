@@ -146,3 +146,15 @@ pub async fn install_update<R: Runtime>(
 pub fn restart_app<R: Runtime>(app: AppHandle<R>) {
     app.request_restart();
 }
+
+#[cfg(test)]
+mod tests {
+    /// The updater enables rustls' ring provider next to aws-lc-rs, so rustls
+    /// can't pick one on its own; `run()` installs one. Without it every TLS
+    /// connection (MySQL, Redis, the update check) panicked in 0.5.0.
+    #[test]
+    fn tls_client_config_builds_after_install() {
+        mydb_core::install_tls_provider();
+        let _ = rustls::ClientConfig::builder();
+    }
+}
