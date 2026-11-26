@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, CoreError>;
 /// it with a build that lacks those features.
 pub const FLAVOR: &str = match option_env!("MYDB_FLAVOR") {
     Some(f) => f,
-    None => "",
+    None => "IAP",
 };
 
 #[derive(Serialize)]
