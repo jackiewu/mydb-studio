@@ -58,6 +58,7 @@ fn crash_watch(dir: &Path) -> Option<commands::CrashInfo> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    mydb_core::install_tls_provider();
     if std::env::args().skip(1).any(|a| a == "--mcp") {
         std::process::exit(mcp::main());
     }
