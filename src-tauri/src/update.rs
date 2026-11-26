@@ -138,7 +138,11 @@ pub async fn install_update<R: Runtime>(
     Ok(update.version)
 }
 
+/// Restarts through the normal exit, so the run loop's exit handling (the
+/// running flag, the AI model) happens as on a quit. `restart()` would skip
+/// it when called on the main thread, and the next start would report an
+/// unclean exit.
 #[tauri::command]
 pub fn restart_app<R: Runtime>(app: AppHandle<R>) {
-    app.restart();
+    app.request_restart();
 }
